@@ -26,6 +26,7 @@ dcta/
 │   ├── STYLE.md              code + docs style                               Winston
 │   ├── CHECKLIST.md          build sequence                                  everyone
 │   ├── DECISIONS.md          decision log                                    everyone
+│   ├── GITHUB.md             git commands for the daily workflow             Winston
 │   └── screenshots/          CodeBuddy proof images only                     everyone
 │
 ├── app/
@@ -100,3 +101,4 @@ web/
 | Date | Who | Change |
 |---|---|---|
 | 2026-10-10 | Winston | First version |
+| 2026-10-10 | Winston | Add `docs/GITHUB.md` |

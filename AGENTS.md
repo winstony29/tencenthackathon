@@ -84,7 +84,8 @@ The repo must only contain what `docs/STRUCTURE.md` lists.
 ## 7. Git rules
 
 - **Branches:** exactly one working branch per person: `winston`, `darren`, `jayanth`. Never create any other branch.
-- **Never** commit to `main` directly, push to `main`, force-push, rebase shared history, or delete branches. The human merges into `main` through a pull request.
+- **Never** commit to `main` directly, push to `main`, force-push, rebase shared history, or delete branches. The human merges into `main` through a pull request, using "Create a merge commit" (never squash or rebase merge, D-014).
+- To get others' work, merge `origin/main` into the working branch. Step-by-step commands for humans: `docs/GITHUB.md`.
 - **Commit messages:** `area: what changed`, in the imperative, under 72 characters. Areas: `intent`, `validation`, `bank`, `web`, `shared`, `docs`, `test`. Example: `intent: add confidence gate with spread check`.
 - Commit small and often. One task can be several commits; one commit never mixes two tasks.
 - Never commit `.env`, `var/`, `web/node_modules/`, `web/dist/`, or anything listed in `.gitignore`.
