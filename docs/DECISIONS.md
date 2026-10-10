@@ -77,3 +77,9 @@ Rejected: ...
 2026-10-10 · Winston · Status: decided
 **Decision:** The front end calls the intent, validation and bank endpoints in turn. Server code on the AI side never calls the bank side, and the reverse. The only exception is `app/bank/readonly.py`.
 **Why:** This makes the trust boundary on the architecture slide true in the code, and `tests/test_boundary.py` checks it.
+
+## D-013 · Starting Python packages, pinned
+2026-10-10 · Winston · Status: decided
+**Decision:** `requirements.txt` pins exact versions of: `fastapi`, `uvicorn` (server), `pydantic` (contracts), `python-multipart` (file upload on `/api/transcribe`), `httpx` (external calls and the test client), `python-dotenv` (loads `.env` in `app/config.py`), `pytest`, `ruff`. Everyone installs from this file, so every laptop and the server run the same versions.
+**Why:** The minimum S-02 needs. Pinned versions stop "works on my machine" bugs.
+**Rejected for now:** `cryptography` (add with J-06, signature checks); `pydantic-settings` (`os.getenv` is enough for a flat list of variables).

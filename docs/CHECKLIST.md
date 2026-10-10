@@ -11,7 +11,7 @@ IDs: `S` setup · `W` Winston · `J` Jayanth · `D` Darren · `I` integration ·
 
 - [ ] **S-01** · Winston · Create GitHub repo `dcta` with this docs pack, `.gitignore`, `.env.example`. Create branches `winston`, `darren`, `jayanth` from `main`.
   *Done when:* all three teammates can clone it and see the three branches.
-- [ ] **S-02** · Winston · Build the skeleton: every file in `docs/STRUCTURE.md` §1 except `web/`, each with its header docstring (`docs/STYLE.md` §1.1). `app/contracts.py` has every model in `docs/CONTRACTS.md`. Every router returns the stub responses from CONTRACTS §7. Add `requirements.txt` and `pyproject.toml`.
+- [x] **S-02** · Winston · Build the skeleton: every file in `docs/STRUCTURE.md` §1 except `web/`, each with its header docstring (`docs/STYLE.md` §1.1). `app/contracts.py` has every model in `docs/CONTRACTS.md`. Every router returns the stub responses from CONTRACTS §7. Add `requirements.txt` and `pyproject.toml`.
   *Done when:* `uvicorn app.main:app --reload` starts, `http://localhost:8000/docs` lists every endpoint, and each one returns its stub.
 - [ ] **S-03** · Winston · Write `tests/test_boundary.py` (import rules) and `tests/conftest.py` (test client, fake Jev, fake LLM, fake ASR).
   *Done when:* `pytest` passes and the boundary test fails if you add `from app.bank import ledger` to any intent file.
