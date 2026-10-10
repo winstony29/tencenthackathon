@@ -20,7 +20,7 @@
 | Owns | Details |
 |---|---|
 | Files | everything in `app/intent/`; `app/llm.py`; `scripts/eval_intent.py`; `tests/test_intent.py`; `tests/commands.jsonl`; `tests/test_boundary.py`; `tests/conftest.py` |
-| Endpoints | `POST /api/transcribe`, `POST /api/understand` |
+| Endpoints | `POST /api/preview`, `POST /api/transcribe`, `POST /api/understand` |
 | Shared files he keeps | `app/main.py`, `app/config.py`, `app/contracts.py`, `docs/` (merges contract changes once all agree) |
 | Deliverables | Test set of ~30 commands; single-Jev vs Jev × K comparison (wrong drafts, questions asked, delay); architecture PPT; GitHub repo |
 | Depends on | Jayanth's `app/bank/readonly.py` for payees, accounts, billers, tickers |

@@ -35,8 +35,9 @@ Rejected: ...
 **Results:** *(add the H-01 table here)*
 
 ## D-004 · Front-end stack
-2026-10-10 · Darren · Status: **open (due Sun 11 Oct)**
-**Decision:** *(Darren fills in)*
+2026-10-10 · Darren · Status: decided (base); `web/` file list due Sun 11 Oct (D-01)
+**Decision:** `web/` is based on shapeshift (github.com/anishfn/shapeshift): Next.js (App Router), React 19, TypeScript, Tailwind CSS v4, shadcn/ui, Motion, built with Bun. It is built as a static export (`output: "export"`) and FastAPI serves the built folder. Darren lists the `web/` files in `docs/STRUCTURE.md` §2, adds the build folders (`web/out/`, `web/.next/`) to `.gitignore`, and adds front-end rules to `docs/STYLE.md` §3.
+**Remove from shapeshift:** `src/app/api/intent/route.ts`, `src/lib/jev/client.ts` and `src/lib/jev/mock.ts`. Jev is called only by `app/intent/jev.py` (AGENTS §4), and a keyword guess must never stand in for Jev on a money command.
 **Constraints:** FastAPI must be able to serve the built files; no second deployment; build output not committed.
 
 ## D-005 · Fallback if Jev doesn't work
@@ -89,3 +90,15 @@ Rejected: ...
 **Decision:** Keep one branch per person (D-002). Each person opens a PR into `main` at least once a day; PRs are merged with "Create a merge commit". After any merge, everyone merges `origin/main` into their own branch. Integration happens continuously on `main`, not in one big merge. Commands are in `docs/GITHUB.md`.
 **Why:** Folder ownership already keeps people apart, so per-task branches add naming and cleanup with nothing gained. Squash merging breaks long-lived branches (the same changes conflict again on the next merge).
 **Rejected:** A new branch per task (more git to learn, more branches to track); squash or rebase merging.
+
+## D-015 · Contracts v0.2: shapeshift-style live preview, server-side gate
+2026-10-10 · Winston · Status: decided (merged by Winston without the usual three-way review; Darren and Jayanth check it at the next sync)
+**Decision:** Fit the AI-side contract to shapeshift's interaction model (CONTRACTS v0.2):
+- New `POST /api/preview`: debounced as the user types, one Jev call on the raw text, returns shapeshift's `intent` shape (`value`, `confidence`, `probabilities`) over `transfer`, `bill_payment`, `stock_order`, `none`, so its `decide.ts` drives the morphing card. Display only: no values, no drafts.
+- `/api/understand` stays the only way to a draft. The server's gate decides `question` vs `draft`; the UI obeys `status` and applies no thresholds of its own to it.
+- Every intent reply carries `meta` (latency, model, source, phrasings, cached) for the latency readout and H-01. Questions carry `evidence` for a debug view. `evidence` gains per-option `probabilities`.
+- The UI creates `session_id`; sessions expire after 5 minutes; 3 questions at most, then `cancelled` with `too_many_questions`.
+- Timing is event-driven (CONTRACTS §9): one call per user action, no polling except the stock price every 10 s while a stock card is open. Cancel aborts the call in flight.
+- Intent audit events are listed in CONTRACTS §8, written through `app/audit.py` `append(actor, event, data)`.
+**Why:** Darren is building on shapeshift, so matching its result shape and request loop saves him rewriting it. Keeping the gate on the server keeps safety promise 2 ("No guessing") true even if the UI is buggy or tampered with.
+**Rejected:** The UI deciding from probabilities, as shapeshift's `decide.ts` does for its cards (a UI bug could skip a question on a money command); polling `/api/understand` on an interval (nothing changes between user actions); streaming ASR for live voice text (too much setup; the browser's built-in recognition may feed `/api/preview` instead).

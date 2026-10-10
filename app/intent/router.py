@@ -9,11 +9,38 @@ from typing import Any
 
 from fastapi import APIRouter, UploadFile
 
-from app.contracts import NONE_OPTION_ID, TranscribeResponse, UnderstandRequest, UnderstandResponse
+from app.contracts import (
+    NONE_OPTION_ID,
+    PreviewRequest,
+    PreviewResponse,
+    TranscribeResponse,
+    UnderstandRequest,
+    UnderstandResponse,
+)
 
 router = APIRouter(prefix="/api", tags=["intent"])
 
-# Stub responses copied from CONTRACTS §3.1 (CONTRACTS §7); W-06 to W-09 replace them.
+# Stub responses copied from CONTRACTS §3.1 (CONTRACTS §7); W-06 to W-11 replace them.
+_STUB_META = {
+    "latency_ms": 1840,
+    "model": "jev-1.13.0",
+    "source": "jev",
+    "phrasings": 4,
+    "cached": False,
+}
+_STUB_PREVIEW = {
+    "intent": {
+        "value": "transfer",
+        "confidence": 0.81,
+        "probabilities": {
+            "transfer": 0.81,
+            "bill_payment": 0.11,
+            "stock_order": 0.05,
+            "none": 0.03,
+        },
+    },
+    "meta": {**_STUB_META, "latency_ms": 210, "phrasings": 1},
+}
 _STUB_TRANSCRIPT = {"transcript": "send fifty to john", "confidence": 0.93}
 _STUB_QUESTION = {
     "status": "question",
@@ -26,6 +53,16 @@ _STUB_QUESTION = {
         ],
         "allow_none": True,
     },
+    "evidence": [
+        {
+            "question": "recipient",
+            "pick": "pay_4521",
+            "avg_p": 0.52,
+            "spread": 0.31,
+            "probabilities": {"pay_4521": 0.52, "pay_8892": 0.48},
+        }
+    ],
+    "meta": _STUB_META,
 }
 _STUB_DRAFT = {
     "status": "draft",
@@ -46,10 +83,30 @@ _STUB_DRAFT = {
                 "currency": "SGD",
             }
         ],
-        "evidence": [{"question": "recipient", "pick": "pay_4521", "avg_p": 0.97, "spread": 0.03}],
+        "evidence": [
+            {
+                "question": "recipient",
+                "pick": "pay_4521",
+                "avg_p": 0.97,
+                "spread": 0.03,
+                "probabilities": {"pay_4521": 0.97, "pay_8892": 0.03},
+            }
+        ],
     },
+    "meta": _STUB_META,
 }
-_STUB_CANCELLED = {"status": "cancelled", "message": "Okay, nothing was sent."}
+_STUB_CANCELLED = {
+    "status": "cancelled",
+    "reason": "user_declined",
+    "message": "Okay, nothing was sent.",
+    "meta": {**_STUB_META, "latency_ms": 0, "model": "", "source": "none", "phrasings": 0},
+}
+
+
+@router.post("/preview", response_model=PreviewResponse)
+async def preview(request: PreviewRequest) -> dict[str, Any]:
+    """Guess the action type while the user types; display only. Stub: always a transfer."""
+    return _STUB_PREVIEW
 
 
 @router.post("/transcribe", response_model=TranscribeResponse)

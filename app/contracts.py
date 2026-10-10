@@ -18,7 +18,7 @@ from pydantic import (
     model_validator,
 )
 
-from app.config import MAX_ACTIONS_PER_DRAFT
+from app.config import MAX_ACTIONS_PER_DRAFT, MAX_TEXT_CHARS
 
 NONE_OPTION_ID = "none"  # option_id the UI sends when the user picks "None of these"
 
@@ -37,6 +37,8 @@ Money = Annotated[
     PlainSerializer(lambda value: f"{value:.2f}", return_type=str, when_used="json"),
 ]
 Currency = Annotated[str, Field(pattern=r"^[A-Z]{3}$")]
+Text = Annotated[str, Field(max_length=MAX_TEXT_CHARS)]
+Probability = Annotated[float, Field(ge=0, le=1)]
 
 
 class ContractModel(BaseModel):
@@ -95,8 +97,9 @@ Action = Annotated[
 class Evidence(ContractModel):
     question: str
     pick: str
-    avg_p: float = Field(ge=0, le=1)
-    spread: float = Field(ge=0, le=1)
+    avg_p: Probability
+    spread: Probability
+    probabilities: dict[str, Probability]
 
 
 class Draft(ContractModel):
@@ -112,6 +115,32 @@ class Draft(ContractModel):
 # §3.1 AI side
 
 
+class Meta(ContractModel):
+    latency_ms: int = Field(ge=0)
+    model: str
+    source: Literal["jev", "fallback", "fake", "none"]
+    phrasings: int = Field(ge=0)
+    cached: bool
+
+
+class PreviewRequest(ContractModel):
+    text: Text
+
+
+PreviewIntent = Literal["transfer", "bill_payment", "stock_order", "none"]
+
+
+class IntentGuess(ContractModel):
+    value: PreviewIntent
+    confidence: Probability
+    probabilities: dict[PreviewIntent, Probability]
+
+
+class PreviewResponse(ContractModel):
+    intent: IntentGuess
+    meta: Meta
+
+
 class TranscribeResponse(ContractModel):
     transcript: str
     confidence: float | None
@@ -125,7 +154,7 @@ class Answer(ContractModel):
 class UnderstandRequest(ContractModel):
     user_id: str
     session_id: str
-    transcript: str | None = None
+    transcript: Text | None = None
     answer: Answer | None = None
 
     @model_validator(mode="after")
@@ -150,27 +179,34 @@ class Question(ContractModel):
 class QuestionResponse(ContractModel):
     status: Literal["question"]
     question: Question
+    evidence: list[Evidence]
+    meta: Meta
 
 
 class DraftResponse(ContractModel):
     status: Literal["draft"]
     draft: Draft
+    meta: Meta
 
 
 class BlockedResponse(ContractModel):
     status: Literal["blocked"]
     reason: Literal["possible_injection"]
     message: str
+    meta: Meta
 
 
 class UnsupportedResponse(ContractModel):
     status: Literal["unsupported"]
     message: str
+    meta: Meta
 
 
 class CancelledResponse(ContractModel):
     status: Literal["cancelled"]
+    reason: Literal["user_declined", "too_many_questions"]
     message: str
+    meta: Meta
 
 
 UnderstandResponse = Annotated[
