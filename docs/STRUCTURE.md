@@ -86,11 +86,41 @@ dcta/
 
 ## 2. `web/` files
 
-Empty until Darren records the front-end stack in `docs/DECISIONS.md` (D-004). He then lists every file and folder of `web/` here before creating it. Build output (`web/dist/`) and `web/node_modules/` are never committed.
+The first frontend slice uses the stack in D-004 and the integration choices in D-016. Build output (`web/out/`, `web/.next/`, `web/dist/`) and `web/node_modules/` are never committed.
 
 ```
 web/
-└── (to be listed by Darren)
+├── package.json              dependencies and checks
+├── package-lock.json         npm lockfile (Bun can install package.json)
+├── next.config.ts            static export and development API proxy
+├── next-env.d.ts             Next.js generated type references
+├── tsconfig.json             strict TypeScript settings
+├── postcss.config.mjs        Tailwind v4
+├── eslint.config.mjs         Next.js lint rules
+├── THIRD_PARTY_LICENSES.txt  component attribution and licence notices
+├── src/
+│   ├── app/
+│   │   ├── layout.tsx        document shell
+│   │   ├── page.tsx          adaptive banking workspace
+│   │   └── globals.css       responsive design tokens and styling
+│   ├── components/
+│   │   ├── ui/
+│   │   │   ├── button.tsx   adapted Coss button with DBS-inspired variants
+│   │   │   ├── checkbox.tsx adapted Coss / Base UI checkbox
+│   │   │   ├── card.tsx     adapted shadcn card composition
+│   │   │   └── textarea.tsx adapted shadcn text area
+│   │   ├── action-card.tsx   transfer, bill and stock review cards
+│   │   ├── task-review.tsx   draft review and workflow result states
+│   │   ├── context-panel.tsx related balances, holdings and quotes
+│   │   └── command-input.tsx typed input and audio recording
+│   └── lib/
+│       ├── contracts.ts     runtime schemas matching contracts v0.2
+│       ├── api.ts           cancellable JSON requests
+│       ├── examples.ts      explicitly selected UI demo fixtures
+│       └── money.ts         exact estimated stock totals
+└── tests/
+    ├── contracts.test.ts    boundary and exact-money checks
+    └── browser.test.mjs     browser integration and layout checks
 ```
 
 ## 3. Screenshot naming
@@ -104,3 +134,4 @@ web/
 | 2026-10-10 | Winston | First version |
 | 2026-10-10 | Winston | Add `docs/GITHUB.md` |
 | 2026-10-10 | Winston | Add `docs/DCTA_endpoints_and_data.pptx` |
+| 2026-10-10 | Darren | Register first frontend slice (D-01 to D-04) |

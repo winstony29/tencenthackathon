@@ -102,3 +102,9 @@ Rejected: ...
 - Intent audit events are listed in CONTRACTS §8, written through `app/audit.py` `append(actor, event, data)`.
 **Why:** Darren is building on shapeshift, so matching its result shape and request loop saves him rewriting it. Keeping the gate on the server keeps safety promise 2 ("No guessing") true even if the UI is buggy or tampered with.
 **Rejected:** The UI deciding from probabilities, as shapeshift's `decide.ts` does for its cards (a UI bug could skip a question on a money command); polling `/api/understand` on an interval (nothing changes between user actions); streaming ASR for live voice text (too much setup; the browser's built-in recognition may feed `/api/preview` instead).
+
+## D-016 · Adaptive task pages: first frontend slice
+2026-10-10 · Darren · Status: decided
+**Decision:** Build predefined transfer, bill and stock React cards from contracts v0.2, with read-only related account/holdings information and mock quotes. Corrections restart intent processing. Explicit example buttons load labelled fixtures for UI exploration only. The first slice ends at validation; signing remains D-05. Use npm locally because Bun is unavailable, retaining Bun-compatible scripts and a checked-in npm lockfile. Use Zod for response checks, Motion for transitions, native accessible controls for the initial cards, and Playwright for browser verification. Shadcn components can be adopted when richer controls are needed.
+**Why:** Darren can verify the adaptive experience against the existing stubs without changing the transaction contract. No client classifier or generated executable UI is needed. Prettier keeps the frontend source formatted.
+**Open integration:** agree audio encoding in D-006 (the initial browser recorder sends its supported format to the stub), structured correction API, multi-action failure semantics, and FastAPI mounting of web/out before deployment.
