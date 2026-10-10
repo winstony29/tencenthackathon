@@ -1,0 +1,24 @@
+# secrets and local config
+.env
+CLAUDE.local.md
+CODEBUDDY.local.md
+.claude/settings.local.json
+
+# runtime state
+var/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# front end
+web/node_modules/
+web/dist/
+
+# editors and OS
+.DS_Store
+.idea/
+.vscode/
