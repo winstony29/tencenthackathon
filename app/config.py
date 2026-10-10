@@ -28,4 +28,7 @@ VALIDATION_RECEIPT_KEY = os.getenv("VALIDATION_RECEIPT_KEY", "")  # HMAC key for
 USE_FAKES = os.getenv("USE_FAKES", "0") == "1"  # True: fake Jev / LLM / ASR instead of real calls
 
 MAX_ACTIONS_PER_DRAFT = 4  # most actions one draft may hold (CONTRACTS §2)
+MAX_TEXT_CHARS = 500  # longest text or transcript the server accepts (CONTRACTS §1)
+MAX_QUESTIONS = 3  # clarify questions before giving up with "too_many_questions" (CONTRACTS §3.1)
+SESSION_TIMEOUT_SECONDS = 300  # a clarify session expires after this long without a call
 AUDIT_DEFAULT_LIMIT = 50  # entries GET /api/audit returns when no limit is given (CONTRACTS §3.3)
