@@ -27,6 +27,7 @@ dcta/
 │   ├── CHECKLIST.md          build sequence                                  everyone
 │   ├── DECISIONS.md          decision log                                    everyone
 │   ├── GITHUB.md             git commands for the daily workflow             Winston
+│   ├── DCTA_endpoints_and_data.pptx  endpoint map, data formats, timing      Winston
 │   └── screenshots/          CodeBuddy proof images only                     everyone
 │
 ├── app/
@@ -102,3 +103,4 @@ web/
 |---|---|---|
 | 2026-10-10 | Winston | First version |
 | 2026-10-10 | Winston | Add `docs/GITHUB.md` |
+| 2026-10-10 | Winston | Add `docs/DCTA_endpoints_and_data.pptx` |
