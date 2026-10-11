@@ -90,6 +90,7 @@ The first frontend slice uses the stack in D-004 and the integration choices in 
 
 ```
 web/
+├── jev.py                    presentation-only System One router (mock Winston outputs)
 ├── package.json              dependencies and checks
 ├── package-lock.json         npm lockfile (Bun can install package.json)
 ├── next.config.ts            static export and development API proxy
@@ -102,6 +103,7 @@ web/
 │   ├── app/
 │   │   ├── layout.tsx        document shell
 │   │   ├── page.tsx          adaptive banking workspace
+│   │   ├── v2/page.tsx       separate conversational morphing experiment
 │   │   └── globals.css       responsive design tokens and styling
 │   ├── components/
 │   │   ├── ui/
@@ -109,11 +111,18 @@ web/
 │   │   │   ├── checkbox.tsx adapted Coss / Base UI checkbox
 │   │   │   ├── card.tsx     adapted shadcn card composition
 │   │   │   └── textarea.tsx adapted shadcn text area
-│   │   ├── action-card.tsx   transfer, bill and stock review cards
+│   │   ├── v2-workspace.tsx   V2 approved forms and interactive support registry
+│   │   ├── workspace-renderer.tsx  approved layout registry and projections
+│   │   ├── action-card.tsx   editable transfer, bill and stock review cards
 │   │   ├── task-review.tsx   draft review and workflow result states
 │   │   ├── context-panel.tsx related balances, holdings and quotes
 │   │   └── command-input.tsx typed input and audio recording
 │   └── lib/
+│       ├── v2-conversation.ts typed conversational state machine and amendments
+│       ├── v2-parser.ts      deterministic demo parsing and banking-record resolution
+│       ├── v2-presentation.ts expanded JEV schema and injectable server-adapter boundary
+│       ├── composition.ts   typed manifest, eligibility and selection adapter
+│       ├── draft-editor.ts  immutable edits, validation and projections
 │       ├── contracts.ts     runtime schemas matching contracts v0.2
 │       ├── api.ts           cancellable JSON requests
 │       ├── examples.ts      explicitly selected UI demo fixtures

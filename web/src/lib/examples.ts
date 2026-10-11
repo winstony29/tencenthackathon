@@ -6,7 +6,7 @@ const transfer: Action = {
   from_account_label: "Savings …1234",
   to_payee_id: "pay_4521",
   to_payee_label: "John Doe …4521",
-  amount: "50.00",
+  amount: "500.00",
   currency: "SGD",
 };
 const bill: Action = {
@@ -32,10 +32,16 @@ const stock: Action = {
   currency: "USD",
 };
 export const examples = [
-  { label: "Send money", text: "Send fifty to John", actions: [transfer] },
+  { label: "Send money", text: "Transfer $500 to John.", actions: [transfer] },
   { label: "Pay a bill", text: "Pay my credit card bill", actions: [bill] },
   { label: "Buy shares", text: "Buy 100 shares of Apple", actions: [stock] },
   { label: "Two tasks", text: "Pay my credit card bill and buy 100 shares of Apple", actions: [bill, stock] },
+  {
+    label: "Can I afford it?",
+    text: "Can I afford to buy 100 Apple shares after paying my credit card bill?",
+    actions: [bill, stock],
+    mode: "decision" as const,
+  },
 ];
 export function exampleDraft(index: number): Draft {
   const example = examples[index];
@@ -73,3 +79,29 @@ export const exampleQuote: Quote = {
   currency: "USD",
   as_of: "2026-10-10T09:30:00+08:00",
 };
+
+// Placeholder for Winston's resolved output, selected explicitly rather than parsed from typing.
+export const winstonFixtures = [
+  { id: "transfer", label: "Complete transfer", draft: exampleDraft(0), partial: null, mode: "transaction" },
+  {
+    id: "partial",
+    label: "Missing recipient and amount",
+    draft: null,
+    partial: {
+      kind: "transfer",
+      amount: null,
+      recipient: null,
+      source: "acc_1234",
+      candidates: ["pay_4521", "pay_8892"],
+    },
+    mode: "transaction",
+  },
+  { id: "multi", label: "Bill and Apple shares", draft: exampleDraft(3), partial: null, mode: "transaction" },
+  {
+    id: "decision",
+    label: "Affordability for both",
+    draft: exampleDraft(4),
+    partial: null,
+    mode: "decision",
+  },
+] as const;

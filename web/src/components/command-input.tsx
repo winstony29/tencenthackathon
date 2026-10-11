@@ -12,6 +12,8 @@ export function CommandInput({
   onAudio,
   disabled,
   loading,
+  submitLabel = "Build my task",
+  placeholder = "Send fifty to John…",
 }: {
   text: string;
   onChange: (text: string) => void;
@@ -19,6 +21,8 @@ export function CommandInput({
   onAudio: (audio: Blob) => void;
   disabled: boolean;
   loading: boolean;
+  submitLabel?: string;
+  placeholder?: string;
 }) {
   const [recording, setRecording] = useState(false);
   const [micError, setMicError] = useState("");
@@ -106,7 +110,7 @@ export function CommandInput({
           onChange={(e) => onChange(e.target.value)}
           maxLength={500}
           rows={2}
-          placeholder="Send fifty to John…"
+          placeholder={placeholder}
           disabled={disabled || recording || acquiring}
         />
         <div className="command-toolbar">
@@ -127,7 +131,7 @@ export function CommandInput({
             className="primary-button"
             disabled={!text.trim() || disabled || recording || acquiring}
           >
-            {loading ? "Working…" : "Build my task"}
+            {loading ? "Working…" : submitLabel}
             <ArrowUpRight size={18} aria-hidden="true" />
           </Button>
         </div>

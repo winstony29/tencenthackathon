@@ -30,14 +30,11 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
               <div>
                 <p className="eyebrow">YOUR PERSONAL BANKING WORKSPACE</p>
                 <h1>
-                  A few words.
+                  Banking.
                   <br />
-                  <span>A page made for you.</span>
+                  <span>On your terms.</span>
                 </h1>
-                <p className="intro">
-                  Tell us what you need. We’ll bring the right task and useful details together, so you can
-                  check before you act.
-                </p>
+                <p className="intro">One request. A workspace shaped around your next financial move.</p>
               </div>
               <div className="workflow-note">
                 <span aria-hidden="true">↗</span>

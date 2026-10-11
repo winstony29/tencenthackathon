@@ -13,11 +13,13 @@ from starlette.exceptions import HTTPException
 from app.bank.router import router as bank_router
 from app.intent.router import router as intent_router
 from app.validation.router import router as validation_router
+from web.jev import router as presentation_router
 
 app = FastAPI(title="DCTA voice banking agent")
 app.include_router(intent_router)
 app.include_router(validation_router)
 app.include_router(bank_router)
+app.include_router(presentation_router)
 # ponytail: web/ gets mounted here once D-004 picks the stack and its build folder.
 
 _ERROR_CODES = {400: "bad_request", 404: "not_found", 502: "upstream_error"}

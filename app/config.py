@@ -13,6 +13,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TYPESAFE_API_KEY = os.getenv("TYPESAFE_API_KEY", "")  # TypeSafe Jev key (app/intent/jev.py)
+MAKERS_MODELS_KEY = os.getenv("MAKERS_MODELS_KEY", "")  # EdgeOne presentation demo (web/jev.py)
+MAKERS_JEV_ENDPOINT = "https://ai-gateway.edgeone.link/v1/systemone"  # Native System One API
+MAKERS_JEV_MODEL = "@makers/jev"  # Gateway model alias
+MAKERS_JEV_TIMEOUT_SECONDS = 12  # Presentation request deadline; UI falls back on failure
 
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")  # OpenAI-compatible endpoint for app/llm.py (D-009)
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")  # key for that endpoint

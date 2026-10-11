@@ -3,10 +3,31 @@
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { TrendingUp, ReceiptText } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import type { Action, Quote } from "@/lib/contracts";
+import { Button } from "@/components/ui/button";
+import type { DraftEdits } from "@/lib/draft-editor";
+import type { Accounts, Action, Quote } from "@/lib/contracts";
 import { displayMoney, estimatedTotal } from "@/lib/money";
 
-export function ActionCard({ action, index, quote }: { action: Action; index: number; quote?: Quote }) {
+export function ActionCard({
+  action,
+  index,
+  quote,
+  editor,
+}: {
+  action: Action;
+  index: number;
+  quote?: Quote;
+  editor?: {
+    edits: DraftEdits;
+    accounts: Accounts | null;
+    error?: string;
+    approved: boolean;
+    disabled: boolean;
+    showApproval?: boolean;
+    onEdit: (index: number, field: string, value: string) => void;
+    onApprove: (index: number) => void;
+  };
+}) {
   const reducedMotion = useReducedMotion();
   const quoteLabel = quote ? `${quote.ticker}:${quote.currency}:${quote.price}` : "waiting";
   const reveal = { hidden: { opacity: 0, y: reducedMotion ? 0 : 18 }, visible: { opacity: 1, y: 0 } };
@@ -26,6 +47,8 @@ export function ActionCard({ action, index, quote }: { action: Action; index: nu
     action.type === "stock_order" && quote?.ticker === action.ticker && quote.currency === action.currency
       ? quote
       : undefined;
+  const estimatePrice =
+    action.type === "stock_order" && action.order_type === "limit" ? action.limit_price : usableQuote?.price;
   return (
     <motion.article
       className="animated-task"
@@ -41,7 +64,9 @@ export function ActionCard({ action, index, quote }: { action: Action; index: nu
         <CardHeader>
           <div className="card-top">
             <span className="eyebrow">ACTION {String(index + 1).padStart(2, "0")}</span>
-            <span className="badge">Review required</span>
+            <span className={`badge ${editor?.approved ? "approved" : ""}`}>
+              {editor?.approved ? "Reviewed" : "Review required"}
+            </span>
           </div>
           <CardTitle id={`task-${index}`}>
             <motion.span
@@ -72,22 +97,18 @@ export function ActionCard({ action, index, quote }: { action: Action; index: nu
               <strong>{recipient}</strong>
             </div>
           </div>
-          <div className="amount-block">
-            <span className="field-label">{action.type === "stock_order" ? "Quantity" : "Amount"}</span>
-            <p className="amount">
-              {action.type === "stock_order" ? (
-                <>
-                  {action.quantity}
-                  <span> shares</span>
-                </>
-              ) : (
-                <>
-                  <span>{action.currency} </span>
-                  {displayMoney(action.amount, action.currency).slice(4)}
-                </>
-              )}
-            </p>
-          </div>
+          {editor ? (
+            <ActionFields action={action} index={index} editor={editor} />
+          ) : (
+            <div className="amount-block">
+              <span className="field-label">{action.type === "stock_order" ? "Quantity" : "Amount"}</span>
+              <p className="amount">
+                {action.type === "stock_order"
+                  ? `${action.quantity} shares`
+                  : displayMoney(action.amount, action.currency)}
+              </p>
+            </div>
+          )}
           <dl className="detail-list">
             {action.type === "bill_payment" && (
               <div>
@@ -127,8 +148,8 @@ export function ActionCard({ action, index, quote }: { action: Action; index: nu
                 <div>
                   <dt>Estimated total</dt>
                   <dd>
-                    {usableQuote
-                      ? displayMoney(estimatedTotal(usableQuote.price, action.quantity), action.currency)
+                    {estimatePrice
+                      ? displayMoney(estimatedTotal(estimatePrice, action.quantity), action.currency)
                       : "—"}
                   </dd>
                 </div>
@@ -140,10 +161,151 @@ export function ActionCard({ action, index, quote }: { action: Action; index: nu
             </div>
           </dl>
           {action.type === "stock_order" && (
-            <p className="fine-print">Mock price. The execution price may differ from this estimate.</p>
+            <p className="fine-print">
+              Mock price. Estimates exclude fees and taxes; execution prices may differ.
+            </p>
+          )}
+          {editor && editor.showApproval !== false && (
+            <Button
+              variant={editor.approved ? "ghost" : "outline"}
+              disabled={editor.disabled || !!editor.error}
+              aria-pressed={editor.approved}
+              onClick={() => editor.onApprove(index)}
+            >
+              {editor.approved ? `Action ${index + 1} reviewed` : `Approve action ${index + 1}`}
+            </Button>
           )}
         </CardContent>
       </Card>
     </motion.article>
+  );
+}
+
+/** Editable pieces shared by the original cards and the integrated V2 plan. */
+export function ActionFields({ action, index, editor }: FieldProps) {
+  if (!editor) return null;
+  return (
+    <fieldset className="transaction-fields" disabled={editor.disabled}>
+      <legend className="sr-only">Edit action {index + 1}</legend>
+      <RecipientControl action={action} index={index} editor={editor} />
+      <ValueControls action={action} index={index} editor={editor} />
+      <FundingControl action={action} index={index} editor={editor} />
+      {editor.error && (
+        <p className="error-text" role="alert">
+          {editor.error}
+        </p>
+      )}
+    </fieldset>
+  );
+}
+
+type FieldProps = Pick<Parameters<typeof ActionCard>[0], "action" | "index" | "editor">;
+
+function RecipientControl({ action, index, editor }: FieldProps) {
+  if (!editor) return null;
+  return (
+    <>
+      {action.type === "transfer" && (
+        <label>
+          Recipient
+          <select
+            aria-label={`Recipient for action ${index + 1}`}
+            value={editor.edits[index]?.to_payee_id ?? action.to_payee_id}
+            onChange={(e) => editor.onEdit(index, "to_payee_id", e.target.value)}
+          >
+            {!editor.accounts?.payees.some((p) => p.payee_id === action.to_payee_id) && (
+              <option value={action.to_payee_id}>{action.to_payee_label} - inferred from draft</option>
+            )}
+            {editor.accounts?.payees.map((p) => (
+              <option key={p.payee_id} value={p.payee_id}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+          <small>Listed identity; final recipient verification is required by the bank.</small>
+        </label>
+      )}
+    </>
+  );
+}
+
+function ValueControls({ action, index, editor }: FieldProps) {
+  if (!editor) return null;
+  return (
+    <>
+      {action.type !== "stock_order" ? (
+        <label className="amount-field">
+          Amount <span>{action.currency}</span>
+          <input
+            aria-label={`Amount for action ${index + 1}`}
+            inputMode="decimal"
+            value={editor.edits[index]?.amount ?? action.amount}
+            onChange={(e) => editor.onEdit(index, "amount", e.target.value)}
+          />
+        </label>
+      ) : (
+        <>
+          <label className="amount-field">
+            Shares
+            <input
+              aria-label={`Quantity for action ${index + 1}`}
+              inputMode="numeric"
+              value={editor.edits[index]?.quantity ?? String(action.quantity)}
+              onChange={(e) => editor.onEdit(index, "quantity", e.target.value)}
+            />
+          </label>
+          <label>
+            Order type
+            <select
+              aria-label={`Order type for action ${index + 1}`}
+              value={editor.edits[index]?.order_type ?? action.order_type}
+              onChange={(e) => editor.onEdit(index, "order_type", e.target.value)}
+            >
+              <option value="market">Market order</option>
+              <option value="limit">Limit order</option>
+            </select>
+          </label>
+          {(editor.edits[index]?.order_type ?? action.order_type) === "limit" && (
+            <label>
+              Limit price ({action.currency})
+              <input
+                aria-label={`Limit price for action ${index + 1}`}
+                inputMode="decimal"
+                value={editor.edits[index]?.limit_price ?? action.limit_price ?? ""}
+                onChange={(e) => editor.onEdit(index, "limit_price", e.target.value)}
+                placeholder="Enter a price"
+              />
+            </label>
+          )}
+        </>
+      )}
+    </>
+  );
+}
+
+function FundingControl({ action, index, editor }: FieldProps) {
+  if (!editor) return null;
+  return (
+    <>
+      <label>
+        Source account
+        <select
+          aria-label={`Source account for action ${index + 1}`}
+          value={editor.edits[index]?.from_account_id ?? action.from_account_id}
+          onChange={(e) => editor.onEdit(index, "from_account_id", e.target.value)}
+        >
+          {!editor.accounts?.accounts.some((a) => a.account_id === action.from_account_id) && (
+            <option value={action.from_account_id}>{action.from_account_label} - from draft</option>
+          )}
+          {editor.accounts?.accounts
+            .filter((a) => a.currency === action.currency)
+            .map((a) => (
+              <option key={a.account_id} value={a.account_id}>
+                {a.label}
+              </option>
+            ))}
+        </select>
+      </label>
+    </>
   );
 }

@@ -1,18 +1,21 @@
 "use client";
 import { Button } from "@/components/ui/button";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MotionConfig } from "motion/react";
 import { TaskReview } from "@/components/task-review";
 import { CommandInput } from "@/components/command-input";
 import { ContextPanel, WelcomePanel } from "@/components/context-panel";
+import { composeWorkspace, eligibleSupport, type Layout } from "@/lib/composition";
+import { editedActions, updateEdit, type DraftEdits } from "@/lib/draft-editor";
 import { post, request } from "@/lib/api";
-import { exampleDraft, examples } from "@/lib/examples";
+import { exampleDraft, examples, exampleAccounts } from "@/lib/examples";
 import {
   previewSchema,
   transcribeSchema,
   understandSchema,
   validationSchema,
+  type Accounts,
   type Draft,
   type Quote,
   type Understand,
@@ -31,9 +34,45 @@ export default function BankingPage() {
   const [reviewed, setReviewed] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [commandVersion, setCommandVersion] = useState(0);
+  const [accounts, setAccounts] = useState<Accounts | null>(null);
+  const [edits, setEdits] = useState<DraftEdits>({});
+  const [approved, setApproved] = useState<Record<number, boolean>>({});
+  const [workspaceMode, setWorkspaceMode] = useState<"transaction" | "decision">("transaction");
+  const [layoutOverride, setLayoutOverride] = useState<Layout | null>(null);
+  const updateAccounts = useCallback((data: Accounts) => setAccounts(data), []);
   const session = useRef("");
   const active = useRef<AbortController | null>(null);
   const draft = demo ?? (reply?.status === "draft" ? reply.draft : null);
+  const manifest = useMemo(() => {
+    if (!draft) return null;
+    const facts = { mode: workspaceMode, accounts, scheduled: false };
+    const selection = layoutOverride
+      ? {
+          mode: workspaceMode,
+          ranks: [{ layout: layoutOverride, score: 1 }],
+          primary: 0,
+          supporting: eligibleSupport(draft, facts),
+        }
+      : undefined;
+    return composeWorkspace(draft, facts, selection, demo ? "demo" : "fallback");
+  }, [draft, workspaceMode, accounts, layoutOverride, demo]);
+  const hasEdits = Object.keys(edits).length > 0;
+  const editErrors = draft ? editedActions(draft, edits, accounts).errors : {};
+  const allApproved =
+    !!draft && draft.actions.every((_, i) => approved[i]) && Object.keys(editErrors).length === 0;
+  function editAction(index: number, field: string, value: string) {
+    setEdits((previous) => updateEdit(previous, index, field, value));
+    setApproved((previous) => ({ ...previous, [index]: false }));
+    setReviewed(false);
+    setValidation(null);
+    setConfirmed(false);
+  }
+  function approveAction(index: number) {
+    setApproved((previous) => ({ ...previous, [index]: !previous[index] }));
+    setReviewed(false);
+    setValidation(null);
+    setConfirmed(false);
+  }
   const updateQuotes = useCallback((data: Record<string, Quote>) => setQuotes(data), []);
 
   useEffect(() => () => active.current?.abort(), []);
@@ -62,6 +101,11 @@ export default function BankingPage() {
     setCommandVersion((version) => version + 1);
     setReply(null);
     setDemo(null);
+    setAccounts(null);
+    setEdits({});
+    setApproved({});
+    setWorkspaceMode("transaction");
+    setLayoutOverride(null);
     setValidation(null);
     setQuotes({});
     setReviewed(false);
@@ -113,6 +157,10 @@ export default function BankingPage() {
       const result = await post("/understand", understandSchema, body, controller.signal);
       if (controller.signal.aborted) return;
       setDemo(null);
+      setEdits({});
+      setApproved({});
+      setLayoutOverride(null);
+      setWorkspaceMode("transaction");
       setReply(result);
       setQuotes({});
       setReviewed(false);
@@ -132,13 +180,21 @@ export default function BankingPage() {
     const example = exampleDraft(index);
     setText(example.transcript);
     setDemo(example);
+    setAccounts(exampleAccounts);
+    setWorkspaceMode(examples[index].mode === "decision" ? "decision" : "transaction");
   }
   function correctRequest() {
     reset();
     requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>("#command")?.focus());
   }
   async function checkDraft() {
-    if (!draft || !reviewed) return;
+    if (!draft || !reviewed || !allApproved || Object.keys(editErrors).length > 0) return;
+    if (hasEdits && !demo) {
+      setError(
+        "Edited details need a new backend draft. Change your request to get these changes revalidated; the original draft will not be submitted.",
+      );
+      return;
+    }
     if (demo) {
       setConfirmed(true);
       return;
@@ -173,7 +229,7 @@ export default function BankingPage() {
             No money moves in this prototype.
           </span>
         </div>
-        <div className={`workspace ${draft ? "has-task" : ""}`}>
+        <div className={`workspace ${draft ? "has-task" : ""}`} data-workspace-mode={workspaceMode}>
           <section className="main-panel" aria-label="Banking task">
             <div className="section-heading">
               <span className="step-number">01</span>
@@ -230,6 +286,23 @@ export default function BankingPage() {
             )}
             <TaskReview
               draft={draft}
+              composition={
+                draft && manifest
+                  ? {
+                      manifest,
+                      edits,
+                      accounts,
+                      quotes,
+                      approved,
+                      disabled: busy || validation?.status === "mismatch",
+                      onEdit: editAction,
+                      onApprove: approveAction,
+                      onLayout: setLayoutOverride,
+                    }
+                  : undefined
+              }
+              allApproved={allApproved}
+              hasEdits={hasEdits}
               demo={!!demo}
               reply={reply}
               busy={busy}
@@ -255,6 +328,8 @@ export default function BankingPage() {
               draft={draft}
               demo={!!demo}
               onQuotes={updateQuotes}
+              onAccounts={updateAccounts}
+              supporting={manifest?.supporting ?? []}
             />
           ) : (
             <WelcomePanel />

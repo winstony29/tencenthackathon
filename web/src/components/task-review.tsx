@@ -3,11 +3,16 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ArrowRight, CheckCircle2 } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { WorkspaceRenderer } from "@/components/workspace-renderer";
+import type { ComponentProps } from "react";
 import { ActionCard } from "@/components/action-card";
 import type { Draft, Quote, Understand, Validation } from "@/lib/contracts";
 
 type Props = {
   draft: Draft | null;
+  composition?: Omit<ComponentProps<typeof WorkspaceRenderer>, "draft">;
+  allApproved: boolean;
+  hasEdits: boolean;
   demo: boolean;
   reply: Understand | null;
   busy: boolean;
@@ -24,6 +29,9 @@ type Props = {
 };
 export function TaskReview({
   draft,
+  composition,
+  allApproved,
+  hasEdits,
   demo,
   reply,
   busy,
@@ -41,7 +49,7 @@ export function TaskReview({
   const reducedMotion = useReducedMotion();
   return (
     <>
-      <AnimatePresence mode="wait">
+      <AnimatePresence initial={false} mode="wait">
         <motion.div
           key={draft?.draft_id ?? reply?.status ?? "empty"}
           initial={{ opacity: reducedMotion ? 1 : 0, y: reducedMotion ? 0 : 12 }}
@@ -99,36 +107,50 @@ export function TaskReview({
           )}
           {draft ? (
             <>
-              <div className="cards">
-                {draft.actions.map((action, index) => (
-                  <ActionCard
-                    key={index}
-                    action={action}
-                    index={index}
-                    quote={action.type === "stock_order" ? quotes[action.ticker] : undefined}
-                  />
-                ))}
-              </div>
+              {composition ? (
+                <WorkspaceRenderer draft={draft} {...composition} />
+              ) : (
+                <div className="cards">
+                  {draft.actions.map((action, index) => (
+                    <ActionCard
+                      key={index}
+                      action={action}
+                      index={index}
+                      quote={action.type === "stock_order" ? quotes[action.ticker] : undefined}
+                    />
+                  ))}
+                </div>
+              )}
               <motion.div className="review-footer" layout={reducedMotion ? false : "position"}>
                 <motion.label
                   className="review-checkbox"
                   animate={{ borderColor: reviewed ? "#d50000" : "#e2e5e9" }}
                   transition={{ duration: reducedMotion ? 0 : 0.2 }}
                 >
-                  <Checkbox checked={reviewed} onCheckedChange={onReviewedChange} disabled={busy} />
+                  <Checkbox
+                    checked={reviewed}
+                    onCheckedChange={onReviewedChange}
+                    disabled={busy || !allApproved}
+                  />
                   <span>I’ve checked every action and its details.</span>
                 </motion.label>
                 <div className="review-actions">
                   <Button variant="link" className="text-button" onClick={onCorrect}>
                     Change request
                   </Button>
-                  <Button className="primary-button" disabled={!reviewed || busy} onClick={() => onReview()}>
+                  <Button
+                    className="primary-button"
+                    disabled={!reviewed || busy || !allApproved}
+                    onClick={() => onReview()}
+                  >
                     {demo ? "Review example" : "Check draft"}
                     <ArrowRight size={18} aria-hidden="true" />
                   </Button>
                 </div>
                 <p className="fine-print">
-                  Changes start a fresh request. Signing will be connected in the next build slice.
+                  {hasEdits
+                    ? "Local changes clear approvals. API edits require a new backend draft before signing."
+                    : "Approve each action, then review the complete plan. Bank validation and signing remain mandatory."}
                 </p>
               </motion.div>
             </>

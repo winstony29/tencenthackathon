@@ -1,4 +1,5 @@
 "use client";
+import type { UIManifest } from "@/lib/composition";
 import { Button } from "@/components/ui/button";
 
 import { useEffect, useState } from "react";
@@ -11,10 +12,14 @@ export function ContextPanel({
   draft,
   demo,
   onQuotes,
+  onAccounts,
+  supporting,
 }: {
   draft: Draft;
+  supporting: UIManifest["supporting"];
   demo: boolean;
   onQuotes: (quotes: Record<string, Quote>) => void;
+  onAccounts: (accounts: Accounts) => void;
 }) {
   const [accounts, setAccounts] = useState<Accounts | null>(null);
   const [accountError, setAccountError] = useState("");
@@ -35,6 +40,7 @@ export function ContextPanel({
             });
         if (controller.signal.aborted) return;
         setAccounts(data);
+        onAccounts(data);
         setAccountError("");
       } catch (e) {
         if (!controller.signal.aborted)
@@ -82,7 +88,7 @@ export function ContextPanel({
       controller.abort();
       clearInterval(interval);
     };
-  }, [draft, demo, tickers, refresh, onQuotes]);
+  }, [draft, demo, tickers, refresh, onQuotes, onAccounts]);
   const accountIds = new Set(draft.actions.map((a) => a.from_account_id));
   return (
     <aside className="context-panel" aria-label="Related banking information">
@@ -94,30 +100,32 @@ export function ContextPanel({
           {error}
         </p>
       )}
-      <details open>
-        <summary>Your paying accounts</summary>
-        {accounts ? (
-          accounts.accounts
-            .filter((a) => accountIds.has(a.account_id))
-            .map((a) => (
-              <div className="context-row" key={a.account_id}>
-                <span>
-                  {a.label}
-                  <small>Available balance · {demo ? "example" : "stub"}</small>
-                </span>
-                <strong>{displayMoney(a.balance, a.currency)}</strong>
-              </div>
-            ))
-        ) : (
-          <p className="fine-print">
-            {accountError ? "Balance details are unavailable." : "Loading balances…"}
-          </p>
-        )}
-        {accounts && !accounts.accounts.some((a) => accountIds.has(a.account_id)) && (
-          <p className="fine-print">This account’s balance isn’t available in the stub yet.</p>
-        )}
-      </details>
-      {tickers && (
+      {supporting.includes("accounts") && (
+        <details open>
+          <summary>Your paying accounts</summary>
+          {accounts ? (
+            accounts.accounts
+              .filter((a) => accountIds.has(a.account_id))
+              .map((a) => (
+                <div className="context-row" key={a.account_id}>
+                  <span>
+                    {a.label}
+                    <small>Available balance · {demo ? "example" : "stub"}</small>
+                  </span>
+                  <strong>{displayMoney(a.balance, a.currency)}</strong>
+                </div>
+              ))
+          ) : (
+            <p className="fine-print">
+              {accountError ? "Balance details are unavailable." : "Loading balances…"}
+            </p>
+          )}
+          {accounts && !accounts.accounts.some((a) => accountIds.has(a.account_id)) && (
+            <p className="fine-print">This account’s balance isn’t available in the stub yet.</p>
+          )}
+        </details>
+      )}
+      {tickers && supporting.includes("holdings") && (
         <details open>
           <summary>Your holdings</summary>
           {accounts?.holdings
