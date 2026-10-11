@@ -6,215 +6,175 @@ const baseURL = "http://127.0.0.1:3000";
 const executablePath = process.env.CHROME_PATH ?? "C:/Program Files/Google/Chrome/Application/chrome.exe";
 
 test(
-  "live JEV placeholder composes only on click, preserves edits, handles invalid replies and ignores cancellation",
-  { timeout: 120000 },
-  async () => {
-    const browser = await chromium.launch({ executablePath, headless: true });
-    const page = await browser.newPage({ reducedMotion: "reduce" });
-    let calls = 0;
-    let failure = false;
-    let delayed = false;
-    let release;
-    const reply = {
-      source: "jev",
-      selection: {
-        layout: "split",
-        interaction: "execute",
-        focus: "recipient",
-        supporting: ["accounts", "recipient"],
-        tools: ["form"],
-        density: "standard",
-        strategy: "focused",
-        primary: 0,
-      },
-      systemone: {
-        model: "jev-1.13.0",
-        answers: { layout: { type: "choice", choice: "split", confidence: 1, probabilities: { split: 1 } } },
-      },
-    };
-    await page.route("**/api/presentation-demo?*", async (route) => {
-      calls++;
-      if (delayed)
-        await new Promise((resolve) => {
-          release = resolve;
-        });
-      await route
-        .fulfill({
-          status: failure ? 502 : 200,
-          json: failure ? { error: { message: "JEV unavailable" } } : reply,
-        })
-        .catch(() => {});
-    });
-    try {
-      await page.goto(`${baseURL}/v2/`);
-      await page.getByLabel("What would you like to do?").fill("Transfer $500 to John");
-      assert.equal(calls, 0);
-      await page.getByRole("button", { name: "Compose with live JEV" }).click();
-      await page
-        .getByText("Mock Winston output and banking data · Live JEV · jev-1.13.0", { exact: true })
-        .waitFor();
-      await page.getByLabel("Amount for action 1", { exact: true }).fill("321.00");
-      await page.getByRole("button", { name: "Compose with live JEV" }).click();
-      await page
-        .getByText("Mock Winston output and banking data · Live JEV · jev-1.13.0", { exact: true })
-        .waitFor();
-      assert.equal(await page.getByLabel("Amount for action 1", { exact: true }).inputValue(), "321.00");
-      failure = true;
-      await page.getByRole("button", { name: "Compose with live JEV" }).click();
-      await page.getByRole("alert").filter({ hasText: "local fallback" }).waitFor();
-      assert.equal(await page.getByLabel("Amount for action 1", { exact: true }).inputValue(), "321.00");
-      failure = false;
-      delayed = true;
-      await page.getByRole("button", { name: "Compose with live JEV" }).click();
-      await page.waitForFunction(() => document.querySelector(".v2-jev-status") !== null);
-      await page.getByRole("button", { name: "Refine in conversation" }).click();
-      await page.getByRole("button", { name: "Back to workspace" }).click();
-      if (release) release();
-      await page.getByLabel("Amount for action 1", { exact: true }).waitFor();
-      assert.equal(
-        await page.locator(".v2-demo-label").innerText(),
-        "Mock Winston output and banking data · Local composition fallback",
-      );
-      assert.equal(await page.getByLabel("Amount for action 1", { exact: true }).inputValue(), "321.00");
-    } finally {
-      if (release) release();
-      await browser.close();
-    }
-  },
-);
-
-test(
-  "V2 multi-task and decision composition, partial details, keyboard focus and responsive views",
+  "resolved Winston handoffs compose coherent bundles, preserve edits, reject invalid replies and cancel stale results",
   { timeout: 120000 },
   async () => {
     const browser = await chromium.launch({ executablePath, headless: true });
     const page = await browser.newPage({ viewport: { width: 1440, height: 1100 }, reducedMotion: "reduce" });
-    const errors = [];
-    page.on("pageerror", (e) => errors.push(e.message));
-    page.on("console", (m) => {
-      if (m.type() === "error" && !m.text().startsWith("Failed to load resource:")) errors.push(m.text());
+    let calls = 0,
+      failure = false,
+      invalid = false,
+      delayed = false,
+      weak = false;
+    let release;
+    const requests = [],
+      forbidden = [];
+    page.on("request", (r) => {
+      if (/\/api\/(understand|validate|execute|challenge|device)/.test(r.url())) forbidden.push(r.url());
     });
-    page.on("response", (response) => {
-      if (response.status() >= 400 && new URL(response.url()).pathname !== "/favicon.ico")
-        errors.push(`${response.status()} ${response.url()}`);
+    await page.route("**/api/presentation-demo", async (route) => {
+      calls++;
+      const context = route.request().postDataJSON();
+      requests.push(context);
+      if (delayed)
+        await new Promise((resolve) => {
+          release = resolve;
+        });
+      const decision = context.objective === "assess_affordability",
+        multi = context.action_types.length > 1;
+      const bundle = decision
+        ? "affordability_simulation"
+        : context.objective === "check_recipient"
+          ? "recipient_check"
+          : multi
+            ? "multi_task_review"
+            : "transfer_editing";
+      const layout = weak ? "split" : decision ? "focus" : multi ? "sequence" : "focus";
+      const selection = {
+        bundle,
+        layout,
+        density: "standard",
+        primary: 0,
+        strategy: multi ? "multi" : "focused",
+        interaction: decision ? "simulate" : "execute",
+        focus: decision ? "affordability" : bundle === "recipient_check" ? "recipient" : "amount",
+        supporting: decision
+          ? ["accounts", "projection"]
+          : bundle === "recipient_check"
+            ? ["recipient"]
+            : ["accounts"],
+        tools: decision ? ["form", "slider", "chart"] : ["form"],
+      };
+      if (invalid) selection.supporting = [];
+      await route
+        .fulfill({
+          status: failure ? 502 : 200,
+          json: failure
+            ? { error: { message: "JEV unavailable" } }
+            : {
+                source: "jev",
+                selection,
+                systemone: {
+                  model: "jev-1.13.0",
+                  answers: {
+                    bundle: { type: "choice", choice: bundle, confidence: 1, probabilities: { [bundle]: 1 } },
+                    layout: {
+                      type: "choice",
+                      choice: layout,
+                      confidence: weak ? 0.02 : 1,
+                      probabilities: weak ? { split: 0.51, focus: 0.49 } : { [layout]: 1 },
+                    },
+                  },
+                },
+              },
+        })
+        .catch(() => {});
     });
+    async function choose(id) {
+      await page.getByLabel("Mock Winston output scenario").selectOption(id);
+      await page.getByRole("button", { name: "Compose with live JEV" }).click();
+      await page.getByText(/Mock Winston output and banking data - Live JEV/).waitFor();
+    }
     try {
       await page.goto(`${baseURL}/v2/`);
-      await page.getByLabel("What would you like to do?").waitFor();
-      await page.waitForFunction(() => document.activeElement?.tagName === "TEXTAREA");
-      await page.screenshot({ path: "../graphify-out/v2-conversation-desktop.png", fullPage: true });
-      await page
-        .getByLabel("What would you like to do?")
-        .fill("Pay my credit card bill and buy 100 shares of Apple");
-      await page.getByRole("button", { name: "Shape my workspace" }).click();
-      await page.getByLabel("Quantity for action 2").waitFor();
-      assert.equal(await page.locator(".v2-plan-task").count(), 2);
-      assert.equal(await page.locator(".task-card").count(), 0);
-      assert.equal(await page.locator(".v2-plan-heading").count(), 1);
-      await page.getByLabel("Quantity for action 2").fill("80");
-      await page.getByLabel("Impact of action 2").getByText("USD 18,200.00", { exact: true }).waitFor();
+      assert.equal(await page.locator("textarea").count(), 0);
       assert.equal(
-        await page.getByLabel("Quantity for action 2").evaluate((el) => document.activeElement === el),
-        true,
+        await page.getByLabel("Mock Winston output scenario").locator('option[value="partial"]').count(),
+        0,
       );
-      await page.screenshot({ path: "../graphify-out/v2-sequence-desktop.png", fullPage: true });
-      await page.getByRole("button", { name: "Refine in conversation" }).click();
-      await page.getByLabel("What would you like to do?").waitFor();
-      await page.waitForFunction(() => document.activeElement?.tagName === "TEXTAREA");
-      await page.getByLabel("What would you like to do?").fill("Can I afford both?");
-      await page.getByRole("button", { name: "Update my workspace" }).click();
-      await page.getByRole("heading", { name: "Room for both?" }).waitFor();
-      assert.equal(await page.getByLabel("Quantity for action 2").inputValue(), "80");
-      await page.locator(".v2-support").getByText("USD 11,800.00", { exact: true }).waitFor();
-      await page.getByLabel("Simulate shares for action 2").fill("100");
-      await page.locator(".v2-support").getByText("USD 7,250.00", { exact: true }).waitFor();
-      await page.locator(".v2-support").getByText("SGD 1,960.00", { exact: true }).waitFor();
-      await page.screenshot({ path: "../graphify-out/v2-decision-desktop.png", fullPage: true });
-      for (const width of [320, 390, 768, 1440]) {
-        await page.setViewportSize({ width, height: 1000 });
-        assert.equal(
-          await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
-          true,
-          `V2 overflow at ${width}px`,
-        );
-        if (width === 390)
-          await page.screenshot({ path: "../graphify-out/v2-decision-mobile.png", fullPage: true });
-      }
-      await page.goto(`${baseURL}/v2/`);
-      await page
-        .getByLabel("What would you like to do?")
-        .fill("Can I afford to buy 100 Apple shares after paying my credit card bill?");
-      await page.getByRole("button", { name: "Shape my workspace" }).click();
-      await page.getByRole("heading", { name: "Room for both?" }).waitFor();
-      await page.goto(`${baseURL}/v2/`);
-      await page.setViewportSize({ width: 390, height: 1000 });
-      await page.getByLabel("What would you like to do?").fill("Transfer money to John");
-      await page.getByRole("button", { name: "Shape my workspace" }).click();
-      await page.getByRole("heading", { name: "Which John?" }).waitFor();
-      assert.equal(await page.getByLabel("Missing transfer amount").inputValue(), "");
-      await page.screenshot({ path: "../graphify-out/v2-partial-mobile.png", fullPage: true });
-      await page.getByLabel("Choose recipient").selectOption("pay_4521");
-      await page.getByLabel("Missing transfer amount").fill("500.00");
-      await page.getByLabel("Amount for action 1", { exact: true }).waitFor();
-      await page.screenshot({ path: "../graphify-out/v2-transfer-mobile.png", fullPage: true });
-      assert.deepEqual(errors, []);
+      assert.equal(calls, 0);
+      await choose("transfer");
+      await page.getByLabel("Amount for action 1", { exact: true }).fill("321.00");
+      assert.equal(calls, 1);
+      weak = true;
+      await choose("transfer");
+      assert.equal(await page.getByLabel("Amount for action 1", { exact: true }).inputValue(), "321.00");
+      assert.equal(await page.locator(".v2-layout-focus").count(), 1);
+      assert.ok(requests.at(-1).current_ui);
+      weak = false;
+      await choose("transfer-affordability");
+      await page.locator(".v2-support").getByText("SGD 2,879.00", { exact: true }).waitFor();
+      assert.ok(
+        (await page.locator(".v2-support").boundingBox()).y <
+          (await page.locator(".v2-task-grid").boundingBox()).y,
+      );
+      await page.getByLabel("Simulate amount for action 1").fill("30000");
+      assert.equal(await page.getByLabel("Amount for action 1", { exact: true }).inputValue(), "300.00");
+      await choose("transfer-recipient");
+      await page.getByRole("heading", { name: "Check who you are paying." }).waitFor();
+      assert.equal(await page.getByLabel("Amount for action 1", { exact: true }).inputValue(), "300.00");
+      await page.getByLabel("Amount for action 1", { exact: true }).fill("222.00");
+      await choose("transfer-amended");
+      assert.equal(await page.getByLabel("Amount for action 1", { exact: true }).inputValue(), "300.00");
+      failure = true;
+      await page.getByRole("button", { name: "Compose with live JEV" }).click();
+      await page.getByRole("alert").filter({ hasText: "local fallback" }).waitFor();
+      assert.equal(await page.getByLabel("Amount for action 1", { exact: true }).inputValue(), "300.00");
+      failure = false;
+      invalid = true;
+      await page.getByRole("button", { name: "Compose with live JEV" }).click();
+      await page.getByRole("alert").filter({ hasText: "Invalid bundle" }).waitFor();
+      invalid = false;
+      delayed = true;
+      await page.getByRole("button", { name: "Compose with live JEV" }).click();
+      await page.getByRole("button", { name: "Cancel composition" }).click();
+      if (release) release();
+      assert.equal(await page.getByText(/Mock Winston output and banking data - Live JEV/).count(), 0);
+      delayed = false;
+      await page.getByRole("button", { name: "Review my task" }).click();
+      assert.equal(await page.getByRole("button", { name: "Confirm demo task" }).isDisabled(), true);
+      await page.getByRole("checkbox", { name: "I have reviewed action 1" }).check();
+      await page.getByRole("button", { name: "Confirm demo task" }).click();
+      await page.getByText("Demo review completed. No transaction was executed.").waitFor();
+      assert.deepEqual(forbidden, []);
+      assert.equal(JSON.stringify(requests).includes("321.00"), false);
+      assert.equal(JSON.stringify(requests).includes("John Doe"), false);
     } finally {
+      if (release) release();
       await browser.close();
     }
   },
 );
 
 test(
-  "V2 transfer morph, ambiguity, refinement, affordability and explicit review",
-  { timeout: 120000 },
+  "complete multi-task bundles link costs and projections at desktop and mobile widths",
+  { timeout: 60000 },
   async () => {
     const browser = await chromium.launch({ executablePath, headless: true });
-    const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
-    const errors = [];
-    const transactionRequests = [];
-    page.on("pageerror", (e) => errors.push(e.message));
-    page.on("request", (r) => {
-      if (/\/(understand|validate|sign|execute)/.test(r.url())) transactionRequests.push(r.url());
-    });
+    const page = await browser.newPage({ viewport: { width: 1440, height: 1100 }, reducedMotion: "reduce" });
+    await page.route("**/api/presentation-demo", (route) =>
+      route.fulfill({ status: 502, json: { error: { message: "Offline demo" } } }),
+    );
     try {
       await page.goto(`${baseURL}/v2/`);
-      await page.getByLabel("What would you like to do?").fill("Transfer $500 to John");
-      await page.getByRole("button", { name: "Shape my workspace" }).click();
-      await page.getByRole("heading", { name: "Which John?" }).waitFor();
-      await page.getByLabel("Choose recipient").selectOption("pay_8892");
-      await page.getByLabel("Amount for action 1", { exact: true }).waitFor();
-      assert.equal(await page.getByLabel("What would you like to do?").count(), 0);
-      assert.equal(await page.getByLabel("Amount for action 1", { exact: true }).inputValue(), "500.00");
-      await page.getByLabel("Recipient for action 1").selectOption("pay_4521");
-      await page.screenshot({ path: "../graphify-out/v2-transfer-desktop.png", fullPage: true });
-      await page.getByRole("button", { name: "Refine in conversation" }).click();
-      await page.getByLabel("What would you like to do?").fill("Can I afford that?");
-      await page.getByRole("button", { name: "Update my workspace" }).click();
-      await page.getByRole("heading", { name: "Room for both?" }).waitFor();
-      await page.locator(".v2-support").getByText("SGD 2,700.00", { exact: true }).waitFor();
-      assert.equal(await page.getByLabel("Recipient for action 1").inputValue(), "pay_4521");
-      await page.getByRole("button", { name: "Refine in conversation" }).click();
-      await page
-        .getByLabel("What would you like to do?")
-        .fill("Actually, make it $300 and use my savings account");
-      await page.getByRole("button", { name: "Update my workspace" }).click();
-      await page.locator(".v2-support").getByText("SGD 2,900.00", { exact: true }).waitFor();
-      assert.equal(await page.getByLabel("Amount for action 1", { exact: true }).inputValue(), "300.00");
-      await page.getByLabel("Amount for action 1", { exact: true }).fill("0.00");
-      assert.equal(await page.getByRole("button", { name: "Review my task" }).isDisabled(), true);
-      await page.getByLabel("Amount for action 1", { exact: true }).fill("300.00");
-      await page.getByRole("button", { name: "Review my task" }).click();
-      await page.getByRole("heading", { name: "One final look." }).waitFor();
-      assert.equal(await page.getByRole("button", { name: "Confirm demo task" }).isDisabled(), true);
-      await page.getByRole("checkbox", { name: "I have reviewed action 1" }).check();
-      await page.getByRole("button", { name: "Back to editing" }).click();
-      await page.getByRole("button", { name: "Review my task" }).click();
-      assert.equal(await page.getByRole("checkbox").isChecked(), false);
-      await page.getByRole("checkbox").check();
-      await page.getByRole("button", { name: "Confirm demo task" }).click();
-      await page.getByRole("heading", { name: "Your demo is reviewed." }).waitFor();
-      assert.deepEqual(transactionRequests, []);
-      assert.deepEqual(errors, []);
+      await page.getByLabel("Mock Winston output scenario").selectOption("multi");
+      await page.getByRole("button", { name: "Compose with live JEV" }).click();
+      await page.getByRole("alert").filter({ hasText: "local fallback" }).waitFor();
+      assert.equal(await page.locator(".v2-plan-task").count(), 2);
+      assert.equal(await page.locator(".task-card").count(), 0);
+      await page.getByLabel("Quantity for action 2").fill("80");
+      await page.getByLabel("Impact of action 2").getByText("USD 18,200.00", { exact: true }).waitFor();
+      await page.getByLabel("Mock Winston output scenario").selectOption("decision");
+      await page.getByRole("button", { name: "Compose with live JEV" }).click();
+      await page.locator(".v2-support").getByText("USD 11,800.00", { exact: true }).waitFor();
+      assert.equal(await page.getByLabel("Quantity for action 2").inputValue(), "80");
+      await page.screenshot({ path: "../graphify-out/v2-bundles-desktop.png", fullPage: true });
+      for (const width of [320, 390, 768, 1440]) {
+        await page.setViewportSize({ width, height: 1000 });
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+        if (width === 390)
+          await page.screenshot({ path: "../graphify-out/v2-bundles-mobile.png", fullPage: true });
+      }
     } finally {
       await browser.close();
     }

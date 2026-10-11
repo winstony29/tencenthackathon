@@ -1574,3 +1574,13 @@ summary {
     order: -1;
   }
 }
+
+.v2-layout-focus[data-focus="affordability"] .v2-support {
+  grid-row: 1;
+}
+.v2-layout-focus[data-focus="affordability"] .v2-task-grid {
+  grid-row: 2;
+}
+.v2-workspace[data-focus="risk"] .v2-task-impact {
+  border-left: 3px solid var(--red);
+}

@@ -103,7 +103,7 @@ web/
 │   ├── app/
 │   │   ├── layout.tsx        document shell
 │   │   ├── page.tsx          adaptive banking workspace
-│   │   ├── v2/page.tsx       separate conversational morphing experiment
+│   │   ├── v2/page.tsx       complete Winston-output presentation experiment
 │   │   └── globals.css       responsive design tokens and styling
 │   ├── components/
 │   │   ├── ui/
@@ -118,9 +118,9 @@ web/
 │   │   ├── context-panel.tsx related balances, holdings and quotes
 │   │   └── command-input.tsx typed input and audio recording
 │   └── lib/
-│       ├── v2-conversation.ts typed conversational state machine and amendments
-│       ├── v2-parser.ts      deterministic demo parsing and banking-record resolution
-│       ├── v2-presentation.ts expanded JEV schema and injectable server-adapter boundary
+│       ├── v2-conversation.ts complete handoff reconciliation and explicit review state
+│       ├── v2-parser.ts      mock banking records only (historical filename)
+│       ├── v2-presentation.ts approved bundles, presentation context and UI stability
 │       ├── composition.ts   typed manifest, eligibility and selection adapter
 │       ├── draft-editor.ts  immutable edits, validation and projections
 │       ├── contracts.ts     runtime schemas matching contracts v0.2

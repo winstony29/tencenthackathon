@@ -27,8 +27,8 @@ export function WinstonPlaceholder({
       <div>
         <p className="eyebrow">WINSTON OUTPUT · PLACEHOLDER</p>
         <p>
-          Choose a resolved task to inspect how JEV presents it. These are mock outputs, not Winston’s live
-          workflow.
+          Winston resolves tasks and ambiguity before UI creation. Choose a complete mock output, including
+          updated objectives for the same transfer. This is not his live workflow.
         </p>
       </div>
       <label>
@@ -84,6 +84,7 @@ export function V2Workspace({
     <div
       className={`v2-workspace v2-layout-${manifest.layout} v2-density-${manifest.density}`}
       data-focus={manifest.focus}
+      data-bundle={manifest.bundle}
     >
       <div className="v2-task-grid">
         <div className="v2-plan-heading">
@@ -208,7 +209,7 @@ export function V2Workspace({
               </p>
               {component === "projection" ? (
                 <>
-                  <h2>Room for both?</h2>
+                  <h2>{edited.actions.length > 1 ? "Room for both?" : "After this task"}</h2>
                   {!valid ? (
                     <p>Correct the highlighted fields to see a projection.</p>
                   ) : (

@@ -1,20 +1,10 @@
-import type { Draft } from "./contracts";
+import { draftSchema, type Draft } from "./contracts";
 import { editedActions, updateEdit, type DraftEdits } from "./draft-editor";
-import {
-  amendment,
-  completeTransfer,
-  parseDemoCommand,
-  refineTransfer,
-  v2Accounts,
-  type PartialTransfer,
-} from "./v2-parser";
-export type Surface =
-  "conversation" | "interpreting" | "partial" | "workspace" | "refinement" | "review" | "result";
+import { v2Accounts } from "./v2-parser";
+export type Surface = "conversation" | "workspace" | "review" | "result";
 export type ConversationState = {
   surface: Surface;
-  resume: Surface;
   draft: Draft | null;
-  partial: PartialTransfer | null;
   edits: DraftEdits;
   mode: "transaction" | "decision";
   revision: number;
@@ -24,9 +14,7 @@ export type ConversationState = {
 };
 export const initialConversation: ConversationState = {
   surface: "conversation",
-  resume: "conversation",
   draft: null,
-  partial: null,
   edits: {},
   mode: "transaction",
   revision: 0,
@@ -35,12 +23,8 @@ export const initialConversation: ConversationState = {
   approved: {},
 };
 export type ConversationEvent =
-  | { type: "load"; draft: Draft | null; partial: PartialTransfer | null; mode: "transaction" | "decision" }
-  | { type: "begin" }
-  | { type: "command"; text: string }
+  | { type: "handoff"; draft: Draft; mode: "transaction" | "decision" }
   | { type: "edit"; index: number; field: string; value: string }
-  | { type: "clarify"; field: "amount" | "recipient" | "source"; value: string }
-  | { type: "chat" }
   | { type: "return" }
   | { type: "review" }
   | { type: "approve"; index: number }
@@ -48,102 +32,49 @@ export type ConversationEvent =
   | { type: "reset" };
 export function conversationReducer(state: ConversationState, event: ConversationEvent): ConversationState {
   switch (event.type) {
-    case "load":
+    case "handoff": {
+      if (
+        !draftSchema.safeParse(event.draft).success ||
+        Object.keys(editedActions(event.draft, {}, v2Accounts).errors).length
+      )
+        return {
+          ...state,
+          error: "Await a complete valid Winston output. Missing details are resolved upstream.",
+        };
+      // Preserve only edits to unchanged fields of the same task. Upstream changes win.
+      const edits: DraftEdits = {};
+      if (state.draft?.draft_id === event.draft.draft_id) {
+        event.draft.actions.forEach((action, index) => {
+          const old = state.draft!.actions[index];
+          if (!old || old.type !== action.type) return;
+          const identity =
+            action.type === "transfer"
+              ? "to_payee_id"
+              : action.type === "stock_order"
+                ? "ticker"
+                : "biller_id";
+          const before = old as unknown as Record<string, unknown>;
+          const after = action as unknown as Record<string, unknown>;
+          if (before[identity] !== after[identity]) return;
+          for (const [field, value] of Object.entries(state.edits[index] ?? {})) {
+            if (before[field] === after[field]) edits[index] = { ...edits[index], [field]: value };
+          }
+        });
+      }
       return {
         ...initialConversation,
         draft: event.draft,
-        partial: event.partial,
         mode: event.mode,
+        edits,
+        surface: "workspace",
+        transcript: event.draft.transcript,
         revision: state.revision + 1,
-        transcript: event.draft?.transcript ?? "Mock Winston output: transfer details pending",
-        surface: event.partial ? "partial" : event.draft ? "workspace" : "conversation",
       };
-    case "begin":
-      return {
-        ...state,
-        resume: state.surface === "refinement" ? state.resume : state.surface,
-        surface: "interpreting",
-        error: "",
-      };
+    }
     case "reset":
       return { ...initialConversation, revision: state.revision + 1 };
-    case "chat":
-      return {
-        ...state,
-        resume: state.surface,
-        surface: state.draft || state.partial ? "refinement" : "conversation",
-        error: "",
-      };
     case "return":
-      return {
-        ...state,
-        surface: state.draft ? "workspace" : state.partial ? "partial" : "conversation",
-        error: "",
-      };
-    case "command": {
-      const revision = state.revision + 1;
-      if (state.draft) {
-        const change = amendment(event.text, state.draft);
-        if (change.error) return { ...state, surface: "refinement", error: change.error };
-        if (change.mode) return { ...state, surface: "workspace", mode: change.mode, error: "" };
-        let edits = state.edits;
-        for (const [field, value] of Object.entries(change.fields ?? {}))
-          edits = updateEdit(edits, change.index!, field, value);
-        return {
-          ...state,
-          edits,
-          approved: {},
-          revision,
-          surface: "workspace",
-          transcript: `${state.transcript}\n${event.text}`,
-          error: "",
-        };
-      }
-      if (state.partial) {
-        const partial = refineTransfer(state.partial, event.text);
-        if (partial) {
-          const draft = completeTransfer(partial, `${state.transcript}\n${event.text}`, revision);
-          return {
-            ...state,
-            partial: draft ? null : partial,
-            draft,
-            surface: draft ? "workspace" : "partial",
-            revision,
-            error: "",
-          };
-        }
-        return {
-          ...state,
-          surface: "partial",
-          error: "Use the recipient choices and amount field to complete this transfer.",
-        };
-      }
-      const parsed = parseDemoCommand(event.text, revision);
-      return {
-        ...state,
-        draft: parsed.draft ?? null,
-        partial: parsed.partial ?? null,
-        mode: parsed.mode,
-        revision,
-        transcript: event.text,
-        surface: parsed.error ? "conversation" : parsed.partial ? "partial" : "workspace",
-        error: parsed.error ?? "",
-      };
-    }
-    case "clarify": {
-      if (!state.partial) return state;
-      const partial = { ...state.partial, [event.field]: event.value };
-      const draft = completeTransfer(partial, state.transcript, state.revision + 1);
-      return {
-        ...state,
-        partial: draft ? null : partial,
-        draft,
-        surface: draft ? "workspace" : "partial",
-        revision: state.revision + 1,
-        approved: {},
-        error: "",
-      };
-    }
+      return { ...state, surface: state.draft ? "workspace" : "conversation", approved: {}, error: "" };
     case "edit": {
       if (!state.draft || state.surface !== "workspace") return state;
       return {

@@ -4,17 +4,21 @@ import { draftSchema, understandSchema } from "../src/lib/contracts";
 import { exampleDraft } from "../src/lib/examples";
 import { estimatedTotal } from "../src/lib/money";
 import { conversationReducer, initialConversation } from "../src/lib/v2-conversation";
-import { parseDemoCommand, v2Accounts } from "../src/lib/v2-parser";
-import { decidePresentation, present } from "../src/lib/v2-presentation";
+import {
+  decidePresentation,
+  present,
+  bundleSelection,
+  composeBundles,
+  handoffContext,
+} from "../src/lib/v2-presentation";
 import { livePresentationSchema } from "../src/lib/v2-presentation";
 import { winstonFixtures } from "../src/lib/examples";
 
 test("mock Winston handoff loads structured outputs without parsing and live reply is checked", () => {
   for (const fixture of winstonFixtures) {
     const state = conversationReducer(initialConversation, {
-      type: "load",
+      type: "handoff",
       draft: fixture.draft,
-      partial: fixture.partial ? { ...fixture.partial, candidates: [...fixture.partial.candidates] } : null,
       mode: fixture.mode,
     });
     const selection = present(state).trace.selection;
@@ -44,63 +48,11 @@ test("mock Winston handoff loads structured outputs without parsing and live rep
   }
 });
 
-test("V2 clarifies transfer identity, preserves edits through conversation and only confirms after review", () => {
-  let state = conversationReducer(initialConversation, { type: "command", text: "Send money to John" });
-  assert.equal(state.surface, "partial");
-  assert.equal(state.partial?.amount, null);
-  assert.equal(state.partial?.recipient, null);
-  state = conversationReducer(state, { type: "command", text: "John Smith, $500" });
-  assert.equal(state.surface, "workspace");
-  assert.equal(state.draft?.actions[0].type, "transfer");
-  state = conversationReducer(state, { type: "edit", index: 0, field: "to_payee_id", value: "pay_4521" });
-  state = conversationReducer(state, { type: "chat" });
-  state = conversationReducer(state, { type: "command", text: "Can I afford that?" });
-  assert.equal(present(state).manifest.layout, "canvas");
-  state = conversationReducer(state, {
-    type: "command",
-    text: "Actually, make it $300 and use my savings account",
-  });
-  assert.equal(state.edits[0].amount, "300.00");
-  assert.equal(state.edits[0].to_payee_id, "pay_4521");
-  assert.equal(state.edits[0].from_account_id, "acc_1234");
-  assert.equal(state.draft?.actions[0].type === "transfer" && state.draft.actions[0].amount, "500.00");
-  assert.equal(conversationReducer(state, { type: "finish" }).surface, "workspace");
-  state = conversationReducer(state, { type: "review" });
-  assert.equal(conversationReducer(state, { type: "finish" }).surface, "review");
-  state = conversationReducer(state, { type: "approve", index: 0 });
-  assert.equal(conversationReducer(state, { type: "finish" }).surface, "result");
-  state = conversationReducer(state, { type: "return" });
-  state = conversationReducer(state, { type: "edit", index: 0, field: "amount", value: "0.00" });
-  assert.equal(conversationReducer(state, { type: "review" }).surface, "workspace");
-});
-test("V2 uses general command parsing and explicit demo records rather than prompt matching", () => {
-  assert.equal(
-    parseDemoCommand("Please send SGD 812.29 to John Smith", 1).draft?.actions[0].type,
-    "transfer",
-  );
-  assert.equal(parseDemoCommand("Transfer USD 500 to John", 1).draft, undefined);
-  assert.equal(parseDemoCommand("Send $500 to Jane", 1).draft, undefined);
-  assert.equal(
-    parseDemoCommand("Pay my credit card bill and buy 37 shares of Apple", 1).draft?.actions.length,
-    2,
-  );
-  assert.equal(parseDemoCommand("Buy 9007199254740993 Apple shares", 1).draft, undefined);
-  assert.equal(parseDemoCommand("Buy Apple shares", 1).draft, undefined);
-  for (const text of [
-    "Buy -100 Apple shares",
-    "Buy 1.5 Apple shares",
-    "Pay my bill $-500",
-    "Pay my bill $500.001",
-    "Pay my bill $5,00",
-    "Transfer $500 or $300 to John",
-  ])
-    assert.equal(parseDemoCommand(text, 1).draft, undefined);
-  assert.equal(v2Accounts.payees.length, 2);
-});
 test("V2 presentation adapter rejects invented values, missing forms, unavailable timelines and invalid choices", async () => {
   const state = conversationReducer(initialConversation, {
-    type: "command",
-    text: "Transfer $500 to John Doe",
+    type: "handoff",
+    draft: exampleDraft(0),
+    mode: "transaction",
   });
   const base = present(state);
   assert.equal(base.manifest.source, "fallback");
@@ -129,21 +81,6 @@ test("V2 presentation adapter rejects invented values, missing forms, unavailabl
     /unavailable/,
   );
 });
-test("V2 ambiguous multi-task amendments preserve all actions and field edits", () => {
-  let state = conversationReducer(initialConversation, {
-    type: "command",
-    text: "Pay my credit card bill and buy 100 shares of Apple",
-  });
-  state = conversationReducer(state, { type: "edit", index: 1, field: "quantity", value: "42" });
-  const saved = state.edits;
-  state = conversationReducer(state, { type: "command", text: "Actually make it $300" });
-  assert.equal(state.surface, "refinement");
-  assert.equal(state.edits, saved);
-  state = conversationReducer(state, { type: "command", text: "Make the bill amount $300" });
-  assert.equal(state.edits[0].amount, "300.00");
-  assert.equal(state.edits[1].quantity, "42");
-});
-
 test("all example action types and multi-action drafts meet the runtime contract", () => {
   for (let i = 0; i < 4; i++)
     assert.equal(draftSchema.parse(exampleDraft(i)).actions.length, i === 3 ? 2 : 1);
@@ -264,4 +201,95 @@ test("projections use exact cents and keep currencies and unavailable quotes sep
   );
   const actions = editedActions(draft, updateEdit({}, 1, "quantity", "200"), exampleAccounts).actions;
   assert.equal(projectedBalances(actions, exampleAccounts, { AAPL: exampleQuote })[1].projected, "-15500.00");
+});
+
+test("complete handoff preserves compatible edits, upstream changes win and approvals reset", () => {
+  let state = conversationReducer(initialConversation, {
+    type: "handoff",
+    draft: exampleDraft(0),
+    mode: "transaction",
+  });
+  state = conversationReducer(state, { type: "edit", index: 0, field: "amount", value: "321.00" });
+  state = conversationReducer(state, { type: "edit", index: 0, field: "from_account_id", value: "acc_1234" });
+  state = conversationReducer(state, { type: "handoff", draft: exampleDraft(0), mode: "decision" });
+  assert.equal(state.edits[0].amount, "321.00");
+  state = conversationReducer(state, {
+    type: "handoff",
+    draft: winstonFixtures.find((f) => f.id === "transfer-amended")!.draft,
+    mode: "transaction",
+  });
+  assert.equal(state.edits[0].amount, undefined);
+  assert.equal(state.edits[0].from_account_id, "acc_1234");
+  state = conversationReducer(state, { type: "review" });
+  state = conversationReducer(state, { type: "approve", index: 0 });
+  state = conversationReducer(state, { type: "handoff", draft: state.draft!, mode: "transaction" });
+  assert.deepEqual(state.approved, {});
+  const bad = { ...exampleDraft(0), actions: [{ ...exampleDraft(0).actions[0], amount: null }] };
+  assert.equal(
+    conversationReducer(initialConversation, { type: "handoff", draft: bad as never, mode: "transaction" })
+      .draft,
+    null,
+  );
+  assert.throws(() => handoffContext(initialConversation, "prepare", "listed"), /resolve/);
+  assert.throws(() => composeBundles(initialConversation, "prepare"), /complete/);
+});
+
+test("bundles enforce dependent components and retain weak layouts only for unchanged objectives", () => {
+  const state = conversationReducer(initialConversation, {
+    type: "handoff",
+    draft: exampleDraft(0),
+    mode: "transaction",
+  });
+  const previous = {
+    objective: "prepare" as const,
+    selection: bundleSelection(state, "transfer_editing", "focus", "standard"),
+  };
+  const selection = bundleSelection(state, "transfer_editing", "split", "standard");
+  const reply = livePresentationSchema.parse({
+    source: "jev",
+    selection,
+    systemone: {
+      model: "jev-1.13.0",
+      answers: {
+        bundle: {
+          type: "choice",
+          choice: "transfer_editing",
+          confidence: 1,
+          probabilities: { transfer_editing: 1 },
+        },
+        layout: {
+          type: "choice",
+          choice: "split",
+          confidence: 0.02,
+          probabilities: { split: 0.51, focus: 0.49 },
+        },
+      },
+    },
+  });
+  const stable = composeBundles(state, "prepare", reply, previous);
+  assert.equal(stable.manifest.layout, "focus");
+  assert.match(stable.bundleTrace.stabilityReason!, /weak/);
+  const decision = { ...state, mode: "decision" as const };
+  const simulation = bundleSelection(decision, "affordability_simulation", "canvas", "standard");
+  const changed = { ...reply, selection: simulation };
+  assert.equal(composeBundles(decision, "assess_affordability", changed, previous).manifest.layout, "canvas");
+  const invalid = {
+    ...changed,
+    selection: { ...simulation, supporting: ["accounts"] as typeof simulation.supporting },
+  };
+  assert.equal(composeBundles(decision, "assess_affordability", invalid).manifest.source, "fallback");
+  assert.ok(
+    composeBundles(decision, "assess_affordability", invalid).manifest.supporting.includes("projection"),
+  );
+  assert.equal(
+    JSON.stringify(handoffContext(decision, "assess_affordability", "listed", simulation)).includes("500.00"),
+    false,
+  );
+  assert.equal(
+    composeBundles(state, "prepare", {
+      ...reply,
+      selection: { ...selection, bundle: "affordability_simulation" },
+    }).manifest.source,
+    "fallback",
+  );
 });

@@ -1,41 +1,42 @@
 "use client";
 import Link from "next/link";
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { ArrowLeft, ArrowUpRight, Check, MessageSquare } from "lucide-react";
+import { motion, useReducedMotion } from "motion/react";
+import { ArrowUpRight, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { CommandInput } from "@/components/command-input";
 import { V2Workspace, WinstonPlaceholder } from "@/components/v2-workspace";
 import { conversationReducer, initialConversation } from "@/lib/v2-conversation";
-import { livePresentationSchema, present } from "@/lib/v2-presentation";
+import {
+  composeBundles,
+  handoffContext,
+  livePresentationSchema,
+  type Objective,
+  type PresentationChoice,
+} from "@/lib/v2-presentation";
 import { winstonFixtures } from "@/lib/examples";
 import type { z } from "zod";
 import { v2Accounts } from "@/lib/v2-parser";
 import { editedActions } from "@/lib/draft-editor";
-import { request } from "@/lib/api";
-import { transcribeSchema } from "@/lib/contracts";
+import { post } from "@/lib/api";
 
 export default function ConversationalBanking() {
   const [state, dispatch] = useReducer(conversationReducer, initialConversation);
-  const [text, setText] = useState("");
-  const [audioError, setAudioError] = useState("");
   const [fixture, setFixture] = useState("transfer");
+  const [objective, setObjective] = useState<Objective>("prepare");
   const [composing, setComposing] = useState(false);
   const [live, setLive] = useState<z.infer<typeof livePresentationSchema> | null>(null);
+  const [previous, setPrevious] = useState<{ objective: Objective; selection: PresentationChoice }>();
   const [jevError, setJevError] = useState("");
   const controller = useRef<AbortController | null>(null);
   const generation = useRef(0);
-  const activeFixture = useRef<string | null>(null);
-  const surface = useRef<HTMLDivElement>(null);
   const reduced = useReducedMotion();
-  const presentation = useMemo(() => {
-    const result = present(state, live?.selection);
-    if (jevError) result.trace.fallbackReason = jevError;
-    return result;
-  }, [state, live, jevError]);
-  const chat = state.surface === "conversation" || state.surface === "refinement";
+  const surface = useRef<HTMLDivElement>(null);
+  const presentation = useMemo(
+    () => (state.draft ? composeBundles(state, objective, live ?? undefined, previous) : null),
+    [state, objective, live, previous],
+  );
   const valid =
-    state.draft && !Object.keys(editedActions(state.draft, state.edits, v2Accounts).errors).length;
+    !!state.draft && !Object.keys(editedActions(state.draft, state.edits, v2Accounts).errors).length;
   useEffect(
     () => () => {
       generation.current++;
@@ -44,134 +45,75 @@ export default function ConversationalBanking() {
     [],
   );
   useEffect(() => {
-    if (chat) surface.current?.querySelector<HTMLTextAreaElement>("textarea")?.focus();
-    else surface.current?.querySelector<HTMLElement>("[data-surface-heading]")?.focus();
-  }, [state.surface, chat]);
-  useEffect(() => {
-    console.debug("DCTA V2 presentation", { ...presentation.trace, manifest: presentation.manifest });
-  }, [presentation]);
+    surface.current?.querySelector<HTMLElement>("[data-surface-heading]")?.focus();
+  }, [state.surface]);
   function cancel() {
     generation.current++;
     controller.current?.abort();
-    setAudioError("");
     setComposing(false);
-    dispatch({ type: "return" });
-  }
-  async function submit(command = text) {
-    if (!command.trim()) return;
-    const current = ++generation.current;
-    controller.current?.abort();
-    setComposing(false);
-    setLive(null);
-    setJevError("");
-    dispatch({ type: "begin" });
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    if (current !== generation.current) return;
-    dispatch({ type: "command", text: command.trim() });
-    setText("");
-  }
-  async function audio(blob: Blob) {
-    const current = ++generation.current;
-    setLive(null);
-    setJevError("");
-    setComposing(false);
-    controller.current?.abort();
-    controller.current = new AbortController();
-    const data = new FormData();
-    data.append("audio", blob, "command.webm");
-    dispatch({ type: "begin" });
-    setAudioError("");
-    try {
-      const response = await request("/transcribe", transcribeSchema, {
-        method: "POST",
-        body: data,
-        signal: controller.current.signal,
-      });
-      if (current !== generation.current) return;
-      dispatch({ type: "command", text: response.transcript });
-      setText("");
-    } catch (error) {
-      if (current !== generation.current) return;
-      dispatch({ type: "return" });
-      setAudioError(error instanceof Error ? error.message : "Transcription unavailable. Type your request.");
-    }
   }
   async function composeLive() {
     const chosen = winstonFixtures.find((f) => f.id === fixture)!;
-    const event = {
-      type: "load" as const,
-      draft: chosen.draft,
-      partial: chosen.partial ? { ...chosen.partial, candidates: [...chosen.partial.candidates] } : null,
-      mode: chosen.mode,
-    };
-    const reuse =
-      activeFixture.current === fixture &&
-      state.draft?.draft_id === chosen.draft?.draft_id &&
-      state.mode === chosen.mode &&
-      !!state.partial === !!chosen.partial &&
-      !!state.draft === !!chosen.draft;
-    const next = reuse ? state : conversationReducer(state, event);
-    const current = ++generation.current;
-    controller.current?.abort();
+    const event = { type: "handoff" as const, draft: chosen.draft, mode: chosen.mode };
+    const next = conversationReducer(state, event);
+    const prior =
+      state.draft?.draft_id === chosen.draft.draft_id && presentation
+        ? { objective, selection: presentation.trace.selection }
+        : undefined;
+    cancel();
+    const current = generation.current;
     controller.current = new AbortController();
-    if (!reuse) dispatch(event);
-    activeFixture.current = fixture;
-    setLive(null);
+    dispatch(event);
+    setObjective(chosen.objective);
+    setPrevious(prior);
     setJevError("");
+    if (!prior || prior.objective !== chosen.objective) setLive(null);
     setComposing(true);
     try {
-      const response = await request(
-        `/presentation-demo?fixture=${encodeURIComponent(fixture)}`,
+      const context = handoffContext(next, chosen.objective, chosen.recipientStatus, prior?.selection);
+      const response = await post(
+        "/presentation-demo",
         livePresentationSchema,
-        { method: "POST", signal: controller.current.signal },
+        context,
+        controller.current.signal,
       );
       if (current !== generation.current) return;
-      const composed = present(next, response.selection);
+      const composed = composeBundles(next, chosen.objective, response, prior);
       if (composed.manifest.source !== "jev")
-        throw new Error(composed.trace.fallbackReason ?? "Ineligible JEV selection.");
+        throw new Error(composed.trace.fallbackReason ?? "Invalid presentation bundle.");
       setLive(response);
     } catch (error) {
       if (current !== generation.current) return;
+      setLive(null);
       setJevError(error instanceof Error ? error.message : "JEV unavailable; local fallback used.");
     } finally {
       if (current === generation.current) setComposing(false);
     }
   }
   const title =
-    state.surface === "partial"
-      ? !state.partial?.recipient
-        ? "Which John?"
-        : "How much would you like to send?"
-      : state.surface === "review"
-        ? "One final look."
-        : state.surface === "result"
-          ? "Your demo is reviewed."
-          : state.mode === "decision"
-            ? "Let’s look at the bigger picture."
-            : state.draft?.actions.length === 1
-              ? state.draft.actions[0].type === "transfer"
-                ? "Your transfer, your way."
-                : state.draft.actions[0].type === "bill_payment"
-                  ? "Your bill, without the detour."
-                  : "Your next investment move."
-              : "Two moves. One workspace.";
+    state.surface === "review"
+      ? "One final look."
+      : state.surface === "result"
+        ? "Your demo is reviewed."
+        : objective === "assess_affordability"
+          ? "See the impact of your plan."
+          : objective === "check_recipient"
+            ? "Check who you are paying."
+            : "Your plan, ready to shape.";
   return (
     <div className="v2-shell">
       <nav className="v2-topline" aria-label="Experiment navigation">
-        <span>
-          <span className="v2-status-dot" />
-          DCTA LAB · V2
-        </span>
+        <span>DCTA LAB - V2</span>
         <Link href="/">
           Original workspace <ArrowUpRight size={14} />
         </Link>
       </nav>
       <div className="v2-demo-label">
-        Mock Winston output and banking data ·{" "}
+        Mock Winston output and banking data -{" "}
         {composing
-          ? "Calling live JEV…"
-          : presentation.manifest.source === "jev"
-            ? `Live JEV · ${live?.systemone.model}`
+          ? "Calling live JEV..."
+          : presentation?.manifest.source === "jev"
+            ? `Live JEV - ${live?.systemone.model}`
             : "Local composition fallback"}
       </div>
       <WinstonPlaceholder
@@ -181,272 +123,124 @@ export default function ConversationalBanking() {
         busy={composing}
       />
       {composing && (
-        <p className="v2-jev-status" role="status">
-          JEV is selecting the presentation. Task values remain unchanged.
-        </p>
+        <div className="v2-jev-status" role="status">
+          JEV is choosing presentation only.{" "}
+          <Button variant="ghost" onClick={cancel}>
+            Cancel composition
+          </Button>
+        </div>
       )}
       {jevError && (
         <p className="error-text" role="alert">
           {jevError} The workspace is using its local fallback.
         </p>
       )}
-      <AnimatePresence initial={false} mode="wait">
-        <motion.div
-          key={state.surface}
-          ref={surface}
-          className={`v2-surface ${chat ? "v2-conversation" : ""}`}
-          initial={{ opacity: 0, y: reduced ? 0 : 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: reduced ? 0 : -8 }}
-          transition={{ duration: reduced ? 0 : 0.2, ease: "easeOut" }}
-          onAnimationComplete={() => {
-            if (chat) surface.current?.querySelector<HTMLTextAreaElement>("textarea")?.focus();
-            else surface.current?.querySelector<HTMLElement>("[data-surface-heading]")?.focus();
-          }}
-        >
-          {chat ? (
-            <>
-              {state.surface === "refinement" && (
-                <Button variant="ghost" onClick={cancel}>
-                  <ArrowLeft size={16} /> Back to workspace
-                </Button>
-              )}
-              <p className="eyebrow">
-                {state.surface === "refinement"
-                  ? "KEEP THE TASK. CHANGE THE DETAILS."
-                  : "A LITTLE LESS BANKING. A LITTLE MORE LIVING."}
-              </p>
-              <h1>
-                {state.surface === "refinement" ? (
-                  <>
-                    What would you
-                    <br />
-                    <span>like to change?</span>
-                  </>
-                ) : (
-                  <>
-                    Your words.
-                    <br />
-                    <span>Your next move.</span>
-                  </>
-                )}
-              </h1>
-              <p className="v2-lead">
-                {state.surface === "refinement"
-                  ? "Ask about affordability, change an amount, or name a recipient. Your other edits stay with you."
-                  : "Tell us what you want to do. We’ll shape a workspace around it."}
-              </p>
-              <CommandInput
-                text={text}
-                onChange={setText}
-                onSubmit={() => void submit()}
-                onAudio={(blob) => void audio(blob)}
-                disabled={false}
-                loading={false}
-                placeholder={
-                  state.surface === "refinement" ? "Actually, make it $300…" : "Transfer $500 to John…"
-                }
-                submitLabel={state.surface === "refinement" ? "Update my workspace" : "Shape my workspace"}
+      <motion.div
+        ref={surface}
+        className="v2-surface"
+        layout={reduced ? false : "position"}
+        transition={{ duration: reduced ? 0 : 0.24, ease: "easeInOut" }}
+      >
+        {!state.draft ? (
+          <section className="v2-context">
+            <p className="eyebrow">AWAITING WINSTON OUTPUT</p>
+            <h1>Start with a resolved task.</h1>
+            <p>
+              Winston handles conversation, task routing and missing details before handing a complete task to
+              this workspace. Choose a mock output above to inspect the JEV presentation.
+            </p>
+          </section>
+        ) : (
+          <>
+            <header className="v2-workspace-heading">
+              <div>
+                <p className="eyebrow">WINSTON OBJECTIVE: {objective.replaceAll("_", " ")}</p>
+                <h1 data-surface-heading tabIndex={-1}>
+                  {title}
+                </h1>
+                <p>Edit the details and review every action before confirming.</p>
+              </div>
+            </header>
+            {state.surface !== "result" && presentation && (
+              <V2Workspace
+                state={state}
+                manifest={presentation.manifest}
+                dispatch={(event) => {
+                  if (event.type === "edit") cancel();
+                  dispatch(event);
+                }}
               />
-              {(state.error || audioError) && (
-                <p role="alert" className="error-text">
-                  {state.error || audioError}
+            )}
+            {state.surface === "workspace" && (
+              <div className="v2-action-bar">
+                <p>
+                  Further conversational instructions are resolved by Winston. The selector simulates his
+                  updated output.
                 </p>
-              )}
-              <div className="v2-prompts" aria-label="Try a request">
-                {(state.draft || state.partial
-                  ? ["Can I afford that?", "Actually, make it $300 from savings"]
-                  : [
-                      "Send money to John",
-                      "Transfer $500 to John",
-                      "Pay my credit card bill and buy 100 Apple shares",
-                    ]
-                ).map((prompt) => (
-                  <button key={prompt} onClick={() => void submit(prompt)}>
-                    {prompt}
-                    <ArrowUpRight size={14} />
-                  </button>
+                <Button disabled={!valid || composing} onClick={() => dispatch({ type: "review" })}>
+                  Review my task
+                </Button>
+              </div>
+            )}
+            {state.surface === "review" && (
+              <section className="v2-review">
+                <h2>Check each action before confirming.</h2>
+                {state.draft.actions.map((_, index) => (
+                  <label key={index}>
+                    <input
+                      type="checkbox"
+                      checked={!!state.approved[index]}
+                      onChange={() => dispatch({ type: "approve", index })}
+                    />{" "}
+                    I have reviewed action {index + 1}
+                  </label>
                 ))}
-              </div>
-              <p className="fine-print">
-                Numbers and listed names are parsed by deterministic demo code. Voice uses the existing
-                transcription stub.
-              </p>
-            </>
-          ) : state.surface === "interpreting" ? (
-            <div className="v2-interpreting" role="status">
-              <span className="v2-status-dot" />
-              <h1 data-surface-heading tabIndex={-1}>
-                Shaping your next move…
-              </h1>
-              <p>Resolving the task and choosing approved UI elements.</p>
-              <Button variant="ghost" onClick={cancel}>
-                Cancel
-              </Button>
-            </div>
-          ) : (
-            <>
-              <div className="v2-workspace-heading">
-                <div>
-                  <p className="eyebrow">
-                    {state.surface === "review"
-                      ? "YOUR APPROVAL COMES HERE"
-                      : state.surface === "result"
-                        ? "DEMO COMPLETE"
-                        : "SHAPED AROUND YOUR INTENT"}
-                  </p>
-                  <h1 data-surface-heading tabIndex={-1}>
-                    {title}
-                  </h1>
-                  <p>
-                    {state.surface === "partial"
-                      ? "We’ll keep what we know while you fill in the missing details."
-                      : state.surface === "result"
-                        ? "Nothing was sent, signed or executed. This result belongs to the frontend demo only."
-                        : "Edit the details. Ask another question. Stay in control."}
-                  </p>
-                </div>
-                {state.surface !== "result" && (
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      cancel();
-                      setText("");
-                      dispatch({ type: "chat" });
-                    }}
-                  >
-                    <MessageSquare size={16} /> Refine in conversation
-                  </Button>
-                )}
-              </div>
-              {state.surface === "partial" && state.partial && (
-                <div className="v2-partial-grid">
-                  <section className="v2-context">
-                    <p className="eyebrow">TRANSFER DETAILS</p>
-                    <h2>A few details, then you’re ready.</h2>
-                    <fieldset className="transaction-fields">
-                      <legend className="sr-only">Complete your transfer</legend>
-                      <label>
-                        Recipient
-                        <select
-                          aria-label="Choose recipient"
-                          value={state.partial.recipient ?? ""}
-                          onChange={(e) =>
-                            dispatch({ type: "clarify", field: "recipient", value: e.target.value })
-                          }
-                        >
-                          <option value="">Choose the right John</option>
-                          {v2Accounts.payees
-                            .filter((p) => state.partial!.candidates.includes(p.payee_id))
-                            .map((p) => (
-                              <option key={p.payee_id} value={p.payee_id}>
-                                {p.label}
-                              </option>
-                            ))}
-                        </select>
-                      </label>
-                      <label>
-                        Amount (SGD)
-                        <input
-                          aria-label="Missing transfer amount"
-                          inputMode="decimal"
-                          placeholder="Enter an amount, e.g. 500.00"
-                          value={state.partial.amount ?? ""}
-                          onChange={(e) =>
-                            dispatch({ type: "clarify", field: "amount", value: e.target.value })
-                          }
-                        />
-                        <small>Use two decimals. No amount is assumed.</small>
-                      </label>
-                    </fieldset>
-                  </section>
-                  <section className="v2-context v2-context-primary">
-                    <p className="eyebrow">WHAT WE KNOW</p>
-                    <h2>Your transfer stays here.</h2>
-                    <p>
-                      From{" "}
-                      {v2Accounts.accounts.find((a) => a.account_id === state.partial?.source)?.label ??
-                        "Account not selected"}
-                    </p>
-                    <p>{state.partial.amount ? `SGD ${state.partial.amount}` : "Amount still needed"}</p>
-                    <p>Two listed Johns. You choose the recipient.</p>
-                  </section>
-                </div>
-              )}
-              {state.draft && state.surface !== "result" && (
-                <V2Workspace state={state} manifest={presentation.manifest} dispatch={dispatch} />
-              )}
-              {state.surface === "workspace" && (
                 <div className="v2-action-bar">
-                  <p>Ready when you are. Review comes before confirmation.</p>
-                  <Button disabled={!valid || composing} onClick={() => dispatch({ type: "review" })}>
-                    Review my task <ArrowUpRight size={16} />
+                  <Button variant="ghost" onClick={() => dispatch({ type: "return" })}>
+                    Back to editing
                   </Button>
-                </div>
-              )}
-              {state.surface === "review" && (
-                <section className="v2-review">
-                  <h2>Check each action before confirming.</h2>
-                  {state.draft?.actions.map((_, index) => (
-                    <label key={index}>
-                      <input
-                        type="checkbox"
-                        checked={!!state.approved[index]}
-                        onChange={() => dispatch({ type: "approve", index })}
-                      />{" "}
-                      I have reviewed action {index + 1}
-                    </label>
-                  ))}
-                  <div className="v2-action-bar">
-                    <Button variant="ghost" onClick={() => dispatch({ type: "return" })}>
-                      Back to editing
-                    </Button>
-                    <Button
-                      disabled={!state.draft?.actions.every((_, i) => state.approved[i])}
-                      onClick={() => dispatch({ type: "finish" })}
-                    >
-                      Confirm demo task
-                    </Button>
-                  </div>
-                  <p className="fine-print">
-                    This confirms the demo review only. A real transaction requires backend validation,
-                    signing and gateway approval.
-                  </p>
-                </section>
-              )}
-              {state.surface === "result" && (
-                <div className="v2-result">
-                  <Check size={30} />
-                  <p>You remained in control, from your first words to your final review.</p>
                   <Button
-                    onClick={() => {
-                      cancel();
-                      setLive(null);
-                      setJevError("");
-                      dispatch({ type: "reset" });
-                    }}
+                    disabled={!state.draft.actions.every((_, i) => state.approved[i])}
+                    onClick={() => dispatch({ type: "finish" })}
                   >
-                    Start a new conversation
+                    Confirm demo task
                   </Button>
                 </div>
-              )}
-              {state.error && (
-                <p role="alert" className="error-text">
-                  {state.error}
+                <p className="fine-print">
+                  Demo review only. Real transactions require backend validation, signing and gateway
+                  approval.
                 </p>
-              )}
-            </>
-          )}
-        </motion.div>
-      </AnimatePresence>
-      <details className="v2-trace">
-        <summary>How this workspace was composed</summary>
-        <p>
-          Presentation choices only. “Execute” describes a review-ready interface and grants no transaction
-          authority.
-        </p>
-        <pre>{JSON.stringify({ ...presentation, systemone: live?.systemone ?? null }, null, 2)}</pre>
-      </details>
+              </section>
+            )}
+            {state.surface === "result" && (
+              <section className="v2-result">
+                <Check size={30} />
+                <p>Demo review completed. No transaction was executed.</p>
+                <Button
+                  onClick={() => {
+                    cancel();
+                    setLive(null);
+                    setPrevious(undefined);
+                    dispatch({ type: "reset" });
+                  }}
+                >
+                  Start a new task
+                </Button>
+              </section>
+            )}
+          </>
+        )}
+      </motion.div>
+      {presentation && (
+        <details className="v2-trace">
+          <summary>How this workspace was composed</summary>
+          <p>
+            Bundle decisions are presentation only. Stability margin 0.15 is an experimental UI policy, not
+            financial confidence.
+          </p>
+          <pre>{JSON.stringify({ ...presentation, systemone: live?.systemone ?? null }, null, 2)}</pre>
+        </details>
+      )}
     </div>
   );
 }
