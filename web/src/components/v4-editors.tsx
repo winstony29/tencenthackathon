@@ -1,5 +1,13 @@
 "use client";
-import { ArrowUpRight, ArrowLeft, Check, UserRound, ReceiptText, TrendingUp } from "lucide-react";
+import {
+  ArrowUpRight,
+  ArrowLeft,
+  ArrowLeftRight,
+  Check,
+  UserRound,
+  ReceiptText,
+  TrendingUp,
+} from "lucide-react";
 import { effective, type State, type Event } from "@/lib/v4-state";
 import { displayMoney, estimatedTotal } from "@/lib/money";
 import { Amount, Select, Heading, Notice } from "./v4-primitives";
@@ -15,6 +23,30 @@ export function TaskEditor({ state, dispatch, action: index = 0 }: ComponentProp
   const result = effective(state),
     a = result.actions[index];
   if (!a) return null;
+  if (a.type === "fx_conversion")
+    return (
+      <>
+        <Heading
+          eyebrow={`TASK ${String(index + 1).padStart(2, "0")}`}
+          title="Convert currency"
+          aside={<ArrowLeftRight size={22} aria-hidden="true" />}
+        />
+        <div className="v4-payee">
+          <span className="v4-avatar">
+            <ArrowLeftRight size={21} />
+          </span>
+          <div>
+            <strong>
+              {displayMoney(a.sell_amount, a.sell_currency)} → {displayMoney(a.buy_amount, a.buy_currency)}
+            </strong>
+            <span>
+              1 {a.sell_currency} = {a.rate} {a.buy_currency} · {a.from_account_label} to {a.to_account_label}
+            </span>
+          </div>
+        </div>
+        <Notice>Worked out from your request. Change the request to change it.</Notice>
+      </>
+    );
   const data = state.handoff.data.accounts,
     edits = state.edits[index] ?? {},
     stock = a.type === "stock_order";
@@ -123,6 +155,43 @@ export function TransactionReview({ state, dispatch }: ComponentProps) {
               ? quote.price
               : null
           : null;
+        if (a.type === "fx_conversion")
+          return (
+            <section className="v4-review-task" key={i}>
+              <h3>
+                <span>{String(i + 1).padStart(2, "0")}</span>
+                Convert {a.sell_currency} to {a.buy_currency}
+              </h3>
+              <dl>
+                <div>
+                  <dt>Sell</dt>
+                  <dd>{displayMoney(a.sell_amount, a.sell_currency)}</dd>
+                </div>
+                <div>
+                  <dt>Rate</dt>
+                  <dd>
+                    1 {a.sell_currency} = {a.rate} {a.buy_currency}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Get</dt>
+                  <dd>{displayMoney(a.buy_amount, a.buy_currency)}</dd>
+                </div>
+                <div>
+                  <dt>Into</dt>
+                  <dd>{a.to_account_label}</dd>
+                </div>
+              </dl>
+              <label className="v4-ack">
+                <input
+                  type="checkbox"
+                  checked={!!state.approved[i]}
+                  onChange={() => dispatch({ type: "approve", index: i })}
+                />
+                I reviewed task {i + 1}
+              </label>
+            </section>
+          );
         return (
           <section className="v4-review-task" key={i}>
             <h3>

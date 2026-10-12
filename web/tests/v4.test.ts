@@ -41,7 +41,8 @@ test("V4 validates complete typed data rather than fixed fixture identities", ()
   h.draft.actions[0].from_account_id = "custom";
   h.data.financial!.accounts[0].account_id = "custom";
   assert.equal(reducer(initialState, { type: "handoff", value: h }).error, "");
-  h.draft.actions[0].currency = "USD";
+  const first = h.draft.actions[0];
+  if (first.type === "transfer") first.currency = "USD";
   assert.match(reducer(initialState, { type: "handoff", value: h }).error, /consistent/);
 });
 test("V4 rejects missing objective content, wrong bindings, duplicate tasks and invalid trees", () => {

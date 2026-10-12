@@ -1,6 +1,7 @@
 import { z } from "zod";
 import catalog from "../../presentation-catalog.json";
 import type { Accounts, Draft, Quote } from "./contracts";
+import { fromCurrency } from "./money";
 
 export const objectiveSchema = z.enum([
   "prepare",
@@ -62,7 +63,8 @@ export function makeContext(
   accounts: Accounts,
   quotes: Record<string, Quote>,
 ): Context {
-  const types = draft.actions.map((a) => a.type);
+  // V3 state refuses drafts with a conversion, so none reaches here.
+  const types = draft.actions.flatMap((a) => (a.type === "fx_conversion" ? [] : [a.type]));
   const quoted = draft.actions
     .filter((a) => a.type === "stock_order")
     .every((a) => quotes[a.ticker]?.ticker === a.ticker && quotes[a.ticker]?.currency === a.currency);
@@ -72,7 +74,7 @@ export function makeContext(
   if (quoted && types.includes("stock_order")) data.push("quote");
   if (accounts.holdings.length) data.push("holdings");
   if (types.length > 1) data.push("multiple");
-  if (draft.actions.some((a) => accounts.accounts.filter((b) => b.currency === a.currency).length > 1))
+  if (draft.actions.some((a) => accounts.accounts.filter((b) => b.currency === fromCurrency(a)).length > 1))
     data.push("alternatives");
   return {
     action_types: types,

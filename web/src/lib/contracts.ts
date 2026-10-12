@@ -32,6 +32,20 @@ export const actionSchema = z.discriminatedUnion("type", [
       limit_price: money.nullable(),
     })
     .refine((a) => (a.order_type === "limit") === (a.limit_price !== null), "Invalid limit price"),
+  // Code adds a conversion before a purchase in another currency; the user never edits it (CONTRACTS §2.1).
+  z.strictObject({
+    type: z.literal("fx_conversion"),
+    from_account_id: z.string(),
+    from_account_label: z.string(),
+    to_account_id: z.string(),
+    to_account_label: z.string(),
+    sell_amount: money,
+    sell_currency: currency,
+    buy_amount: money,
+    buy_currency: currency,
+    rate: z.string().regex(/^\d+\.\d{6}$/),
+    rate_as_of: z.iso.datetime({ offset: true }),
+  }),
 ]);
 export const metaSchema = z.strictObject({
   latency_ms: z.number().int().nonnegative(),
@@ -47,6 +61,13 @@ const evidence = z.strictObject({
   spread: probability,
   probabilities: z.record(z.string(), probability),
 });
+export const objectiveSchema = z.enum([
+  "prepare",
+  "assess_affordability",
+  "simulate",
+  "check_recipient",
+  "review",
+]);
 // Reject unknown draft fields rather than silently dropping part of a transaction.
 export const draftSchema = z.strictObject({
   draft_id: z.string(),
@@ -58,7 +79,14 @@ export const draftSchema = z.strictObject({
   evidence: z.array(evidence),
 });
 export const understandSchema = z.discriminatedUnion("status", [
-  z.strictObject({ status: z.literal("draft"), draft: draftSchema, meta: metaSchema }),
+  z.strictObject({
+    status: z.literal("draft"),
+    draft: draftSchema,
+    objective: objectiveSchema,
+    // Hypothetical values for `simulate`, by action index; never validated, signed or executed.
+    scenario: z.record(z.string(), z.record(z.enum(["amount", "quantity"]), z.string())).nullable(),
+    meta: metaSchema,
+  }),
   z.strictObject({
     status: z.literal("question"),
     question: z.strictObject({
@@ -129,6 +157,7 @@ export const validationSchema = z.discriminatedUnion("status", [
 ]);
 export type Action = z.infer<typeof actionSchema>;
 export type Draft = z.infer<typeof draftSchema>;
+export type Objective = z.infer<typeof objectiveSchema>;
 export type Understand = z.infer<typeof understandSchema>;
 export type Accounts = z.infer<typeof accountsSchema>;
 export type Quote = z.infer<typeof quoteSchema>;

@@ -1,12 +1,12 @@
 "use client";
 
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import { TrendingUp, ReceiptText } from "lucide-react";
+import { ArrowLeftRight, TrendingUp, ReceiptText } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Button } from "@/components/ui/button";
 import type { DraftEdits } from "@/lib/draft-editor";
 import type { Accounts, Action, Quote } from "@/lib/contracts";
-import { displayMoney, estimatedTotal } from "@/lib/money";
+import { displayMoney, estimatedTotal, fromCurrency } from "@/lib/money";
 
 export function ActionCard({
   action,
@@ -36,13 +36,17 @@ export function ActionCard({
       ? "Send money"
       : action.type === "bill_payment"
         ? "Pay your bill"
-        : `${action.side === "buy" ? "Buy" : "Sell"} shares`;
+        : action.type === "fx_conversion"
+          ? "Convert currency"
+          : `${action.side === "buy" ? "Buy" : "Sell"} shares`;
   const recipient =
     action.type === "transfer"
       ? action.to_payee_label
       : action.type === "bill_payment"
         ? action.biller_label
-        : action.company_name;
+        : action.type === "fx_conversion"
+          ? action.to_account_label
+          : action.company_name;
   const usableQuote =
     action.type === "stock_order" && quote?.ticker === action.ticker && quote.currency === action.currency
       ? quote
@@ -86,30 +90,61 @@ export function ActionCard({
                 <TrendingUp size={20} aria-hidden="true" />
               ) : action.type === "bill_payment" ? (
                 <ReceiptText size={20} aria-hidden="true" />
+              ) : action.type === "fx_conversion" ? (
+                <ArrowLeftRight size={20} aria-hidden="true" />
               ) : (
                 recipient.charAt(0)
               )}
             </span>
             <div>
               <span className="field-label">
-                {action.type === "stock_order" ? action.ticker : action.type === "transfer" ? "To" : "Biller"}
+                {action.type === "stock_order"
+                  ? action.ticker
+                  : action.type === "transfer"
+                    ? "To"
+                    : action.type === "fx_conversion"
+                      ? "Into"
+                      : "Biller"}
               </span>
               <strong>{recipient}</strong>
             </div>
           </div>
-          {editor ? (
+          {editor && action.type !== "fx_conversion" ? (
             <ActionFields action={action} index={index} editor={editor} />
           ) : (
             <div className="amount-block">
-              <span className="field-label">{action.type === "stock_order" ? "Quantity" : "Amount"}</span>
+              <span className="field-label">
+                {action.type === "stock_order"
+                  ? "Quantity"
+                  : action.type === "fx_conversion"
+                    ? "Sell"
+                    : "Amount"}
+              </span>
               <p className="amount">
                 {action.type === "stock_order"
                   ? `${action.quantity} shares`
-                  : displayMoney(action.amount, action.currency)}
+                  : action.type === "fx_conversion"
+                    ? displayMoney(action.sell_amount, action.sell_currency)
+                    : displayMoney(action.amount, action.currency)}
               </p>
             </div>
           )}
           <dl className="detail-list">
+            {action.type === "fx_conversion" && (
+              <>
+                <div>
+                  <dt>Rate</dt>
+                  <dd>
+                    1 {action.sell_currency} = {action.rate} {action.buy_currency} ·{" "}
+                    {new Date(action.rate_as_of).toLocaleString()}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Get</dt>
+                  <dd>{displayMoney(action.buy_amount, action.buy_currency)}</dd>
+                </div>
+              </>
+            )}
             {action.type === "bill_payment" && (
               <div>
                 <dt>Bill reference</dt>
@@ -156,7 +191,13 @@ export function ActionCard({
               </>
             )}
             <div>
-              <dt>{action.type === "stock_order" && action.side === "sell" ? "Pay into" : "Pay from"}</dt>
+              <dt>
+                {action.type === "stock_order" && action.side === "sell"
+                  ? "Pay into"
+                  : action.type === "fx_conversion"
+                    ? "From"
+                    : "Pay from"}
+              </dt>
               <dd>{action.from_account_label}</dd>
             </div>
           </dl>
@@ -230,7 +271,7 @@ function RecipientControl({ action, index, editor }: FieldProps) {
 }
 
 function ValueControls({ action, index, editor }: FieldProps) {
-  if (!editor) return null;
+  if (!editor || action.type === "fx_conversion") return null;
   return (
     <>
       {action.type !== "stock_order" ? (
@@ -284,7 +325,7 @@ function ValueControls({ action, index, editor }: FieldProps) {
 }
 
 function FundingControl({ action, index, editor }: FieldProps) {
-  if (!editor) return null;
+  if (!editor || action.type === "fx_conversion") return null;
   return (
     <>
       <label>
@@ -298,7 +339,7 @@ function FundingControl({ action, index, editor }: FieldProps) {
             <option value={action.from_account_id}>{action.from_account_label} - from draft</option>
           )}
           {editor.accounts?.accounts
-            .filter((a) => a.currency === action.currency)
+            .filter((a) => a.currency === fromCurrency(action))
             .map((a) => (
               <option key={a.account_id} value={a.account_id}>
                 {a.label}

@@ -1,5 +1,5 @@
 import { actionSchema, type Accounts, type Action, type Draft, type Quote } from "./contracts";
-import { estimatedTotal } from "./money";
+import { estimatedTotal, fromCurrency } from "./money";
 export type DraftEdits = Record<number, Record<string, string>>;
 export function updateEdit(edits: DraftEdits, index: number, field: string, value: string): DraftEdits {
   return { ...edits, [index]: { ...edits[index], [field]: value } };
@@ -18,7 +18,9 @@ export function editedActions(
         ? ["quantity", "order_type", "limit_price", "from_account_id"]
         : original.type === "transfer"
           ? ["amount", "to_payee_id", "from_account_id"]
-          : ["amount", "from_account_id"];
+          : original.type === "bill_payment"
+            ? ["amount", "from_account_id"]
+            : []; // a conversion is derived by code from the other actions
     if (
       Object.keys(edit).some((field) => !allowed.includes(field)) ||
       (edit.order_type !== undefined && !["market", "limit"].includes(edit.order_type))
@@ -37,7 +39,7 @@ export function editedActions(
     }
     if (edit.from_account_id !== undefined) {
       const account = accounts?.accounts.find(
-        (a) => a.account_id === edit.from_account_id && a.currency === value.currency,
+        (a) => a.account_id === edit.from_account_id && a.currency === fromCurrency(value),
       );
       if (!account) errors[index] = "Choose an available account in the transaction currency.";
       else {
@@ -76,16 +78,28 @@ function decimal(value: bigint): string {
 }
 export function projectedBalances(actions: Action[], accounts: Accounts, quotes: Record<string, Quote>) {
   return accounts.accounts
-    .filter((account) => actions.some((a) => a.from_account_id === account.account_id))
+    .filter((account) =>
+      actions.some(
+        (a) =>
+          a.from_account_id === account.account_id ||
+          (a.type === "fx_conversion" && a.to_account_id === account.account_id),
+      ),
+    )
     .map((account) => {
       let change = 0n;
       let complete = true;
-      for (const action of actions.filter((a) => a.from_account_id === account.account_id)) {
-        if (action.currency !== account.currency) {
+      for (const action of actions) {
+        if (action.type === "fx_conversion" && action.to_account_id === account.account_id) {
+          if (action.buy_currency !== account.currency) complete = false;
+          else change += cents(action.buy_amount);
+        }
+        if (action.from_account_id !== account.account_id) continue;
+        if (fromCurrency(action) !== account.currency) {
           complete = false;
           continue;
         }
-        if (action.type !== "stock_order") change -= cents(action.amount);
+        if (action.type === "fx_conversion") change -= cents(action.sell_amount);
+        else if (action.type !== "stock_order") change -= cents(action.amount);
         else {
           const quote = quotes[action.ticker];
           const price =

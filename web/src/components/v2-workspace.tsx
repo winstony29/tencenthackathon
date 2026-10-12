@@ -94,6 +94,7 @@ export function V2Workspace({
           .sort((a, b) => a.priority - b.priority)
           .map(({ action: index }) => {
             const action = edited.actions[index];
+            if (action.type === "fx_conversion") return null; // V2 refuses conversions
             const account = projections.find((p) => p.account_id === action.from_account_id);
             const price =
               action.type === "stock_order" && action.order_type === "limit"
@@ -312,7 +313,7 @@ function SimulationControl({
       <p className="eyebrow">ADJUST AMOUNT</p>
 
       {actions.map((a, index) => {
-        if (index !== target) return null;
+        if (index !== target || a.type === "fx_conversion") return null;
         if (a.type === "stock_order")
           return (
             <label key={index}>
