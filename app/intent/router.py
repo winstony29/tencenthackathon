@@ -419,7 +419,10 @@ _HELP = "I can help with transfers, bill payments and stock orders."
 _BLOCKED = "This request contains instructions I can't act on. Please say it again."
 _MISSING = {
     "transfer_amount": 'Please say how much to send, for example "send fifty to John".',
-    "quantity": 'Please say how many shares, for example "buy 100 Apple shares".',
+    "quantity": (
+        'Please say how many shares or how much to invest, for example "buy 100 Apple shares" '
+        'or "invest 2k in Apple".'
+    ),
     "limit_price": "Please say the price for your order.",
     "several_transfers": "I can do one transfer at a time. Please say them one by one.",
 }

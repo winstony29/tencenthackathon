@@ -19,6 +19,7 @@ from app.contracts import (
     Draft,
     Evidence,
     Objective,
+    QuoteResponse,
     Scenario,
     StockOrderAction,
     TransferAction,
@@ -117,8 +118,8 @@ def _stock(
     p: dict[str, str], options: Options, data: UserData, spent: dict[str, Decimal]
 ) -> StockOrderAction:
     quote = next(q for q in data.quotes if q.ticker == p["ticker"])
-    source = _account(data, "default", prefer="invest", currency=quote.currency)
-    quantity = _whole(options.numbers[p["quantity"]])
+    quantity, chosen = _shares(p["quantity"], quote, options, data, spent)
+    source = _account(data, chosen, prefer="invest", currency=quote.currency)
     limit = p["order_type"] == "limit"
     if p["side"] == "buy":  # an estimate at the quote, so a later "rest" of Invest stays sensible
         _spend(spent, source, quantity * quote.price)
@@ -134,6 +135,26 @@ def _stock(
         limit_price=_money(options.numbers[p["limit_price"]]) if limit else None,
         currency=quote.currency,
     )
+
+
+def _shares(
+    oid: str, quote: QuoteResponse, options: Options, data: UserData, spent: dict[str, Decimal]
+) -> tuple[int, str]:
+    """The share count and the account a relative sum names ("default" when none)."""
+    if not oid.startswith("m"):
+        return _whole(options.numbers[oid]), "default"
+    oid = "n" + oid[1:]
+    n = options.said[oid]
+    money = _sum(oid, options, data, spent)
+    if n.currency != quote.currency:
+        raise Unbuildable(f"I can't convert {n.currency} to {quote.currency} yet.")
+    quantity = int(money / quote.price)  # whole shares, rounding down (§10.3)
+    if quantity < 1:
+        raise Unbuildable(
+            f"{n.currency} {money:,} doesn't buy one {quote.company_name} share "
+            f"({quote.price} {quote.currency})."
+        )
+    return quantity, _from(options, oid, "default")
 
 
 def _account(data: UserData, chosen: str, prefer: str, currency: str | None = None) -> Account:

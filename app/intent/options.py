@@ -220,7 +220,8 @@ _ASKS_FOR = {
     "stock_order": [
         (
             "yes",
-            "It asks to buy or sell shares; a company with a number counts, e.g. 'sell 5 apple'.",
+            "It asks to buy or sell shares, or to invest a sum in a company; "
+            "e.g. 'sell 5 apple' or 'invest 2k in apple'.",
             "Yes",
         ),
         ("no", "It does not ask to buy or sell shares.", "No"),
@@ -306,6 +307,11 @@ def build(transcript: str, data: UserData, scope: str) -> Options:
     # A share count or a price is always said, never a fraction of a balance: offering
     # "the rest of the Invest balance" (25,000) for "How many shares?" could draft 25,000 shares.
     said_aloud = amounts[: len(parsed)]
+    # A sum of money for shares ("invest 2k in Apple"); draft.py turns it into whole shares.
+    sums = [
+        ("m" + oid[1:], f"A sum of money: {text[0].lower()}{text[1:]}", f"{label} worth")
+        for oid, text, label in amounts
+    ]
     no_number = ("none", "No such number is said.", "None of these")
     accounts = [
         (x.account_id, f"Use the {x.label} account ({x.type}, {x.currency})", x.label)
@@ -372,7 +378,10 @@ def build(transcript: str, data: UserData, scope: str) -> Options:
             "Should shares be bought or sold?",
             [("buy", "Buy shares.", "Buy"), ("sell", "Sell shares.", "Sell")],
         ),
-        "quantity": ("How many shares?", [*said_aloud, no_number]),
+        "quantity": (
+            "How many shares, or what sum of money should go into them?",
+            [*said_aloud, *sums, no_number],
+        ),
         "order_type": (
             "Should the order trade now or only at a stated price?",
             [

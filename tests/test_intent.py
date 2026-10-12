@@ -257,7 +257,9 @@ def test_options_for_buy_100_apple() -> None:
     built = options.build("buy 100 Apple", options.UserData(BANK, QUOTES), "u|s1")
     criteria = {q.name: q.criteria for q in built.questions}
     assert "AAPL" in criteria["ticker"]
-    assert set(criteria["quantity"]) == {"n0", "none"} and built.numbers["n0"] == Decimal("100")
+    assert set(criteria["quantity"]) == {"n0", "m0", "none"} and built.numbers["n0"] == Decimal(
+        "100"
+    )
     assert set(criteria["side"]) == {"buy", "sell"}
 
 
@@ -266,8 +268,52 @@ def test_share_counts_and_prices_never_come_from_balances() -> None:
     built = options.build(text, options.UserData(BANK, QUOTES), "u|s1")
     criteria = {q.name: q.criteria for q in built.questions}
     assert set(criteria["transfer_amount"]) == {"n0", "n1", "n2", "n3", "n4", "none"}
-    assert set(criteria["quantity"]) == {"n0", "n1", "none"}  # only the numbers said
+    # counts are only numbers said; balance fractions may be a sum of money, never a count
+    assert set(criteria["quantity"]) == {"n0", "n1", "m0", "m1", "m2", "m3", "m4", "none"}
     assert set(criteria["limit_price"]) == {"n0", "n1", "none"}
+
+
+def test_quantity_offers_counts_and_sums(mask_key) -> None:
+    built = options.build("invest US$2,000 in apple", options.UserData(BANK, QUOTES), "u|s1")
+    quantity = next(q.criteria for q in built.questions if q.name == "quantity")
+    assert set(quantity) == {"n0", "m0", "none"}
+    assert "sum of money" in quantity["m0"] and "2000" not in quantity["m0"]
+
+
+def _sum_order_script(side: str = "buy", ticker: str = "AAPL") -> dict:
+    return {
+        "has_stock_order": {"yes": SURE, "no": 1 - SURE},
+        "ticker": {ticker: SURE, "none": 1 - SURE},
+        "side": {side: SURE, "buy" if side == "sell" else "sell": 1 - SURE},
+        "quantity": {"m0": SURE, "n0": 1 - SURE},
+    }
+
+
+def test_a_us_dollar_sum_buys_whole_shares(client, fake_jev, bank) -> None:
+    fake_jev.script = _sum_order_script()
+    reply = _understand(client, "invest US$2,000 in apple").json()
+    assert reply["status"] == "draft", reply
+    (order,) = reply["draft"]["actions"]
+    assert (order["quantity"], order["from_account_id"]) == (8, "acc_7788")  # 2000 / 227.50
+
+
+def test_selling_a_us_dollar_sum_rounds_down(client, fake_jev, bank) -> None:
+    fake_jev.script = _sum_order_script(side="sell", ticker="TSLA")
+    reply = _understand(client, "sell US$1,000 of tesla").json()
+    (order,) = reply["draft"]["actions"]
+    assert (order["side"], order["quantity"]) == ("sell", 3)  # 1000 / 251.00
+
+
+def test_a_sum_too_small_for_one_share_is_unsupported(client, fake_jev, bank) -> None:
+    fake_jev.script = _sum_order_script()
+    reply = _understand(client, "invest US$100 in apple").json()
+    assert reply["status"] == "unsupported" and "share" in reply["message"]
+
+
+def test_an_sgd_sum_for_us_shares_waits_for_conversion(client, fake_jev, bank) -> None:
+    fake_jev.script = _sum_order_script()
+    reply = _understand(client, "invest 2k in apple").json()
+    assert reply["status"] == "unsupported" and "SGD" in reply["message"]
 
 
 # --- gate (W-05) ---
