@@ -209,4 +209,5 @@ Use existing Motion for staggered entry, exit, position changes and a shared pri
 4. A new `fx_conversion` action and `GET /api/fx` (mock rates), so "send 500 to John and invest the rest in Apple" can fund USD shares from SGD savings. The gateway rejects a stale rate with `rate_changed`.
 **Why:** In the CLI, a spoken reply to "Which John?" ("John Smith") restarted the conversation, which is wrong for a voice-first app. "Send X and invest the rest" is a natural compound command, but today "the rest" means the whole balance, share orders only take counts, and nothing converts SGD to USD.
 **Rejected:** A `budget` field on `stock_order`. Code converts the sum to a quantity, so the card and the signed shape stay as they are. Refusing cross-currency "rest" instead of converting would have broken the headline example.
-**Open:** A stated SGD sum for a USD share ("invest S$2,000 in Apple") is not covered; v0.4 reads stated sums in the share's currency. Validation must re-derive amounts that are computed rather than said (§10.7).
+**Currency of a sum (decided 13 Oct):** any amount said is in SGD unless the user names another currency ("2k" and "$2,000" are SGD; "US$2,000" is USD). An SGD sum for a USD share adds an `fx_conversion`.
+**Open:** Validation must re-derive amounts that are computed rather than said (§10.7).

@@ -285,7 +285,7 @@ Voice: if the browser's built-in speech recognition gives live text, the UI may 
 | # | Change | Shape change? | Darren (UI) | Jayanth (bank, validation) | Winston (intent) |
 |---|---|---|---|---|---|
 | 1 | Speak an answer to a clarify question | None; a `transcript` means something new while a question is open | Send voice or typed replies as `transcript` in the same session while chips are shown | Nothing | Read the reply with Jev |
-| 2 | Buy or sell shares by a sum of money | None; code turns the sum into `quantity` | Nothing; the stock card is unchanged | Validator re-derives the quantity | Convert sum to shares |
+| 2 | Buy or sell shares by a sum of money (in SGD unless the user names another currency) | None; code turns the sum into `quantity`, adding an `fx_conversion` when the sum and the share differ in currency | Nothing beyond the §10.5 card | Validator re-derives the quantity | Convert sum to shares |
 | 3 | "The rest" means what is left after the earlier actions | None | Nothing | Validator re-derives the amount | Chain amounts in spoken order |
 | 4 | Currency conversion inside a draft | **New action type `fx_conversion`; new endpoint `GET /api/fx`; new `readonly.get_fx_rate`; new reject reason `rate_changed`** | New card (§10.5) | Endpoint, mock rates, ledger, rules, validator | Build the action |
 
@@ -306,12 +306,17 @@ While a question is open (the last reply in the session had `status: "question"`
 
 ### 10.3 Buying or selling shares by a sum of money
 
-"Invest $2,000 in Apple", "buy $2,000 of Apple" and "sell $1,000 of Tesla" become a normal `stock_order`. Code converts the sum into a whole number of shares at the current quote price, rounding down: $2,000 at 227.50 is `"quantity": 8`. The `stock_order` shape is unchanged and carries only `quantity`.
+"Invest 2k in Apple", "buy $2,000 of Apple" and "sell US$1,000 of Tesla" become a normal `stock_order`. Code converts the sum into a whole number of shares at the current quote price, rounding down. The `stock_order` shape is unchanged and carries only `quantity`.
+
+**Currency of a sum:** any amount the user says is in **SGD unless they name another currency**: "2k", "$2,000" and "S$2,000" are SGD; "US$2,000", "2,000 USD" and "2,000 US dollars" are USD. This applies to every action, not only share orders.
+
+- A USD sum for a USD share is bought from Invest (USD) …7788 directly: US$2,000 at 227.50 is `"quantity": 8`.
+- An SGD sum for a USD share adds an `fx_conversion` first (§10.4, §10.5): 2,000.00 SGD from Savings …1234 × 0.74 = 1,480.00 USD into Invest, then 1,480.00 / 227.50 gives `"quantity": 6`. Selling for an SGD sum works out the shares from the sum converted at the same rate, and does not add a conversion (the proceeds stay in USD).
+- The SGD comes from the account the user names, otherwise Savings, the same default as transfers.
 
 - The stock card (§5) is unchanged. Its estimated total (quantity × price) is at most the sum said.
-- A sum that buys no whole share is `unsupported`, with a message such as "$100 doesn't buy one Apple share (227.50 USD)."
-- In v0.4 a stated sum for a share order is in the share's currency (USD). A sum in another currency only works through "the rest" (§10.4), which adds a conversion.
-- Validation: the transcript says "$2,000" while the draft says 8. The validator re-derives the quantity from the sum and the quote (through `readonly`) instead of reporting a mismatch.
+- A sum that buys no whole share is `unsupported`, with a message such as "S$100 doesn't buy one Apple share (227.50 USD)."
+- Validation: the transcript says "2k" while the draft says 6. The validator re-derives the quantity from the sum and the quote (through `readonly`) instead of reporting a mismatch.
 
 ### 10.4 "The rest", and currency conversion
 
