@@ -44,7 +44,7 @@ IDs: `S` setup · `W` Winston · `J` Jayanth · `D` Darren · `I` integration ·
   *Done when:* a recorded clip of command 1 transcribes correctly through `/api/transcribe`.
 - [ ] **W-10** · Mon · `tests/commands.jsonl`: ~30 commands with expected outcome (draft, question, blocked or unsupported), including slang, accents spelt out, multi-intent and attacks.
   *Done when:* the file has at least 30 lines, and Jayanth has added 5 mismatch cases.
-- [ ] **W-11** · Mon · `/api/preview`: one Jev call on the raw text for the action type, cached by normalised text; `meta` on every intent reply.
+- [x] **W-11** · Mon · `/api/preview`: one Jev call on the raw text for the action type, cached by normalised text; `meta` on every intent reply.
   *Done when:* typing "send fifty to jo" returns `transfer` with the CONTRACTS shape, and a repeat of the same text is served from cache.
 - [ ] **W-12** · Tue · Contracts v0.3 for Darren's `/v3`: `objective` on the `draft` reply (`prepare`, `assess_affordability`, `simulate`, `check_recipient`, `review`), picked by Jev.
   *Done when:* "can I afford that?" in an open session returns the same draft with `objective: "assess_affordability"`, and `/v3` renders it from the real endpoint.

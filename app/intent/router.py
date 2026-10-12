@@ -6,6 +6,7 @@ Contract: docs/CONTRACTS.md §3.1
 """
 
 import time
+from collections import OrderedDict
 from decimal import Decimal
 from typing import Any
 
@@ -108,10 +109,65 @@ _STUB_CANCELLED = {
 }
 
 
+_PREVIEW_QUESTION = jev.Question(
+    "intent",
+    "Which banking task does the text ask for so far?",
+    {
+        "transfer": "Send money to a person.",
+        "bill_payment": "Pay a bill, such as a credit card bill.",
+        "stock_order": "Buy or sell shares.",
+        "none": "None of these yet, or too little text to tell.",
+    },
+)
+_preview_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
+
+
 @router.post("/preview", response_model=PreviewResponse)
 async def preview(request: PreviewRequest) -> dict[str, Any]:
-    """Guess the action type while the user types; display only. Stub: always a transfer."""
-    return _STUB_PREVIEW
+    """Guess the action type while the user types; display only, never a draft or a value.
+
+    One Jev call on the raw text, cached by normalised text so retyping costs nothing.
+    """
+    if not config.MAKERS_MODELS_KEY:
+        return _STUB_PREVIEW
+    key = " ".join(request.text.lower().split())
+    if len(key) < 2:
+        certain = {o: float(o == "none") for o in _PREVIEW_QUESTION.criteria}
+        return {
+            "intent": {"value": "none", "confidence": 1.0, "probabilities": certain},
+            "meta": {
+                "latency_ms": 0,
+                "model": "",
+                "source": "none",
+                "phrasings": 0,
+                "cached": False,
+            },
+        }
+    if key in _preview_cache:
+        _preview_cache.move_to_end(key)
+        hit = _preview_cache[key]
+        return {**hit, "meta": {**hit["meta"], "latency_ms": 0, "cached": True}}
+    started = time.monotonic()
+    reply = await jev.ask(request.text, [_PREVIEW_QUESTION])
+    answer = reply.answers["intent"]
+    result = {
+        "intent": {
+            "value": answer.choice,
+            "confidence": answer.confidence,
+            "probabilities": answer.probabilities,
+        },
+        "meta": {
+            "latency_ms": round((time.monotonic() - started) * 1000),
+            "model": reply.model,
+            "source": "jev",
+            "phrasings": 1,
+            "cached": False,
+        },
+    }
+    _preview_cache[key] = result
+    if len(_preview_cache) > config.PREVIEW_CACHE_SIZE:
+        _preview_cache.popitem(last=False)
+    return result
 
 
 @router.post("/transcribe", response_model=TranscribeResponse)

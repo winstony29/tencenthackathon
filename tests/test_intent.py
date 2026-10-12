@@ -263,3 +263,23 @@ def test_jev_failure_is_an_upstream_error(client, fake_jev, bank) -> None:
 
 def test_stubs_answer_until_jev_and_bank_data_exist(client) -> None:
     assert _understand(client, "send fifty to john").json()["question"]["question_id"] == "q_1"
+
+
+# --- /api/preview (W-11) ---
+
+
+def test_preview_guesses_the_action_type_and_caches_it(client, fake_jev) -> None:
+    fake_jev.script = {
+        "intent": {"transfer": 0.81, "bill_payment": 0.11, "stock_order": 0.05, "none": 0.03}
+    }
+    first = client.post("/api/preview", json={"text": "send fifty to jo"}).json()
+    assert first["intent"]["value"] == "transfer"
+    assert first["meta"] == {**first["meta"], "source": "jev", "phrasings": 1, "cached": False}
+    again = client.post("/api/preview", json={"text": "Send  fifty to JO"}).json()
+    assert again["intent"] == first["intent"] and again["meta"]["cached"] is True
+    assert len(fake_jev.calls) == 1
+
+
+def test_preview_skips_jev_for_tiny_text(client, fake_jev) -> None:
+    reply = client.post("/api/preview", json={"text": "s"}).json()
+    assert reply["intent"]["value"] == "none" and fake_jev.calls == []
