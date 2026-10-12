@@ -1,7 +1,7 @@
 # Contracts
 
 **Purpose:** the exact data shapes and endpoints every part of the system agrees on. `app/contracts.py` implements this file as Pydantic models. If the two disagree, this file wins.
-**Owner:** Winston (keeper) · **Version:** 0.3 (live) · v0.4 proposed in §10 · **Last updated:** 2026-10-13
+**Owner:** Winston (keeper) · **Version:** 0.4 · **Last updated:** 2026-10-13
 
 > Changing anything here needs all three teammates to agree. Then bump the version, update `app/contracts.py` in the same commit, and add a `docs/DECISIONS.md` entry.
 
@@ -14,9 +14,10 @@
 | Money is a **string** with 2 decimals; Python uses `Decimal` | `"50.00"` |
 | Share quantities are integers | `100` |
 | Currency is an ISO code | `"SGD"`, `"USD"` |
+| Any amount the user says is **SGD unless they name another currency**. This applies to every action. | "2k", "$2,000", "S$2,000" are SGD; "US$2,000", "2,000 USD", "2,000 US dollars" are USD |
 | Times are ISO 8601 with offset | `"2026-10-12T09:30:00+08:00"` |
 | IDs have a type prefix | `u_` user, `s_` session, `d_` draft, `q_` question, `acc_` account, `pay_` payee, `bil_` biller, `n_` nonce, `vr_` receipt |
-| The UI creates `session_id` (`s_` + random hex) when a new conversation starts. A draft does not end it: reuse it for follow-up turns about that draft (§3.1). Cancelled, blocked and unsupported end it. Sessions expire after 5 minutes without a call. A UI that never sends follow-ups may start a new session per command. | `"s_41b9"` |
+| The UI creates `session_id` (`s_` + random hex) when a new conversation starts. A draft does not end it: reuse it for follow-up turns about that draft (§3.1). While a question is open, keep it for spoken or typed replies too (§3.1). Cancelled, blocked and unsupported end it. Sessions expire after 5 minutes without a call. A UI that never sends follow-ups may start a new session per command. | `"s_41b9"` |
 | Text sent to the server (`text`, `transcript`) is at most 500 characters | |
 | Labels are what the user reads | `"John Doe …4521"` |
 | All endpoints live under `/api/` and use JSON, except `/api/transcribe` (file upload) | |
@@ -40,6 +41,8 @@ A draft is everything the user will be asked to sign. Code builds it (`app/inten
   ]
 }
 ```
+
+Actions can include an `fx_conversion`. Code builds it; the user never says it. It still counts within the 1 to 4 actions.
 
 `evidence` records Jev's answers: the pick, its average probability across phrasings (`avg_p`), the spread across phrasings, and the average probability of every option. The UI may show it in a debug view (shapeshift's `?debug=1`), never on the confirmation cards.
 
@@ -72,6 +75,25 @@ A draft is everything the user will be asked to sign. Code builds it (`app/inten
 ```
 `side` is `"buy"` or `"sell"`. `order_type` is `"market"` or `"limit"`; `limit_price` is a money string only for limit orders. The price shown to the user comes from `/api/quote` and is an estimate; it is not part of the signed draft.
 
+**By a sum of money.** "Invest 2k in Apple", "buy $2,000 of Apple" and "sell US$1,000 of Tesla" become a normal `stock_order`. Code, not Jev, turns the sum into a whole number of shares at the current quote price, rounding down. The shape is unchanged and carries only `quantity`.
+- A USD sum for a USD share is bought from Invest (USD) …7788 directly: US$2,000 at 227.50 is `"quantity": 8`.
+- An SGD sum for a USD share adds an `fx_conversion` first. Example: 2,000.00 SGD from Savings …1234 × 0.74 = 1,480.00 USD into Invest, then 1,480.00 / 227.50 gives `"quantity": 6`.
+- Selling for an SGD sum works out the shares from the sum converted at the same rate. It adds no conversion, because the proceeds stay in USD.
+- The SGD comes from the account the user names, otherwise Savings, the same default as transfers.
+- The stock card (§5) is unchanged. Its estimated total (quantity × price) is at most the sum said.
+- A sum that buys no whole share is `unsupported`, with a message such as "S$100 doesn't buy one Apple share (227.50 USD)."
+
+**fx_conversion**
+```json
+{"type": "fx_conversion",
+ "from_account_id": "acc_1234", "from_account_label": "Savings …1234",
+ "to_account_id": "acc_7788", "to_account_label": "Invest (USD) …7788",
+ "sell_amount": "2700.00", "sell_currency": "SGD",
+ "buy_amount": "1998.00", "buy_currency": "USD",
+ "rate": "0.740000", "rate_as_of": "2026-10-13T09:30:00+08:00"}
+```
+`sell_amount` and `buy_amount` are money strings. `rate` is a decimal string with 6 places: one unit of `sell_currency` buys `rate` units of `buy_currency`. `rate_as_of` is an ISO time. `buy_amount` = `sell_amount` × `rate`, rounded down to 2 places. Code adds it only when the money and the purchase are in different currencies. It never counts against the limit of one transfer, one bill payment and one share order. The rates come from `GET /api/fx` (§3.3).
+
 ## 3. Endpoints
 
 ### 3.1 AI side (Winston)
@@ -92,7 +114,7 @@ Response:
 ```
 `value` is one of `transfer`, `bill_payment`, `stock_order`, `none` (not a banking command yet, or under 2 characters). The `intent` shape matches shapeshift's, so its `decide.ts` (ghost, choose, committed card) works with only the keys changed.
 - The UI uses it only to morph the input into an empty card of the right type. It must never show values from it, build a draft from it, or skip `/api/understand` because of it.
-- One Jev call on the raw text, no rewrites, cached by normalised text. It names the main action only; a multi-action command shows all its actions in the draft.
+- One Jev call on the text with numbers swapped for stand-ins (D-026), no rewrites, cached by normalised text. It names the main action only; a multi-action command shows all its actions in the draft.
 
 **`POST /api/transcribe`**: speech to text.
 Request: multipart form, field `audio` (format agreed in D-006).
@@ -135,6 +157,38 @@ Responses (one of). Each also carries `meta` (above), left out of the examples b
 `reason` is `user_declined` (the user picked "None of these", `option_id: "none"`) or `too_many_questions` (still unsure after 3 questions; message "I couldn't work out what you meant. Please try again.").
 An answer for an unknown or expired session returns 404 `not_found`; the UI starts a new command.
 
+**Spoken answers.** While a question is open (the last reply in the session had `status: "question"`), a new `transcript` with the same `session_id` is read as the answer to that question. The request is unchanged: `{"user_id": "u_demo", "session_id": "s_41b9", "transcript": "John Smith"}`. Tapping a chip still sends `answer` with an `option_id`. Jev picks from the offered options, or says the user rejects them all, or says the user is asking for something different. The replies use the existing shapes:
+- A sure pick of an offered option: the same reply as tapping that chip (usually the `draft`, or the next `question`).
+- "None of these": `cancelled` with reason `user_declined`.
+- Something different ("actually, pay my bill"): handled as a first command in the same session. The open question is dropped.
+- Unsure: the same question again with a new `question_id`. It counts towards the 3-question limit, so `too_many_questions` can follow.
+
+For "Which John did you mean?" (John Doe …4521, John Smith …8892): "John Smith", "Smith", "the second one" and "the one ending 8892" answer it; "neither" cancels; "actually pay my credit card bill" starts over.
+
+**"The rest".** "The rest", "what's left", "the remaining" and "leftover" mean the balance left after the actions said before it in the same command, computed by code. "All" and "everything" stay the whole balance. If no account is named, "the rest" is taken from the account the earlier action draws from. Jev picks the account when it is unclear.
+
+Example: "send 500 to John Doe and invest the rest in Apple", with Savings …1234 at 3,200.00 SGD and a mock rate of 1 SGD = 0.74 USD. The draft has three actions, in spoken order:
+```json
+[
+ {"type": "transfer",
+  "from_account_id": "acc_1234", "from_account_label": "Savings …1234",
+  "to_payee_id": "pay_4521", "to_payee_label": "John Doe …4521",
+  "amount": "500.00", "currency": "SGD"},
+ {"type": "fx_conversion",
+  "from_account_id": "acc_1234", "from_account_label": "Savings …1234",
+  "to_account_id": "acc_7788", "to_account_label": "Invest (USD) …7788",
+  "sell_amount": "2700.00", "sell_currency": "SGD",
+  "buy_amount": "1998.00", "buy_currency": "USD",
+  "rate": "0.740000", "rate_as_of": "2026-10-13T09:30:00+08:00"},
+ {"type": "stock_order",
+  "from_account_id": "acc_7788", "from_account_label": "Invest (USD) …7788",
+  "side": "buy", "ticker": "AAPL", "company_name": "Apple Inc.",
+  "quantity": 8, "order_type": "market", "limit_price": null,
+  "currency": "USD"}
+]
+```
+The rest of Savings is 3,200.00 − 500.00 = 2,700.00 SGD. All of it is converted: 2,700.00 × 0.74 = 1,998.00 USD, rounded down to the cent. Code buys as many whole shares as that covers: 1,998.00 / 227.50 gives 8 shares. The roughly 178.00 USD left over stays in Invest (USD). "Sell 10 Apple and buy Tesla with the rest" stays in USD: no conversion.
+
 **`objective`** (every `draft` reply) says what the user wants to do with the draft, so the UI can arrange the screen (Darren's `/v3`): `prepare`, `assess_affordability`, `simulate`, `check_recipient` or `review`. Jev picks it. On a first command an unsure pick becomes `prepare`.
 
 **Follow-up turns.** After a draft, a new `transcript` with the same `session_id` is a follow-up about that draft ("Can I afford that?", "What if I send $700 instead?", "Make it $300 from savings", "Review the transfer"). Jev picks the objective and, for each current action, a new value or "keep"; it may ask a clarifying question first, as above. Then:
@@ -155,6 +209,8 @@ Responses:
  "fields": [{"field": "actions[0].amount", "draft_value": "15.00",
              "transcript_says": "fifty", "note": "amount differs"}]}
 ```
+Some values in a draft are derived by code, not said: quantities bought by a sum of money, "the rest" amounts and `fx_conversion` amounts. The validator re-derives them from balances, quotes and rates through `readonly` (§3.3), and reports a mismatch only if its own result differs. For example, the transcript says "2k" while the draft says 6 shares: that is a match if the quote gives 6.
+
 `receipt` is an HMAC of the draft made with `VALIDATION_RECEIPT_KEY`. The bank refuses to issue a nonce without it, so a frozen draft can never be signed.
 
 ### 3.3 Bank side (Jayanth)
@@ -175,6 +231,12 @@ Responses:
  "currency": "USD", "as_of": "2026-10-12T09:30:00+08:00"}
 ```
 Prices are mock data from `data/bank.json`.
+
+**`GET /api/fx?from=SGD&to=USD`**
+```json
+{"from": "SGD", "to": "USD", "rate": "0.740000", "as_of": "2026-10-13T09:30:00+08:00"}
+```
+Rates are mock data in `data/bank.json` (at least SGD→USD and USD→SGD). An unknown pair returns 404 `not_found`. *Pending: until Jayanth builds it, the stub returns this example (§7).*
 
 **`POST /api/device/register`**: stores the phone's public key.
 Request: `{"user_id": "u_demo", "public_key_jwk": { /* EC P-256 public JWK */ }}`
@@ -202,7 +264,11 @@ Responses:
 ```json
 {"status": "rejected", "reason": "bad_signature", "message": "Signature check failed."}
 ```
-`reason` is one of: `bad_signature`, `unknown_nonce`, `nonce_used`, `nonce_expired`, `limit_exceeded`, `velocity_exceeded`, `kyc_incomplete`, `insufficient_funds`, `bad_otp`.
+`reason` is one of: `bad_signature`, `unknown_nonce`, `nonce_used`, `nonce_expired`, `limit_exceeded`, `velocity_exceeded`, `kyc_incomplete`, `insufficient_funds`, `bad_otp`, `rate_changed`.
+```json
+{"status": "rejected", "reason": "rate_changed", "message": "The exchange rate changed. Please confirm again."}
+```
+The gateway rejects a draft whose `fx_conversion` `rate` differs from the bank's current rate for that pair. The UI starts a new command, as for other rejections.
 On `needs_extra_check`, the UI asks for the code and calls `/api/execute` again with the same nonce and `otp` set. The demo code is set in config (D-007).
 
 **`GET /api/audit?limit=50`**
@@ -211,8 +277,12 @@ On `needs_extra_check`, the UI asks for the code and calls `/api/execute` again 
  "entries": [{"index": 41, "time": "…", "actor": "intent", "event": "jev_answer",
               "data": {}, "prev_hash": "…", "hash": "…"}]}
 ```
+Bank rules for `fx_conversion` (*pending: Jayanth builds these*):
+- **Ledger:** takes `sell_amount` from `from_account_id` and adds `buy_amount` to `to_account_id`, before the actions after it.
+- **Rules:** limits and the extra-check threshold apply to `fx_conversion` like a transfer, measured in `sell_currency`.
+
 The intent engine reads user data only through `app/bank/readonly.py` (AGENTS §4), which provides:
-`get_accounts(user_id: str) -> AccountsResponse` (the same shape as `GET /api/accounts`), `list_quotes() -> list[QuoteResponse]` (every tradable ticker), and `get_bill_reference(biller_id: str) -> str`.
+`get_accounts(user_id: str) -> AccountsResponse` (the same shape as `GET /api/accounts`), `list_quotes() -> list[QuoteResponse]` (every tradable ticker), `get_bill_reference(biller_id: str) -> str`, and `get_fx_rate(from_currency: str, to_currency: str) -> FxResponse` (the same shape as `GET /api/fx`; pending, like the endpoint).
 
 Every area writes events through `app/audit.py`: `append(actor: str, event: str, data: dict) -> None`, where `actor` is `intent`, `validation` or `bank`. Event names are in §8.
 
@@ -225,12 +295,13 @@ Every area writes events through `app/audit.py`: `append(actor: str, event: str,
 
 ## 5. Confirmation window: what each card shows
 
-One card per action, in draft order. One **Confirm & sign** button signs the whole draft; **Cancel** discards it.
+One card per action, in draft order. A **Convert currency** card sits between the other cards in draft order. One **Confirm & sign** button signs the whole draft; **Cancel** discards it.
 
 | Action type | Card title | Fields, in this order |
 |---|---|---|
 | transfer | Transfer | To (`to_payee_label`) · Amount (`amount` + `currency`) · From (`from_account_label`) |
 | bill_payment | Pay bill | Biller (`biller_label`) · Reference (`bill_reference`) · Amount · From |
+| fx_conversion | Convert currency | From (`from_account_label`) · Sell (`sell_amount` + `sell_currency`) · Rate ("1 SGD = 0.740000 USD", with `rate_as_of`) · Get (`buy_amount` + `buy_currency`) · Into (`to_account_label`) |
 | stock_order | Buy shares / Sell shares | Stock (`ticker` · `company_name`) · Quantity · Order type (market / limit + `limit_price`) · Price now (from `/api/quote`, marked "estimate") · Estimated total (quantity × price, marked "estimate") · Pay from / Pay into |
 
 Other states the UI must show: **preview** (empty card of the guessed type while typing, from `/api/preview`), **thinking** (waiting for `/api/understand`), **question** (text + one chip per option + "None of these"), **blocked**, **unsupported**, **frozen** (mismatch, listing each field), **needs extra check** (code entry), **executed** (references), **rejected** (plain-English reason).
@@ -254,10 +325,12 @@ Intent side (`actor: "intent"`). Jayanth adds the validation and bank events her
 | `jev_answer` | `session_id`, `question`, `phrasings` (each: `text`, `probabilities`), `avg_p`, `spread` |
 | `gate_decision` | `session_id`, `decision` (`proceed` or `ask`), `failing_question`, `tau`, `delta` |
 | `question_asked` | `session_id`, `question_id`, `options` |
-| `answer_received` | `session_id`, `question_id`, `option_id` |
+| `answer_received` | `session_id`, `question_id`, `option_id`, `via` (`chip` or `speech`) |
 | `draft_built` | `session_id`, `draft_id` |
 | `blocked` | `session_id`, `reason` |
 | `cancelled` | `session_id`, `reason` |
+
+In `jev_answer`, `phrasings[].text` is the stand-in text Jev saw, with numbers swapped for stand-ins (D-026), not the transcript. Jayanth adds `fx_converted` (actor `bank`) with `draft_id`, `sell_amount`, `sell_currency`, `buy_amount`, `buy_currency`, `rate`.
 
 ## 9. Timing
 
@@ -276,107 +349,12 @@ Everything is triggered by the user. The only repeating call is the stock price 
 
 Voice: if the browser's built-in speech recognition gives live text, the UI may send it to `/api/preview` while the user speaks. Only the Tencent ASR transcript goes to `/api/understand`.
 
-## 10. v0.4: proposed, not live yet
+## 10. Changes in v0.4
 
-**Status:** proposed by Winston on 2026-10-13 (D-027). It needs Darren's and Jayanth's agreement. Nothing in this section is built; the server still behaves as §1 to §9 say, and `app/contracts.py` still matches v0.3. Build against this section only behind a flag or in a branch. Once all three agree, this section is folded into §1 to §9, the version becomes 0.4, and `app/contracts.py` changes in the same commit.
-
-### 10.1 Summary
-
-| # | Change | Shape change? | Darren (UI) | Jayanth (bank, validation) | Winston (intent) |
-|---|---|---|---|---|---|
-| 1 | Speak an answer to a clarify question | None; a `transcript` means something new while a question is open | Send voice or typed replies as `transcript` in the same session while chips are shown | Nothing | Read the reply with Jev |
-| 2 | Buy or sell shares by a sum of money (in SGD unless the user names another currency) | None; code turns the sum into `quantity`, adding an `fx_conversion` when the sum and the share differ in currency | Nothing beyond the §10.5 card | Validator re-derives the quantity | Convert sum to shares |
-| 3 | "The rest" means what is left after the earlier actions | None | Nothing | Validator re-derives the amount | Chain amounts in spoken order |
-| 4 | Currency conversion inside a draft | **New action type `fx_conversion`; new endpoint `GET /api/fx`; new `readonly.get_fx_rate`; new reject reason `rate_changed`** | New card (§10.5) | Endpoint, mock rates, ledger, rules, validator | Build the action |
-
-### 10.2 Speaking an answer to a clarify question
-
-While a question is open (the last reply in the session had `status: "question"`), a new `transcript` with the same `session_id` is read as the answer to that question. Today it starts a new command and the question is lost.
-
-- Request: unchanged, `{"user_id": "u_demo", "session_id": "s_41b9", "transcript": "John Smith"}`. Tapping a chip still sends `answer` with an `option_id`, exactly as in §3.1.
-- Jev picks from the offered options plus two more: the user rejects them all (same as "None of these"), or the user is asking for something different.
-- Replies use the existing shapes:
-  - A sure pick of an offered option: the same reply as tapping that chip (usually the `draft`, or the next `question`).
-  - "None of these": `cancelled` with reason `user_declined`.
-  - Something different ("actually, pay my bill"): handled as a first command in the same session; the open question is dropped.
-  - Unsure: the same question again with a new `question_id`. It counts towards the 3-question limit, so `too_many_questions` can follow.
-- Examples for "Which John did you mean?" (John Doe …4521, John Smith …8892): "John Smith", "Smith", "the second one" and "the one ending 8892" answer it; "neither" cancels; "actually pay my credit card bill" starts over.
-- Session rule change (§1): while a question is open, the UI keeps the `session_id` for spoken or typed replies. It still starts a new session after `cancelled`, `blocked` or `unsupported`, or when the user taps **Cancel**.
-- Audit (§8): `answer_received` gains `via`: `"chip"` or `"speech"`.
-
-### 10.3 Buying or selling shares by a sum of money
-
-"Invest 2k in Apple", "buy $2,000 of Apple" and "sell US$1,000 of Tesla" become a normal `stock_order`. Code converts the sum into a whole number of shares at the current quote price, rounding down. The `stock_order` shape is unchanged and carries only `quantity`.
-
-**Currency of a sum:** any amount the user says is in **SGD unless they name another currency**: "2k", "$2,000" and "S$2,000" are SGD; "US$2,000", "2,000 USD" and "2,000 US dollars" are USD. This applies to every action, not only share orders.
-
-- A USD sum for a USD share is bought from Invest (USD) …7788 directly: US$2,000 at 227.50 is `"quantity": 8`.
-- An SGD sum for a USD share adds an `fx_conversion` first (§10.4, §10.5): 2,000.00 SGD from Savings …1234 × 0.74 = 1,480.00 USD into Invest, then 1,480.00 / 227.50 gives `"quantity": 6`. Selling for an SGD sum works out the shares from the sum converted at the same rate, and does not add a conversion (the proceeds stay in USD).
-- The SGD comes from the account the user names, otherwise Savings, the same default as transfers.
-
-- The stock card (§5) is unchanged. Its estimated total (quantity × price) is at most the sum said.
-- A sum that buys no whole share is `unsupported`, with a message such as "S$100 doesn't buy one Apple share (227.50 USD)."
-- Validation: the transcript says "2k" while the draft says 6. The validator re-derives the quantity from the sum and the quote (through `readonly`) instead of reporting a mismatch.
-
-### 10.4 "The rest", and currency conversion
-
-"The rest", "what's left", "the remaining" and "leftover" mean the balance left after the actions said before it in the same command, computed by code. Today they mean the whole balance.
-
-Example: "send 500 to John Doe and invest the rest in Apple", with Savings …1234 at 3,200.00 SGD and a mock rate of 1 SGD = 0.74 USD. The draft has three actions, in spoken order:
-
-```json
-[
- {"type": "transfer",
-  "from_account_id": "acc_1234", "from_account_label": "Savings …1234",
-  "to_payee_id": "pay_4521", "to_payee_label": "John Doe …4521",
-  "amount": "500.00", "currency": "SGD"},
- {"type": "fx_conversion",
-  "from_account_id": "acc_1234", "from_account_label": "Savings …1234",
-  "to_account_id": "acc_7788", "to_account_label": "Invest (USD) …7788",
-  "sell_amount": "2700.00", "sell_currency": "SGD",
-  "buy_amount": "1998.00", "buy_currency": "USD",
-  "rate": "0.740000", "rate_as_of": "2026-10-13T09:30:00+08:00"},
- {"type": "stock_order",
-  "from_account_id": "acc_7788", "from_account_label": "Invest (USD) …7788",
-  "side": "buy", "ticker": "AAPL", "company_name": "Apple Inc.",
-  "quantity": 8, "order_type": "market", "limit_price": null,
-  "currency": "USD"}
-]
-```
-
-- "The rest" of Savings is 3,200.00 − 500.00 = 2,700.00 SGD. All of it is converted: 2,700.00 × 0.74 = 1,998.00 USD, rounded down to the cent. Code buys as many whole shares as that covers: 1,998.00 / 227.50 gives 8 shares. The roughly 178.00 USD left over stays in Invest (USD).
-- A conversion is added only when the money and the purchase are in different currencies. "Sell 10 Apple and buy Tesla with the rest" stays in USD: no conversion.
-- If no account is named, "the rest" is taken from the account the earlier action draws from. Jev picks the account when it is unclear, as it does today.
-- A draft still holds at most 4 actions, and still at most one transfer, one bill payment and one share order. `fx_conversion` is added by code and never counts against those.
-
-### 10.5 New action type: `fx_conversion`
-
-Shown above. Fields: `from_account_id`, `from_account_label`, `to_account_id`, `to_account_label`, `sell_amount` and `buy_amount` (money strings), `sell_currency` and `buy_currency` (ISO codes), `rate` (a decimal string with 6 places: one unit of `sell_currency` buys `rate` units of `buy_currency`), `rate_as_of` (ISO time). `buy_amount` = `sell_amount` × `rate`, rounded down to 2 places.
-
-Confirmation card (§5): title **Convert currency**. Fields, in order: From (`from_account_label`) · Sell (`sell_amount` + `sell_currency`) · Rate ("1 SGD = 0.740000 USD", with `rate_as_of`) · Get (`buy_amount` + `buy_currency`) · Into (`to_account_label`). It sits between the other cards in draft order, and the one **Confirm & sign** button covers it like any action.
-
-### 10.6 New bank endpoint and readonly function (Jayanth)
-
-**`GET /api/fx?from=SGD&to=USD`**
-```json
-{"from": "SGD", "to": "USD", "rate": "0.740000", "as_of": "2026-10-13T09:30:00+08:00"}
-```
-Rates are mock data in `data/bank.json` (at least SGD→USD and USD→SGD). An unknown pair returns 404 `not_found`.
-
-`app/bank/readonly.py` gains `get_fx_rate(from_currency: str, to_currency: str) -> FxResponse` (the same shape), so the intent engine can build `fx_conversion` without importing anything else from the bank (AGENTS §4).
-
-### 10.7 Bank, rules and validation changes (Jayanth)
-
-- **Ledger:** applies `fx_conversion` by taking `sell_amount` from `from_account_id` and adding `buy_amount` to `to_account_id`, before the actions after it.
-- **Gateway:** rejects a draft whose `rate` differs from the bank's current rate for that pair, with new reason `rate_changed` (message: "The exchange rate changed. Please confirm again."). It is added to the `rejected` reasons in §3.3. The UI starts a new command, as for other rejections.
-- **Rules:** limits and the extra-check threshold apply to `fx_conversion` like a transfer, measured in `sell_currency`.
-- **Validator:** quantities bought by a sum (§10.3), "the rest" amounts (§10.4) and `fx_conversion` amounts are derived, not said. It re-derives them from balances, quotes and rates through `readonly`, and reports a mismatch only if its own result differs.
-- **Audit (§8):** `fx_converted` (bank) with `draft_id`, `sell_amount`, `sell_currency`, `buy_amount`, `buy_currency`, `rate`.
-
-### 10.8 Already live, no contract change
-
-These are on the `winston` branch (pushed, not yet merged to `main`). Nothing in the UI needs to change for them.
-
-- **Jev never sees real amounts (D-026).** Every number the user says is swapped for a stand-in before Jev reads it, and balances never appear in Jev's options. All request and reply shapes are unchanged. In §3.1, `/api/preview` now makes "one Jev call on the text with numbers swapped for stand-ins". The `text` in the `jev_answer` audit event's `phrasings` is that stand-in text, not the transcript.
-- **Share counts and limit prices are only numbers the user said**, never a fraction of a balance. Before this, "the rest of the Invest balance" could have been offered as a share count.
-- **`scripts/chat.py`:** a text conversation with `/api/understand` against live Jev, for testing turn by turn (`.venv/bin/python scripts/chat.py -v`).
+- **Spoken answers:** while a question is open, a `transcript` in the same session answers it (§3.1).
+- **Sums of money:** "invest 2k in Apple" becomes a `stock_order` with a quantity computed by code (§2.1).
+- **"The rest":** means what is left after the actions said before it (§3.1).
+- **Currency conversion:** new `fx_conversion` action (§2.1), `GET /api/fx` and `get_fx_rate` (§3.3), and reject reason `rate_changed`. The intent side is built; the bank side is pending.
+- **Amounts are SGD by default** unless the user names another currency (§1).
+- **Already live (D-026):** Jev never sees real amounts. Every number the user says is swapped for a stand-in, and balances never appear in Jev's options (§3.1, §8). Share counts and limit prices are only numbers the user said, never a fraction of a balance.
+- **Testing:** `scripts/chat.py` runs a text conversation with `/api/understand` against live Jev, turn by turn (`.venv/bin/python scripts/chat.py -v`).

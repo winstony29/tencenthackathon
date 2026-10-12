@@ -201,7 +201,7 @@ Use existing Motion for staggered entry, exit, position changes and a shared pri
 **Limits:** Jev learns each amount's order of magnitude. Payee, biller and company names still reach Jev, because it needs them to match; swapping name words the same way is a possible next step. Tencent ASR still hears the audio, and the validation agent still reads the raw transcript, because it checks the draft against the words said. Number words `parse_numbers` doesn't know (such as "dozen") pass through. Previews have no session, so their stand-ins are shared until restart. The rewriter (W-04) must rewrite the masked text and keep its stand-ins unchanged.
 
 ## D-027 · Contracts v0.4 (proposed): spoken answers, orders by sum, "the rest", currency conversion
-2026-10-13 · Winston · Status: **proposed: needs Darren and Jayanth**
+2026-10-13 · Winston · Status: decided (Darren and Jayanth agreed 13 Oct; intent side built, bank side pending)
 **Decision:** Four changes, written out in `docs/CONTRACTS.md` §10.
 1. A transcript sent while a clarify question is open answers it. Jev picks an offered option, "none of these", or "something different".
 2. "Invest $2,000 in Apple" becomes a `stock_order`. Code converts the sum to whole shares at the quote price, rounding down, so the shape is unchanged.

@@ -56,6 +56,8 @@ IDs: `S` setup · `W` Winston · `J` Jayanth · `D` Darren · `I` integration ·
 
 - [x] **W-14** · Mon · Keep real amounts from Jev: keyed stand-in numbers, value-free options and follow-up context (D-026).
   *Done when:* `test_no_amount_said_ever_reaches_jev` passes and the live demo commands still pass.
+- [x] **W-15** · Tue · Contracts v0.4 on the intent side: spoken answers, sums of money, "the rest", `fx_conversion` (D-027).
+  *Done when:* the live demo commands pass and "send 500 to John Doe and invest the rest of my savings in Apple" drafts a transfer, a conversion and 8 shares in `scripts/chat.py`.
 
 ### Jayanth: validation and transactions
 
