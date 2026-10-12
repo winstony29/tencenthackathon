@@ -199,3 +199,14 @@ Use existing Motion for staggered entry, exit, position changes and a shared pri
 **Why:** Amounts are sensitive, and Jev only needs each number's role (amount, quantity, limit price), not its value. It also closes a leak where "all" or "half" sent every account balance to Jev. The hash is keyed so nobody can work a value back by hashing every amount, and scoped so a number keeps its stand-in for a conversation but differs across conversations.
 **Rejected:** Markers such as `[N0]` and random 3-digit stand-ins: live, demo commands 1, 2 and 4 dropped below tau ("send [N0] to John" read less like a payment; "send 437" or "send 48213" read less like a large transfer than "send 72000"). Format-preserving encryption: nothing needs decrypting, and it would add a dependency.
 **Limits:** Jev learns each amount's order of magnitude. Payee, biller and company names still reach Jev, because it needs them to match; swapping name words the same way is a possible next step. Tencent ASR still hears the audio, and the validation agent still reads the raw transcript, because it checks the draft against the words said. Number words `parse_numbers` doesn't know (such as "dozen") pass through. Previews have no session, so their stand-ins are shared until restart. The rewriter (W-04) must rewrite the masked text and keep its stand-ins unchanged.
+
+## D-027 · Contracts v0.4 (proposed): spoken answers, orders by sum, "the rest", currency conversion
+2026-10-13 · Winston · Status: **proposed: needs Darren and Jayanth**
+**Decision:** Four changes, written out in `docs/CONTRACTS.md` §10.
+1. A transcript sent while a clarify question is open answers it. Jev picks an offered option, "none of these", or "something different".
+2. "Invest $2,000 in Apple" becomes a `stock_order`. Code converts the sum to whole shares at the quote price, rounding down, so the shape is unchanged.
+3. "The rest" means what is left after the earlier actions in the same command.
+4. A new `fx_conversion` action and `GET /api/fx` (mock rates), so "send 500 to John and invest the rest in Apple" can fund USD shares from SGD savings. The gateway rejects a stale rate with `rate_changed`.
+**Why:** In the CLI, a spoken reply to "Which John?" ("John Smith") restarted the conversation, which is wrong for a voice-first app. "Send X and invest the rest" is a natural compound command, but today "the rest" means the whole balance, share orders only take counts, and nothing converts SGD to USD.
+**Rejected:** A `budget` field on `stock_order`. Code converts the sum to a quantity, so the card and the signed shape stay as they are. Refusing cross-currency "rest" instead of converting would have broken the headline example.
+**Open:** A stated SGD sum for a USD share ("invest S$2,000 in Apple") is not covered; v0.4 reads stated sums in the share's currency. Validation must re-derive amounts that are computed rather than said (§10.7).
