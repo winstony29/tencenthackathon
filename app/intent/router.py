@@ -188,8 +188,8 @@ async def understand(request: UnderstandRequest) -> dict[str, Any]:
     session that already holds a draft it is a follow-up turn about that draft;
     otherwise it starts a new command. Either way one Jev batch on the original text
     (numbers swapped for stand-ins) also carries the input shield's question; if Jev flags
-    an injection, nothing else from that batch is used. An answer settles the open question from the
-    stored replies without asking Jev again.
+    an injection, nothing else from that batch is used. An answer settles the open question
+    from the stored replies without asking Jev again.
     """
     if not _live():
         return _stub_understand(request)

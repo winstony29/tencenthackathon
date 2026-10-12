@@ -134,6 +134,12 @@ def test_stand_ins_are_keyed_and_scoped(mask_key, monkeypatch) -> None:
     assert options.stand_ins(numbers, "u|s1") != first  # useless without the key
 
 
+def test_stand_ins_keep_the_number_of_digits(mask_key) -> None:
+    numbers = options.parse_numbers("send 5, 50, 1,250.50 and fifty thousand")
+    shown = options.stand_ins(numbers, "u|s1")
+    assert [len(str(s)) for s in shown] == [2, 2, 4, 5]
+
+
 def test_options_come_only_from_user_data_and_the_transcript() -> None:
     built = options.build("send fifty to john", options.UserData(BANK, QUOTES), "u|s1")
     criteria = {q.name: q.criteria for q in built.questions}

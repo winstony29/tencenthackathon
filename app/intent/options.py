@@ -131,12 +131,15 @@ def parse_numbers(text: str) -> list[Number]:
 
 def _stand_in(value: Decimal, scope: str, taken: set[int]) -> int:
     # Keyed, so a stand-in can't be worked back by hashing every amount; the counter only
-    # moves on when two different values in one text would share a stand-in.
+    # moves on when two different values in one text would share a stand-in. It keeps the
+    # value's digit count because Jev reads "send 437" as less like a large transfer than
+    # "send 63000" (live, 12 Oct): Jev learns the rough size, never the value.
+    low = 10 ** max(1, len(str(int(value))) - 1)
     attempt = 0
     while True:
         message = f"{scope}|{value.normalize()}|{attempt}".encode()
         digest = hmac.new(config.MASK_KEY, message, hashlib.sha256).digest()
-        number = 10 + int.from_bytes(digest[:4], "big") % 990
+        number = low + int.from_bytes(digest[:4], "big") % (9 * low)
         if number not in taken:
             return number
         attempt += 1
