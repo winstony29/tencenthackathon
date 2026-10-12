@@ -272,7 +272,9 @@ async def _spoken_answer(
 def _live() -> bool:
     # ponytail: stubs answer until the Jev key and Jayanth's readonly views exist (CONTRACTS §7);
     # delete this check and the stubs once both are in place everywhere.
-    return bool(config.MAKERS_MODELS_KEY) and hasattr(readonly, "get_accounts")
+    return bool(config.MAKERS_MODELS_KEY) and all(
+        hasattr(readonly, name) for name in ("get_accounts", "list_quotes")
+    )
 
 
 async def _start(user_id: str, transcript: str, session_id: str) -> session.Session:
