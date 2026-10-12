@@ -103,6 +103,42 @@ def test_numbers_are_parsed_by_code(text: str, values: list[str]) -> None:
     assert [str(n.value) for n in options.parse_numbers(text)] == values
 
 
+@pytest.mark.parametrize(
+    ("text", "currencies"),
+    [
+        ("send 2k to mum", ["SGD"]),
+        ("send $2,000 to mum", ["SGD"]),
+        ("send S$2,000 to mum", ["SGD"]),
+        ("invest US$2,000 in apple", ["USD"]),
+        ("invest 2,000 USD in apple", ["USD"]),
+        ("invest two thousand US dollars in apple", ["USD"]),
+        ("give us 50", ["SGD"]),
+        ("send 50 to us and US$20 to mum", ["SGD", "USD"]),
+    ],
+)
+def test_amounts_are_sgd_unless_us_dollars_are_named(text: str, currencies: list[str]) -> None:
+    assert [n.currency for n in options.parse_numbers(text)] == currencies
+
+
+def test_relative_amounts_take_their_account_currency() -> None:
+    built = options.build("send half to mum", options.UserData(BANK, QUOTES), "u|s1")
+    assert {n.account_id: n.currency for n in built.said.values()} == {
+        "acc_1234": "SGD",
+        "acc_5678": "SGD",
+        "acc_7788": "USD",
+    }
+
+
+def test_a_us_dollar_transfer_from_an_sgd_account_is_refused(client, fake_jev, bank) -> None:
+    fake_jev.script = {
+        "has_transfer": {"yes": SURE, "no": 1 - SURE},
+        "recipient": {"pay_0001": SURE, "none": 1 - SURE},
+        "transfer_amount": {"n0": SURE, "none": 1 - SURE},
+    }
+    reply = _understand(client, "send US$50 to mum").json()
+    assert reply["status"] == "unsupported" and "SGD" in reply["message"]
+
+
 def _shape(text: str) -> str:
     return re.sub(r"\d+", "#", text)
 

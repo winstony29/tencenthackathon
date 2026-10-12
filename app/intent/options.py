@@ -8,7 +8,7 @@ Contract: none; user data comes from app/bank/readonly.py (CONTRACTS §3.3)
 import hashlib
 import hmac
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from itertools import groupby
 
@@ -57,6 +57,8 @@ _FRACTION = re.compile(r"\b(" + "|".join(_FRACTIONS) + r")\b")
 # Matched on the original text (not text.lower()) so spans index the text mask() rewrites.
 _TOKEN = re.compile(r"(\d[\d,]*(?:\.\d+)?)(k|m)?\b|[a-z]+", re.IGNORECASE)
 _EMAIL = re.compile(r"\S+@\S+")
+_USD_BEFORE = re.compile(r"(?:\bus\$|\busd)\s*$", re.IGNORECASE)
+_USD_AFTER = re.compile(r"^\s*(?:usd\b|us\s*dollars?\b|us\$)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -64,6 +66,9 @@ class Number:
     value: Decimal
     phrase: str
     span: tuple[int, int] | None = None  # where it was said; None when code computed it
+    currency: str = "SGD"  # amounts are SGD unless the user names US dollars (§10.3)
+    account_id: str | None = None  # the account a relative amount is a fraction of
+    remaining: bool = False  # "the rest": what is left after the earlier actions (§10.4)
 
 
 @dataclass(frozen=True)
@@ -80,6 +85,7 @@ class Options:
     questions: list[Question]
     labels: dict[str, dict[str, str]]  # question -> option_id -> what the user reads
     numbers: dict[str, Decimal]  # option_id ("n0", "n1", …) -> the number said
+    said: dict[str, Number]  # option_id -> the full number (currency, account, "the rest")
 
 
 def parse_numbers(text: str) -> list[Number]:
@@ -127,7 +133,14 @@ def parse_numbers(text: str) -> list[Number]:
         else:
             flush()
     flush()
-    return found
+    return [_with_currency(text, n) for n in found]
+
+
+def _with_currency(text: str, n: Number) -> Number:
+    # "us" alone isn't enough ("give us 50"); only US$, USD or US dollars name the currency.
+    before, after = text[: n.span[0]], text[n.span[1] :]
+    usd = _USD_BEFORE.search(before) or _USD_AFTER.search(after)
+    return replace(n, currency="USD") if usd else n
 
 
 def _stand_in(value: Decimal, scope: str, taken: set[int]) -> int:
@@ -253,7 +266,14 @@ def _relative(text: str, accounts: AccountsResponse) -> list[Number]:
     for word in dict.fromkeys(_FRACTION.findall(text.lower())):
         for x in accounts.accounts:
             value = (x.balance * _FRACTIONS[word]).quantize(Decimal("0.01"))
-            found.append(Number(value, f"{word} of the {x.label} balance"))
+            found.append(
+                Number(
+                    value,
+                    f"{word} of the {x.label} balance",
+                    currency=x.currency,
+                    account_id=x.account_id,
+                )
+            )
     return found
 
 
@@ -375,6 +395,7 @@ def build(transcript: str, data: UserData, scope: str) -> Options:
         + [Question(name, text, {o: c for o, c, _ in opts}) for name, (text, opts) in spec.items()],
         labels={name: {o: label for o, _, label in opts} for name, (_, opts) in spec.items()},
         numbers={oid: n.value for oid, n in said.items()},
+        said=said,
     )
 
 
@@ -442,6 +463,7 @@ def build_followup(text: str, draft: Draft, data: UserData, scope: str) -> Optio
         + [Question(name, q, {o: c for o, c, _ in opts}) for name, (q, opts) in spec.items()],
         labels={name: {o: label for o, _, label in opts} for name, (_, opts) in spec.items()},
         numbers={oid: n.value for oid, n in said.items()},
+        said=said,
     )
 
 

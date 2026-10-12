@@ -70,6 +70,7 @@ def build(
 
 def _transfer(p: dict[str, str], options: Options, data: UserData) -> TransferAction:
     source = _account(data, p["transfer_from"], prefer="savings")
+    _same_currency(options, p["transfer_amount"], source)
     payee = next(x for x in data.accounts.payees if x.payee_id == p["recipient"])
     return TransferAction(
         type="transfer",
@@ -85,6 +86,8 @@ def _transfer(p: dict[str, str], options: Options, data: UserData) -> TransferAc
 def _bill(p: dict[str, str], options: Options, data: UserData) -> BillPaymentAction:
     source = _account(data, p["bill_from"], prefer="savings")
     biller = next(x for x in data.accounts.billers if x.biller_id == p["biller"])
+    if p["bill_amount"] != "due":
+        _same_currency(options, p["bill_amount"], source)
     amount = biller.amount_due if p["bill_amount"] == "due" else options.numbers[p["bill_amount"]]
     return BillPaymentAction(
         type="bill_payment",
@@ -127,6 +130,12 @@ def _account(data: UserData, chosen: str, prefer: str, currency: str | None = No
     if not candidates:
         raise Unbuildable(f"You don't have an account in {currency}.")
     return next((a for a in candidates if prefer in a.type), candidates[0])
+
+
+def _same_currency(options: Options, oid: str, source: Account) -> None:
+    # Amounts are SGD unless US dollars are named (§10.3); never convert silently.
+    if options.said[oid].currency != source.currency:
+        raise Unbuildable(f"I can only send {source.currency} from {source.label}.")
 
 
 def _money(value: Decimal) -> Decimal:
@@ -228,6 +237,9 @@ def _amended(action, fields: dict[str, str], options: Options, data: UserData):
     if "recipient" in fields:
         payee = next(x for x in data.accounts.payees if x.payee_id == fields["recipient"])
         update |= {"to_payee_id": payee.payee_id, "to_payee_label": payee.label}
+    if "amount" in fields and fields["amount"] != "due":
+        source = _account(data, fields.get("from", action.from_account_id), prefer="savings")
+        _same_currency(options, fields["amount"], source)
     return type(action).model_validate({**action.model_dump(), **update})
 
 
