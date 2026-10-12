@@ -25,11 +25,8 @@ export function WinstonPlaceholder({
   return (
     <section className="v2-winston-placeholder" aria-label="Mock Winston output">
       <div>
-        <p className="eyebrow">WINSTON OUTPUT · PLACEHOLDER</p>
-        <p>
-          Winston resolves tasks and ambiguity before UI creation. Choose a complete mock output, including
-          updated objectives for the same transfer. This is not his live workflow.
-        </p>
+        <p className="eyebrow">MOCK WINSTON OUTPUT</p>
+        <p>Choose a resolved demo task.</p>
       </div>
       <label>
         Resolved output
@@ -89,9 +86,8 @@ export function V2Workspace({
       <div className="v2-task-grid">
         <div className="v2-plan-heading">
           <p className="eyebrow">
-            ONE PLAN · {edited.actions.length} {edited.actions.length === 1 ? "TASK" : "TASKS"}
+            PLAN · {edited.actions.length} {edited.actions.length === 1 ? "TASK" : "TASKS"}
           </p>
-          <p>Edit the details. See their impact together.</p>
         </div>
         {manifest.workspace?.tasks
           .slice()
@@ -139,7 +135,7 @@ export function V2Workspace({
                           : action.biller_label}
                     </h2>
                   </div>
-                  <span className="v2-task-state">{review ? "Ready for review" : "Editable"}</span>
+                  <span className="v2-task-state">{review ? "Review" : "Editable"}</span>
                 </header>
                 <div className="v2-task-body">
                   <ActionFields
@@ -159,19 +155,19 @@ export function V2Workspace({
                   <div className="v2-task-impact" aria-label={`Impact of action ${index + 1}`}>
                     <p className="eyebrow">{action.type === "stock_order" ? "ORDER ESTIMATE" : "PAYMENT"}</p>
                     <strong>
-                      {valid && estimate ? displayMoney(estimate, action.currency) : "Check your details"}
+                      {valid && estimate ? displayMoney(estimate, action.currency) : "Check details"}
                     </strong>
                     {action.type === "bill_payment" && <small>Reference {action.bill_reference}</small>}
                     {action.type === "stock_order" && (
                       <small>
                         {action.order_type === "limit" ? "Limit price" : "Mock market price"} ·{" "}
-                        {price ? displayMoney(price, action.currency) : "Unavailable"} / share. Estimates
-                        exclude fees and taxes; execution prices may differ.
+                        {price ? displayMoney(price, action.currency) : "Unavailable"} / share. Excludes fees
+                        and taxes. Final price may vary.
                       </small>
                     )}
                     {!review && account && manifest.supporting.includes("projection") && (
                       <div className="v2-linked-balance">
-                        <span>After all tasks funded by this account</span>
+                        <span>After all account tasks</span>
                         <b className={account.projected?.startsWith("-") ? "error-text" : ""}>
                           {account.projected
                             ? displayMoney(account.projected, account.currency)
@@ -200,18 +196,18 @@ export function V2Workspace({
             >
               <p className="eyebrow">
                 {component === "projection"
-                  ? "AFTER YOUR NEXT MOVE"
+                  ? "PROJECTED BALANCE"
                   : component === "accounts"
-                    ? "YOUR MOCK ACCOUNTS"
+                    ? "MOCK ACCOUNTS"
                     : component === "recipient"
                       ? "RECIPIENT CHECK"
-                      : "YOUR HOLDINGS"}
+                      : "HOLDINGS"}
               </p>
               {component === "projection" ? (
                 <>
                   <h2>{edited.actions.length > 1 ? "Room for both?" : "After this task"}</h2>
                   {!valid ? (
-                    <p>Correct the highlighted fields to see a projection.</p>
+                    <p>Fix highlighted fields to see estimates.</p>
                   ) : (
                     projections.map((account) => {
                       const negative = account.projected?.startsWith("-");
@@ -223,9 +219,7 @@ export function V2Workspace({
                               ? displayMoney(account.projected, account.currency)
                               : "Price unavailable"}
                           </strong>
-                          <small>
-                            {negative ? "Insufficient funds in this account" : "Estimated remaining balance"}
-                          </small>
+                          <small>{negative ? "Insufficient funds" : "Estimated balance"}</small>
                           {manifest.tools.includes("chart") && account.projected && (
                             <div className="v2-balance-chart" aria-hidden="true">
                               <span
@@ -240,13 +234,13 @@ export function V2Workspace({
                     })
                   )}
                   <p className="fine-print">
-                    Currencies remain separate. Estimates exclude fees, taxes, FX and other commitments; this
-                    is not a financial recommendation.
+                    Currencies shown separately. Excludes fees, taxes, FX and other commitments. Not financial
+                    advice.
                   </p>
                 </>
               ) : component === "accounts" ? (
                 <>
-                  <h2>Know your starting point.</h2>
+                  <h2>Balances</h2>
                   {v2Accounts.accounts.map((a) => (
                     <div className="v2-balance-row" key={a.account_id}>
                       <span>{a.label}</span>
@@ -256,19 +250,17 @@ export function V2Workspace({
                 </>
               ) : component === "recipient" ? (
                 <>
-                  <h2>Check who you’re paying.</h2>
+                  <h2>Recipient</h2>
                   {edited.actions
                     .filter((a) => a.type === "transfer")
                     .map((a, i) => (
                       <p key={i}>{a.type === "transfer" ? a.to_payee_label : ""}</p>
                     ))}
-                  <small>
-                    A listed mock recipient. Bank verification remains mandatory before a real transfer.
-                  </small>
+                  <small>Mock recipient. Bank verification required for real transfers.</small>
                 </>
               ) : (
                 <>
-                  <h2>Your existing position.</h2>
+                  <h2>Current holdings</h2>
                   {v2Accounts.holdings.map((h) => (
                     <p key={h.ticker}>
                       {h.ticker} · {h.quantity} shares
@@ -317,7 +309,7 @@ function SimulationControl({
 }) {
   return (
     <section className="v2-context v2-simulation">
-      <p className="eyebrow">EXPLORE A DIFFERENT AMOUNT</p>
+      <p className="eyebrow">ADJUST AMOUNT</p>
 
       {actions.map((a, index) => {
         if (index !== target) return null;

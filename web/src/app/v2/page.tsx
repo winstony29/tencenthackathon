@@ -92,14 +92,14 @@ export default function ConversationalBanking() {
   }
   const title =
     state.surface === "review"
-      ? "One final look."
+      ? "Review your plan"
       : state.surface === "result"
-        ? "Your demo is reviewed."
+        ? "Review complete"
         : objective === "assess_affordability"
-          ? "See the impact of your plan."
+          ? "Can you afford it?"
           : objective === "check_recipient"
-            ? "Check who you are paying."
-            : "Your plan, ready to shape.";
+            ? "Check recipient"
+            : "Your plan";
   return (
     <div className="v2-shell">
       <nav className="v2-topline" aria-label="Experiment navigation">
@@ -109,12 +109,12 @@ export default function ConversationalBanking() {
         </Link>
       </nav>
       <div className="v2-demo-label">
-        Mock Winston output and banking data -{" "}
+        Demo data -{" "}
         {composing
           ? "Calling live JEV..."
           : presentation?.manifest.source === "jev"
             ? `Live JEV - ${live?.systemone.model}`
-            : "Local composition fallback"}
+            : "Local fallback"}
       </div>
       <WinstonPlaceholder
         selected={fixture}
@@ -124,15 +124,15 @@ export default function ConversationalBanking() {
       />
       {composing && (
         <div className="v2-jev-status" role="status">
-          JEV is choosing presentation only.{" "}
+          Composing workspace…{" "}
           <Button variant="ghost" onClick={cancel}>
-            Cancel composition
+            Cancel
           </Button>
         </div>
       )}
       {jevError && (
         <p className="error-text" role="alert">
-          {jevError} The workspace is using its local fallback.
+          {jevError} Using local fallback.
         </p>
       )}
       <motion.div
@@ -144,21 +144,17 @@ export default function ConversationalBanking() {
         {!state.draft ? (
           <section className="v2-context">
             <p className="eyebrow">AWAITING WINSTON OUTPUT</p>
-            <h1>Start with a resolved task.</h1>
-            <p>
-              Winston handles conversation, task routing and missing details before handing a complete task to
-              this workspace. Choose a mock output above to inspect the JEV presentation.
-            </p>
+            <h1>Choose a demo task</h1>
+            <p>Winston resolves task details first. Select a demo above.</p>
           </section>
         ) : (
           <>
             <header className="v2-workspace-heading">
               <div>
-                <p className="eyebrow">WINSTON OBJECTIVE: {objective.replaceAll("_", " ")}</p>
+                <p className="eyebrow">OBJECTIVE: {objective.replaceAll("_", " ")}</p>
                 <h1 data-surface-heading tabIndex={-1}>
                   {title}
                 </h1>
-                <p>Edit the details and review every action before confirming.</p>
               </div>
             </header>
             {state.surface !== "result" && presentation && (
@@ -173,10 +169,6 @@ export default function ConversationalBanking() {
             )}
             {state.surface === "workspace" && (
               <div className="v2-action-bar">
-                <p>
-                  Further conversational instructions are resolved by Winston. The selector simulates his
-                  updated output.
-                </p>
                 <Button disabled={!valid || composing} onClick={() => dispatch({ type: "review" })}>
                   Review my task
                 </Button>
@@ -184,7 +176,7 @@ export default function ConversationalBanking() {
             )}
             {state.surface === "review" && (
               <section className="v2-review">
-                <h2>Check each action before confirming.</h2>
+                <h2>Review each action</h2>
                 {state.draft.actions.map((_, index) => (
                   <label key={index}>
                     <input
@@ -207,15 +199,14 @@ export default function ConversationalBanking() {
                   </Button>
                 </div>
                 <p className="fine-print">
-                  Demo review only. Real transactions require backend validation, signing and gateway
-                  approval.
+                  Demo only. Real transactions require validation, signing and approval.
                 </p>
               </section>
             )}
             {state.surface === "result" && (
               <section className="v2-result">
                 <Check size={30} />
-                <p>Demo review completed. No transaction was executed.</p>
+                <p>Review complete. No money moved.</p>
                 <Button
                   onClick={() => {
                     cancel();
@@ -233,11 +224,8 @@ export default function ConversationalBanking() {
       </motion.div>
       {presentation && (
         <details className="v2-trace">
-          <summary>How this workspace was composed</summary>
-          <p>
-            Bundle decisions are presentation only. Stability margin 0.15 is an experimental UI policy, not
-            financial confidence.
-          </p>
+          <summary>Developer details</summary>
+          <p>Presentation only. Stability margin: 0.15 (experimental).</p>
           <pre>{JSON.stringify({ ...presentation, systemone: live?.systemone ?? null }, null, 2)}</pre>
         </details>
       )}

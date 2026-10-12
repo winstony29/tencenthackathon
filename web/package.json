@@ -11,7 +11,7 @@
     "format:check": "prettier --check src tests *.ts *.json *.mjs --print-width 110",
     "test": "tsx --test tests/*.test.ts",
     "check": "npm run typecheck && npm run lint && npm run format:check && npm test",
-    "test:browser": "node --test tests/browser.test.mjs"
+    "test:browser": "node --test tests/*.test.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",

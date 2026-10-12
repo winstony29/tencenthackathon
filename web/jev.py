@@ -13,8 +13,10 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app import config
+from web.presentation import router as component_router
 
 router = APIRouter(prefix="/api", tags=["presentation demo"])
+router.include_router(component_router)
 Bundle = Literal[
     "transfer_editing",
     "recipient_check",

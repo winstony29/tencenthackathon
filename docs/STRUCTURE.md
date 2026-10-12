@@ -144,3 +144,22 @@ web/
 | 2026-10-10 | Winston | Add `docs/GITHUB.md` |
 | 2026-10-10 | Winston | Add `docs/DCTA_endpoints_and_data.pptx` |
 | 2026-10-10 | Darren | Register first frontend slice (D-01 to D-04) |
+
+## V3 presentation experiment (Darren, D-022)
+
+The V3 brief authorizes this separate route and these focused modules. V1 and V2 remain available.
+
+- `web/presentation-catalog.json`: shared approved functional component metadata and dependencies.
+- `web/presentation.py`: structural V3 JEV request builder, checked answers and router.
+- `web/src/app/v3/page.tsx`: complete mock Winston journeys, live composition and inspector.
+- `web/src/app/v3/v3.css`: scoped banking design and motion tokens.
+- `web/src/lib/v3-registry.ts`: typed component bindings, eligibility and privacy-minimized context.
+- `web/src/lib/v3-presentation.ts`: deterministic manifest validation, fallback and stability.
+- `web/src/lib/v3-state.ts`: complete handoffs, isolated scenarios and review state.
+- `web/src/components/v3-primitives.tsx`: reusable field, metric and section primitives.
+- `web/src/components/v3-editors.tsx`: mandatory task editors and explicit review.
+- `web/src/components/v3-analysis.tsx`: projections, scenario controls and supporting context.
+- `web/src/components/v3-workspace.tsx`: stable keyed functional registry renderer.
+- `web/tests/v3.test.ts`: registry, manifest, state and financial integrity tests.
+- `web/tests/v3.browser.test.mjs`: V3 browser journeys, stale responses and responsive checks.
+- `web/tests/test_presentation.py`: offline Python request, parser and endpoint tests.

@@ -83,7 +83,7 @@ test(
     async function choose(id) {
       await page.getByLabel("Mock Winston output scenario").selectOption(id);
       await page.getByRole("button", { name: "Compose with live JEV" }).click();
-      await page.getByText(/Mock Winston output and banking data - Live JEV/).waitFor();
+      await page.getByText(/Demo data - Live JEV/).waitFor();
     }
     try {
       await page.goto(`${baseURL}/v2/`);
@@ -111,7 +111,7 @@ test(
       await page.getByLabel("Simulate amount for action 1").fill("30000");
       assert.equal(await page.getByLabel("Amount for action 1", { exact: true }).inputValue(), "300.00");
       await choose("transfer-recipient");
-      await page.getByRole("heading", { name: "Check who you are paying." }).waitFor();
+      await page.getByRole("heading", { name: "Check recipient" }).waitFor();
       assert.equal(await page.getByLabel("Amount for action 1", { exact: true }).inputValue(), "300.00");
       await page.getByLabel("Amount for action 1", { exact: true }).fill("222.00");
       await choose("transfer-amended");
@@ -127,15 +127,15 @@ test(
       invalid = false;
       delayed = true;
       await page.getByRole("button", { name: "Compose with live JEV" }).click();
-      await page.getByRole("button", { name: "Cancel composition" }).click();
+      await page.getByRole("button", { name: "Cancel", exact: true }).click();
       if (release) release();
-      assert.equal(await page.getByText(/Mock Winston output and banking data - Live JEV/).count(), 0);
+      assert.equal(await page.getByText(/Demo data - Live JEV/).count(), 0);
       delayed = false;
       await page.getByRole("button", { name: "Review my task" }).click();
       assert.equal(await page.getByRole("button", { name: "Confirm demo task" }).isDisabled(), true);
       await page.getByRole("checkbox", { name: "I have reviewed action 1" }).check();
       await page.getByRole("button", { name: "Confirm demo task" }).click();
-      await page.getByText("Demo review completed. No transaction was executed.").waitFor();
+      await page.getByText("Review complete. No money moved.").waitFor();
       assert.deepEqual(forbidden, []);
       assert.equal(JSON.stringify(requests).includes("321.00"), false);
       assert.equal(JSON.stringify(requests).includes("John Doe"), false);
