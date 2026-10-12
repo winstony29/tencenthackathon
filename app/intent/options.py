@@ -389,8 +389,9 @@ def build(transcript: str, data: UserData, scope: str) -> Options:
             [("buy", "Buy shares.", "Buy"), ("sell", "Sell shares.", "Sell")],
         ),
         "quantity": (
-            "How many shares, or what sum of money should go into them?",
-            [*said_aloud, *sums, no_number],
+            "How big is the share order: a number of shares, or a sum of money to spend on it"
+            " (which can be all, half or the rest of an account)?",
+            [*said_aloud, *sums, ("none", "The size of the order is not given.", "None of these")],
         ),
         "order_type": (
             "Should the order trade now or only at a stated price?",
