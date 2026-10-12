@@ -5,7 +5,7 @@
   "balance_semantics": "Balances and holdings are authoritative opening snapshots. Historical transactions are descriptive only and must not be replayed.",
   "pending_decisions": [
     "Only AAPL is explicitly required by existing references. The other four USD tickers are synthetic demo selections pending Winston confirmation.",
-    "Adding a DBS stock quote requires agreement on its ticker identifier and SGD investment funding. No currency conversion is modeled.",
+    "Adding a DBS stock quote requires agreement on its ticker identifier and SGD investment funding. SGD/USD conversion uses the mock rates in fx_rates (CONTRACTS §3.3).",
     "The SGD 50,000 demo versus the D-007 placeholder SGD 20,000 daily limit requires a separate team decision. This seed defines no risk thresholds."
   ],
   "users": {
@@ -391,6 +391,20 @@
         "Nvidia",
         "NVDA"
       ]
+    }
+  },
+  "fx_rates": {
+    "SGD-USD": {
+      "from": "SGD",
+      "to": "USD",
+      "rate": "0.740000",
+      "as_of": "2026-10-13T09:30:00+08:00"
+    },
+    "USD-SGD": {
+      "from": "USD",
+      "to": "SGD",
+      "rate": "1.351351",
+      "as_of": "2026-10-13T09:30:00+08:00"
     }
   }
 }

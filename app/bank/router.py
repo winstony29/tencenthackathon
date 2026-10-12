@@ -7,11 +7,11 @@ Contract: docs/CONTRACTS.md §3.3
 
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from app.audit import read_events
 from app.bank.devices import register_public_key
-from app.bank.readonly import get_accounts, get_quote
+from app.bank.readonly import get_accounts, get_fx_rate, get_quote
 from app.config import AUDIT_DEFAULT_LIMIT
 from app.contracts import (
     AccountsResponse,
@@ -22,6 +22,7 @@ from app.contracts import (
     DeviceRegisterResponse,
     ExecuteRequest,
     ExecuteResponse,
+    FxResponse,
     QuoteResponse,
 )
 
@@ -46,6 +47,15 @@ async def accounts(user_id: str) -> AccountsResponse:
 async def quote(ticker: str) -> QuoteResponse:
     """Return the stored mock quote for the requested ticker."""
     return get_quote(ticker)
+
+
+@router.get("/fx", response_model=FxResponse)
+async def fx(from_currency: str = Query(alias="from"), to: str = Query()) -> FxResponse:
+    """Return the stored mock rate for one currency pair; an unknown pair is 404."""
+    try:
+        return get_fx_rate(from_currency, to)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Rate not found.") from None
 
 
 @router.post("/device/register", response_model=DeviceRegisterResponse)

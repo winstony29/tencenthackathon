@@ -214,6 +214,17 @@ def test_readonly_serves_the_intent_engine(bank_seed: dict[str, Any]) -> None:
         readonly.get_fx_rate("SGD", "EUR")
 
 
+def test_fx_endpoint_returns_seed_rates(bank_client: TestClient) -> None:
+    response = bank_client.get("/api/fx", params={"from": "SGD", "to": "USD"})
+    assert response.json() == {
+        "from": "SGD",
+        "to": "USD",
+        "rate": "0.740000",
+        "as_of": "2026-10-13T09:30:00+08:00",
+    }
+    assert bank_client.get("/api/fx", params={"from": "SGD", "to": "EUR"}).status_code == 404
+
+
 @pytest.mark.parametrize(
     ("url", "message"),
     [
