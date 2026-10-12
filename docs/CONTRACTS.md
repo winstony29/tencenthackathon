@@ -236,7 +236,7 @@ Prices are mock data from `data/bank.json`.
 ```json
 {"from": "SGD", "to": "USD", "rate": "0.740000", "as_of": "2026-10-13T09:30:00+08:00"}
 ```
-Rates are mock data in `data/bank.json` (at least SGD→USD and USD→SGD). An unknown pair returns 404 `not_found`. *Pending: not built yet, and there is no stub; until Jayanth adds it, this endpoint returns 404. The UI does not need it: every `fx_conversion` in a draft already carries its `rate`.*
+Rates are mock data in `data/bank.json` (at least SGD→USD and USD→SGD). An unknown pair returns 404 `not_found`. The UI does not need it: every `fx_conversion` in a draft already carries its `rate`.
 
 **`POST /api/device/register`**: stores the phone's public key.
 Request: `{"user_id": "u_demo", "public_key_jwk": { /* EC P-256 public JWK */ }}`
@@ -282,7 +282,7 @@ Bank rules for `fx_conversion` (*pending: Jayanth builds these*):
 - **Rules:** limits and the extra-check threshold apply to `fx_conversion` like a transfer, measured in `sell_currency`.
 
 The intent engine reads user data only through `app/bank/readonly.py` (AGENTS §4), which provides:
-`get_accounts(user_id: str) -> AccountsResponse` (the same shape as `GET /api/accounts`), `list_quotes() -> list[QuoteResponse]` (every tradable ticker), `get_bill_reference(biller_id: str) -> str`, and `get_fx_rate(from_currency: str, to_currency: str) -> FxResponse` (the same shape as `GET /api/fx`; pending, like the endpoint).
+`get_accounts(user_id: str) -> AccountsResponse` (the same shape as `GET /api/accounts`), `list_quotes() -> list[QuoteResponse]` (every tradable ticker), `get_bill_reference(biller_id: str) -> str`, and `get_fx_rate(from_currency: str, to_currency: str) -> FxResponse` (the same shape as `GET /api/fx`). `get_bill_reference` and `get_fx_rate` raise `LookupError` for an unknown biller or pair.
 
 Every area writes events through `app/audit.py`: `append(actor: str, event: str, data: dict) -> None`, where `actor` is `intent`, `validation` or `bank`. Event names are in §8.
 
@@ -354,7 +354,7 @@ Voice: if the browser's built-in speech recognition gives live text, the UI may 
 - **Spoken answers:** while a question is open, a `transcript` in the same session answers it (§3.1).
 - **Sums of money:** "invest 2k in Apple" becomes a `stock_order` with a quantity computed by code (§2.1).
 - **"The rest":** means what is left after the actions said before it (§3.1).
-- **Currency conversion:** new `fx_conversion` action (§2.1), `GET /api/fx` and `get_fx_rate` (§3.3), and reject reason `rate_changed`. The intent side is built; the bank side is pending.
+- **Currency conversion:** new `fx_conversion` action (§2.1), `GET /api/fx` and `get_fx_rate` (§3.3), and reject reason `rate_changed`. The intent side, the rates and `/api/fx` are built; the ledger and rules for it are pending.
 - **Amounts are SGD by default** unless the user names another currency (§1).
 - **Already live (D-026):** Jev never sees real amounts. Every number the user says is swapped for a stand-in, and balances never appear in Jev's options (§3.1, §8). Share counts and limit prices are only numbers the user said, never a fraction of a balance.
 - **Testing:** `scripts/chat.py` runs a text conversation with `/api/understand` against live Jev, turn by turn (`.venv/bin/python scripts/chat.py -v`).
