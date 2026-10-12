@@ -128,6 +128,15 @@ def test_relative_amounts_are_computed_from_balances() -> None:
     assert any("1,600.00" in label for label in labels)
 
 
+def test_jev_never_reads_a_number_value_in_the_options() -> None:
+    built = options.build("transfer half my savings and 30 to mum", options.UserData(BANK, QUOTES))
+    amount = next(q.criteria for q in built.questions if q.name == "transfer_amount")
+    assert amount["n0"] == "The number marked [N0]"
+    assert amount["n1"] == 'The amount "half of the Savings …1234 balance"'
+    values = [str(v) for v in built.numbers.values()]  # "30", "1600.00", "450.00", ...
+    assert not [v for v in values for text in amount.values() if v in text]
+
+
 def test_options_for_buy_100_apple() -> None:
     built = options.build("buy 100 Apple", options.UserData(BANK, QUOTES))
     criteria = {q.name: q.criteria for q in built.questions}
@@ -420,7 +429,7 @@ def test_afford_keeps_the_draft_and_changes_the_objective(client, fake_jev, bank
     assert reply["objective"] == "assess_affordability"
     assert reply["draft"] == first and reply["scenario"] is None
     assert fake_jev.contexts[-1] == {
-        "current_tasks": ["transfer 500.00 SGD to John Doe …4521 from Savings …1234"]
+        "current_tasks": ["transfer to John Doe …4521 from Savings …1234"]
     }
 
 

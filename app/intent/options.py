@@ -187,6 +187,18 @@ def _payee(name: str) -> str:
     return f"Send to {name}; they may be called by part of their name or a nickname."
 
 
+def _number_options(said: dict[str, Number]) -> list[tuple[str, str, str]]:
+    # Jev reads the marker or the fraction, never the value; only the user's chip shows it.
+    return [
+        (
+            oid,
+            f"The number marked [{oid.upper()}]" if n.span else f'The amount "{n.phrase}"',
+            f"{n.value:,}",
+        )
+        for oid, n in said.items()
+    ]
+
+
 def _biller(name: str, label: str, only: bool) -> str:
     return f"The {name} bill ({label})" + (", the user's only saved bill." if only else ".")
 
@@ -224,10 +236,7 @@ def build(transcript: str, data: UserData) -> Options:
     """
     a = data.accounts
     said = {f"n{i}": n for i, n in enumerate(parse_numbers(transcript) + _relative(transcript, a))}
-    amounts = [
-        (oid, f'The number said as "{n.phrase}" ({n.value})', f"{n.value:,}")
-        for oid, n in said.items()
-    ]
+    amounts = _number_options(said)
     no_number = ("none", "No such number is said.", "None of these")
     accounts = [
         (x.account_id, f"Use the {x.label} account ({x.type}, {x.currency})", x.label)
@@ -353,10 +362,7 @@ def build_followup(text: str, draft: Draft, data: UserData) -> Options:
     """
     a = data.accounts
     said = {f"n{i}": n for i, n in enumerate(parse_numbers(text) + _relative(text, a))}
-    amounts = [
-        (oid, f'The number said as "{n.phrase}" ({n.value})', f"{n.value:,}")
-        for oid, n in said.items()
-    ]
+    amounts = _number_options(said)
     accounts = [
         (x.account_id, f"Use the {x.label} account ({x.type}, {x.currency})", x.label)
         for x in a.accounts
@@ -389,16 +395,15 @@ def build_followup(text: str, draft: Draft, data: UserData) -> Options:
 
 
 def describe(action) -> str:
-    """Say one draft action in a few words, for Jev's context and follow-up questions."""
+    """Say one draft action in a few words, for Jev's context and follow-up questions.
+
+    Leaves out amounts and quantities: Jev only needs to tell the tasks apart.
+    """
     if action.type == "transfer":
-        to = action.to_payee_label
-        return (
-            f"transfer {action.amount} {action.currency} to {to} from {action.from_account_label}"
-        )
+        return f"transfer to {action.to_payee_label} from {action.from_account_label}"
     if action.type == "bill_payment":
-        to = action.biller_label
-        return f"pay {action.amount} {action.currency} to {to} from {action.from_account_label}"
-    return f"{action.side} {action.quantity} {action.ticker} shares"
+        return f"pay {action.biller_label} from {action.from_account_label}"
+    return f"{action.side} {action.ticker} shares"
 
 
 _ASK = {
