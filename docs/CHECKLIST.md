@@ -37,7 +37,7 @@ IDs: `S` setup · `W` Winston · `J` Jayanth · `D` Darren · `I` integration ·
   *Done when:* "send fifty to John" returns a question, and answering `pay_4521` returns a draft.
 - [x] **W-07** · Mon · `draft.py`: assemble the draft; amounts from number words ("fifty", "a grand", "50k"), relative amounts ("half of it", "whatever is left") computed by code.
   *Done when:* drafts for demo commands 1, 2 and 4 match CONTRACTS exactly.
-  *Note (12 Oct):* number words, digits, "50k" and "a grand" are parsed; relative amounts ("half of it", "whatever is left") are not yet.
+  *Note (12 Oct):* number words, digits, "50k", "a grand" and spellings like "fiddy" are parsed. Relative amounts ("half my savings", "everything in current") are offered as fractions of each balance; "whatever is left" means the whole balance, not what remains after other actions.
 - [x] **W-08** · Mon · `shield.py`: flag instructions aimed at the system; `/api/understand` returns `blocked`.
   *Done when:* demo command 3 is blocked and command 1 is not.
 - [ ] **W-09** · Mon · `asr.py`: Tencent ASR; decide the audio format with Darren (D-006).

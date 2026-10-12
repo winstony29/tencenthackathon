@@ -29,6 +29,27 @@ _TENS = {
 }
 _SCALES = {"hundred": 100, "thousand": 1000, "grand": 1000, "million": 1_000_000}
 _SUFFIXES = {"k": 1000, "m": 1_000_000}
+# Spoken spellings an ASR transcript may contain, mapped to the number word meant.
+_ALIASES = {
+    "fiddy": "fifty",
+    "fitty": "fifty",
+    "tirty": "thirty",
+    "tree": "three",
+    "fourty": "forty",
+    "tousand": "thousand",
+    "hunnid": "hundred",
+}
+# ponytail: "whatever is left" means the whole balance here, not what remains after the other
+# actions in the same command.
+_FRACTIONS = {
+    "half": Decimal("0.5"),
+    "quarter": Decimal("0.25"),
+    "all": Decimal(1),
+    "everything": Decimal(1),
+    "rest": Decimal(1),
+    "left": Decimal(1),
+}
+_FRACTION = re.compile(r"\b(" + "|".join(_FRACTIONS) + r")\b")
 _TOKEN = re.compile(r"(\d[\d,]*(?:\.\d+)?)(k|m)?\b|[a-z]+")
 
 
@@ -57,10 +78,14 @@ def parse_numbers(text: str) -> list[Number]:
     """Find every amount or count said in the text, in order.
 
     Handles digits ("50", "1,250.50", "$500"), suffixes ("50k"), number words
-    ("fifty", "one hundred and fifty", "fifty thousand") and slang ("a grand",
-    "5 grand"). "a" only counts before a scale word, so "send a friend" has no number.
+    ("fifty", "one hundred and fifty", "fifty thousand"), slang ("a grand",
+    "5 grand") and spoken spellings ("fiddy", "tirty"). "a" only counts before a
+    scale word, so "send a friend" has no number.
     """
-    tokens = [(m.group(1), m.group(2), m.group(0)) for m in _TOKEN.finditer(text.lower())]
+    tokens = [
+        (m.group(1), m.group(2), _ALIASES.get(m.group(0), m.group(0)))
+        for m in _TOKEN.finditer(text.lower())
+    ]
     found: list[Number] = []
     words: list[str] = []
 
@@ -94,6 +119,19 @@ def parse_numbers(text: str) -> list[Number]:
     return found
 
 
+def _relative(text: str, accounts: AccountsResponse) -> list[Number]:
+    """Turn "half my savings" or "everything in current" into amounts, computed by code.
+
+    Offers the fraction of every account's balance; Jev picks which account was meant.
+    """
+    found = []
+    for word in dict.fromkeys(_FRACTION.findall(text.lower())):
+        for x in accounts.accounts:
+            value = (x.balance * _FRACTIONS[word]).quantize(Decimal("0.01"))
+            found.append(Number(value, f"{word} of the {x.label} balance"))
+    return found
+
+
 def _words_value(words: list[str]) -> Decimal | None:
     total = current = 0
     for word in words:
@@ -112,8 +150,8 @@ def build(transcript: str, data: UserData) -> Options:
     Values only ever come from these lists: payees, accounts, billers and tickers
     from the user's data, and numbers parsed from the transcript by code.
     """
-    said = {f"n{i}": n for i, n in enumerate(parse_numbers(transcript))}
     a = data.accounts
+    said = {f"n{i}": n for i, n in enumerate(parse_numbers(transcript) + _relative(transcript, a))}
     yes_no = [("yes", "Yes, it asks for this.", "Yes"), ("no", "No, it does not.", "No")]
     amounts = [
         (oid, f'The number said as "{n.phrase}" ({n.value})', f"{n.value:,}")

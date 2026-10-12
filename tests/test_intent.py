@@ -85,6 +85,8 @@ def test_jev_asks_every_phrasing_in_order(fake_jev) -> None:
         ("send twenty five to john and 30 to mum", ["25", "30"]),
         ("buy 100 shares of apple", ["100"]),
         ("send a friend some money", []),
+        ("send fiddy to mum", ["50"]),
+        ("transfer tirty dollar to john smith", ["30"]),
     ],
 )
 def test_numbers_are_parsed_by_code(text: str, values: list[str]) -> None:
@@ -98,6 +100,13 @@ def test_options_come_only_from_user_data_and_the_transcript() -> None:
     assert set(criteria["transfer_amount"]) == {"n0", "none"}
     assert built.numbers == {"n0": Decimal("50")}
     assert set(criteria["ticker"]) == {"AAPL", "TSLA", "none"}
+
+
+def test_relative_amounts_are_computed_from_balances() -> None:
+    built = options.build("transfer half my savings to mum", options.UserData(BANK, QUOTES))
+    assert Decimal("1600.00") in built.numbers.values()  # half of Savings …1234 (3200.00)
+    labels = built.labels["transfer_amount"].values()
+    assert any("1,600.00" in label for label in labels)
 
 
 def test_options_for_buy_100_apple() -> None:
