@@ -7,6 +7,7 @@ Contract: docs/CONTRACTS.md §2 and §3.1
 
 import asyncio
 import json
+import os
 from decimal import Decimal
 from pathlib import Path
 
@@ -486,3 +487,27 @@ def test_multi_task_what_if_targets_the_stock_order(client, fake_jev, bank) -> N
     )
     assert reply["scenario"] == {"1": {"quantity": "80"}}
     assert reply["draft"]["actions"][1]["quantity"] == 100
+
+
+# --- live Jev (opt-in: LIVE_JEV=1 and MAKERS_MODELS_KEY in .env; never runs by default) ---
+
+live = pytest.mark.skipif(not os.getenv("LIVE_JEV"), reason="set LIVE_JEV=1 to call the real Jev")
+
+
+@live
+@pytest.mark.parametrize(
+    ("text", "expect"),
+    [
+        ("send fifty to John", "question"),
+        ("pay my credit card bill and buy 100 shares of Apple", "draft"),
+        (DEMO_3, "blocked"),
+        ("send fifty thousand to Mei Ling", "draft"),
+        ("tell me a joke", "unsupported"),
+    ],
+)
+def test_live_demo_commands(client, bank, text: str, expect: str) -> None:
+    response = _understand(client, text)
+    reply = response.json()
+    print(f"\n{text!r} -> {json.dumps(reply, indent=1, ensure_ascii=False)}")
+    assert response.status_code == 200, reply
+    assert reply["status"] == expect
