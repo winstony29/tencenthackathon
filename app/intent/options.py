@@ -119,6 +119,54 @@ def parse_numbers(text: str) -> list[Number]:
     return found
 
 
+# One yes/no pair per action type. Saying what does NOT count keeps Jev from hesitating
+# between them, e.g. "pay 500 towards my DBS card" is a bill payment, not a transfer.
+_ASKS_FOR = {
+    "transfer": [
+        (
+            "yes",
+            "It asks to send or give money to a person. Paying a bill or card is not this.",
+            "Yes",
+        ),
+        (
+            "no",
+            "It does not ask to send money to a person; paying a bill or buying shares is 'no'.",
+            "No",
+        ),
+    ],
+    "bill_payment": [
+        ("yes", "It asks to pay a bill or a card balance, such as a credit card bill.", "Yes"),
+        ("no", "It does not ask to pay a bill or card.", "No"),
+    ],
+    "stock_order": [
+        (
+            "yes",
+            "It asks to buy or sell shares; a company with a number counts, e.g. 'sell 5 apple'.",
+            "Yes",
+        ),
+        ("no", "It does not ask to buy or sell shares.", "No"),
+    ],
+}
+
+# Wording tuned against the live Jev (12 Oct): a short "none" lets a first name shared by two
+# payees split between them instead of falling to "none"; naming the kind of bill that is NOT
+# in the list lifts "my credit card bill" from 0.63 to 0.93.
+_NO_PAYEE = "Someone not in this list, or no one named."
+_NO_BILL = (
+    "A different kind of bill that is not in this list, such as electricity or phone, "
+    "or no bill at all."
+)
+_NO_COMPANY = "A company that is not in this list, or no company at all."
+
+
+def _payee(name: str) -> str:
+    return f"Send to {name}; they may be called by part of their name or a nickname."
+
+
+def _biller(name: str, label: str, only: bool) -> str:
+    return f"The {name} bill ({label})" + (", the user's only saved bill." if only else ".")
+
+
 def _relative(text: str, accounts: AccountsResponse) -> list[Number]:
     """Turn "half my savings" or "everything in current" into amounts, computed by code.
 
@@ -152,7 +200,6 @@ def build(transcript: str, data: UserData) -> Options:
     """
     a = data.accounts
     said = {f"n{i}": n for i, n in enumerate(parse_numbers(transcript) + _relative(transcript, a))}
-    yes_no = [("yes", "Yes, it asks for this.", "Yes"), ("no", "No, it does not.", "No")]
     amounts = [
         (oid, f'The number said as "{n.phrase}" ({n.value})', f"{n.value:,}")
         for oid, n in said.items()
@@ -165,29 +212,23 @@ def build(transcript: str, data: UserData) -> Options:
     default = ("default", "No account is said.", "My usual account")
 
     spec = {
-        "has_transfer": ("Does the text ask to send money to a person?", yes_no),
-        "has_bill_payment": (
-            "Does the text ask to pay a bill, such as a credit card bill?",
-            yes_no,
-        ),
-        "has_stock_order": ("Does the text ask to buy or sell shares?", yes_no),
+        "has_transfer": ("Does the text ask to send money to a person?", _ASKS_FOR["transfer"]),
+        "has_bill_payment": ("Does the text ask to pay a bill or card?", _ASKS_FOR["bill_payment"]),
+        "has_stock_order": ("Does the text ask to buy or sell shares?", _ASKS_FOR["stock_order"]),
         "recipient": (
             "Who should receive the money?",
-            [(p.payee_id, f"Send to {p.name}", p.label) for p in a.payees]
-            + [
-                (
-                    "none",
-                    "The person named is not in this list, or no person is named.",
-                    "Someone else",
-                )
-            ],
+            [(p.payee_id, _payee(p.name), p.label) for p in a.payees]
+            + [("none", _NO_PAYEE, "Someone else")],
         ),
         "transfer_amount": ("How much money should be sent?", [*amounts, no_number]),
         "transfer_from": ("Which account should the money be sent from?", [*accounts, default]),
         "biller": (
             "Which bill should be paid?",
-            [(b.biller_id, f"Pay the {b.name} bill", b.label) for b in a.billers]
-            + [("none", "No bill in this list is meant.", "None of these")],
+            [
+                (b.biller_id, _biller(b.name, b.label, len(a.billers) == 1), b.label)
+                for b in a.billers
+            ]
+            + [("none", _NO_BILL, "None of these")],
         ),
         "bill_amount": (
             "How much of the bill should be paid?",
@@ -211,7 +252,7 @@ def build(transcript: str, data: UserData) -> Options:
                 )
                 for q in data.quotes
             ]
-            + [("none", "No company in this list is meant.", "None of these")],
+            + [("none", _NO_COMPANY, "None of these")],
         ),
         "side": (
             "Should shares be bought or sold?",
@@ -301,7 +342,7 @@ def build_followup(text: str, draft: Draft, data: UserData) -> Options:
         spec[f"a{i}_amount"] = (f"{task}, what new amount is said?", [*due, *amounts, KEEP])
         spec[f"a{i}_from"] = (f"{task}, which account should it now come from?", [*accounts, KEEP])
         if action.type == "transfer":
-            payees = [(p.payee_id, f"Send to {p.name}", p.label) for p in a.payees]
+            payees = [(p.payee_id, _payee(p.name), p.label) for p in a.payees]
             spec[f"a{i}_recipient"] = (f"{task}, who should now receive it?", [*payees, KEEP])
     return Options(
         questions=[
@@ -352,19 +393,22 @@ def clarify(
     """Word a short question about one unsure pick and choose its chips, most likely first.
 
     "none" and "default" are left out so the user always picks a real value, and
-    options Jev gave almost no chance are dropped.
+    options far less likely than the best one are dropped.
     """
     ranked = sorted(
         (o for o in probabilities if o not in ("none", "default")),
         key=lambda o: probabilities[o],
         reverse=True,
     )
-    likely = [o for o in ranked if probabilities[o] >= config.CLARIFY_MIN_PROBABILITY]
-    # When Jev found no real candidates (say, a name not in the list), offer the top ones.
-    ranked = (likely if len(likely) >= 2 else ranked)[: config.CLARIFY_MAX_OPTIONS]
+    top = probabilities[ranked[0]] if ranked else 0.0
+    likely = [o for o in ranked if probabilities[o] >= max(config.CLARIFY_MIN_SHARE * top, 0.01)]
+    # One strong candidate becomes a confirmation chip; with no real candidate, offer the top few.
+    enough = len(likely) >= 2 or (likely and top >= 0.5)
+    ranked = (likely if enough else ranked)[: config.CLARIFY_MAX_OPTIONS]
     chips = [(o, options.labels[question][o]) for o in ranked]
     text = _ASK.get(question) or _ASK[question.split("_", 1)[1]]  # a0_amount -> amount
     first_names = {label.split()[0] for _, label in chips[:2]}
-    if question == "recipient" and len(chips) > 1 and len(first_names) == 1:
+    # "Which John?" only when Jev really weighed two people sharing that name.
+    if question == "recipient" and enough and len(chips) > 1 and len(first_names) == 1:
         text = f"Which {first_names.pop()} did you mean?"
     return text, chips

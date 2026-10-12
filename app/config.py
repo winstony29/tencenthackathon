@@ -38,7 +38,7 @@ MAX_QUESTIONS = 3  # clarify questions before giving up with "too_many_questions
 SESSION_TIMEOUT_SECONDS = 300  # a clarify session expires after this long without a call
 TIMEZONE = "Asia/Singapore"  # offset written into draft times (CONTRACTS §1)
 CLARIFY_MAX_OPTIONS = 4  # most chips one clarifying question shows
-CLARIFY_MIN_PROBABILITY = 0.05  # options below this average probability are not offered as chips
+CLARIFY_MIN_SHARE = 0.2  # chips need at least this share of the likeliest option's probability
 PREVIEW_CACHE_SIZE = 500  # distinct texts /api/preview remembers before dropping the oldest
 
 SHIELD_BLOCK_AT = 0.5  # Jev's probability of an injection at which the shield blocks (W-08)

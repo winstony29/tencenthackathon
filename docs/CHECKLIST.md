@@ -23,12 +23,13 @@ IDs: `S` setup · `W` Winston · `J` Jayanth · `D` Darren · `I` integration ·
 
 ### Winston: intent engine
 
-- [ ] **W-01** · Sat · Get one real Jev call working from `app/intent/jev.py`. If it fails by Saturday 23:00, record the fallback in D-005 and switch.
+- [x] **W-01** · Sat · Get one real Jev call working from `app/intent/jev.py`. If it fails by Saturday 23:00, record the fallback in D-005 and switch.
   *Done when:* a script call returns a choice with probabilities, or D-005 says "fallback".
 - [x] **W-02** · Sun · `options.py`: build option lists for action type, payee, biller, account, ticker, side, and the number words in the transcript.
   *Done when:* tests show the right options for "send fifty to John" and "buy 100 Apple".
-- [ ] **W-03** · Sun · `jev.py`: send the full question set for up to 4 actions in one batched call; return probabilities per option.
+- [x] **W-03** · Sun · `jev.py`: send the full question set for up to 4 actions in one batched call; return probabilities per option.
   *Done when:* the fake-Jev test and one real call both parse correctly.
+  *Live (12 Oct):* `LIVE_JEV=1 pytest -k live` passes demo commands 1 to 4 and an off-topic request against `jev-1.13.0`, about 2 s each (shield + batch). Option wording was tuned against live probabilities. The gateway returns HTTP 429 after a few dozen calls in quick succession, and the key is shared with Darren's presentation demo.
 - [ ] **W-04** · Sun · `rewriter.py`: K plain rewrites (K from config). The original transcript is always kept as R0.
   *Done when:* the test confirms R0 is unchanged and K + 1 texts come back.
 - [x] **W-05** · Sun · `gate.py`: average + spread rule; tau rises with the amount (values in config).
