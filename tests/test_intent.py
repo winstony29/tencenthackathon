@@ -265,6 +265,13 @@ def test_a_missing_amount_is_never_guessed(client, fake_jev, bank) -> None:
     assert "how much" in reply["message"]
 
 
+def test_a_second_transfer_is_refused_not_dropped(client, fake_jev, bank) -> None:
+    _send_fifty_to_john(fake_jev)
+    fake_jev.script["several_transfers"] = {"yes": SURE, "no": 1 - SURE}
+    reply = _understand(client, "send 50 to John Doe and 20 to mum").json()
+    assert reply["status"] == "unsupported" and "one transfer at a time" in reply["message"]
+
+
 def test_not_a_banking_command_is_unsupported(client, fake_jev, bank) -> None:
     assert _understand(client, "what's the weather").json()["status"] == "unsupported"
 

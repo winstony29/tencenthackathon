@@ -79,6 +79,12 @@ def decide(replies: list[Reply], answers: dict[str, str], amount: Decimal) -> De
         if not settle(f"has_{kind}"):
             return Decision(picks, ask=f"has_{kind}")
     actions = [kind for kind in ACTION_TYPES if picks[f"has_{kind}"].option == "yes"]
+    # ponytail: one action per type; a second transfer is refused rather than silently dropped.
+    if "transfer" in actions:
+        if not settle("several_transfers"):
+            return Decision(picks, actions, ask="several_transfers")
+        if picks["several_transfers"].option == "yes":
+            return Decision(picks, actions, missing="several_transfers")
     for kind in actions:
         slots = list(SLOTS[kind])
         for name in slots:  # a limit order appends limit_price, which this loop still visits

@@ -363,6 +363,7 @@ _MISSING = {
     "transfer_amount": 'Please say how much to send, for example "send fifty to John".',
     "quantity": 'Please say how many shares, for example "buy 100 Apple shares".',
     "limit_price": "Please say the price for your order.",
+    "several_transfers": "I can do one transfer at a time. Please say them one by one.",
 }
 
 

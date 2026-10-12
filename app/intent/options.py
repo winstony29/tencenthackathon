@@ -215,6 +215,18 @@ def build(transcript: str, data: UserData) -> Options:
         "has_transfer": ("Does the text ask to send money to a person?", _ASKS_FOR["transfer"]),
         "has_bill_payment": ("Does the text ask to pay a bill or card?", _ASKS_FOR["bill_payment"]),
         "has_stock_order": ("Does the text ask to buy or sell shares?", _ASKS_FOR["stock_order"]),
+        "several_transfers": (
+            "Does the text ask for two or more separate transfers?",
+            [
+                (
+                    "yes",
+                    "It asks to send money to two or more people, or two transfers to one "
+                    "person. Numbers for shares or bills do not count.",
+                    "Yes",
+                ),
+                ("no", "At most one transfer. Buying shares or paying a bill doesn't count.", "No"),
+            ],
+        ),
         "recipient": (
             "Who should receive the money?",
             [(p.payee_id, _payee(p.name), p.label) for p in a.payees]
@@ -373,6 +385,7 @@ _ASK = {
     "has_transfer": "Do you want to send money to someone?",
     "has_bill_payment": "Do you want to pay a bill?",
     "has_stock_order": "Do you want to buy or sell shares?",
+    "several_transfers": "Is this more than one transfer?",
     "recipient": "Who should get the money?",
     "transfer_amount": "How much should I send?",
     "transfer_from": "Which account should I send it from?",
