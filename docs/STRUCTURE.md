@@ -163,3 +163,48 @@ The V3 brief authorizes this separate route and these focused modules. V1 and V2
 - `web/tests/v3.test.ts`: registry, manifest, state and financial integrity tests.
 - `web/tests/v3.browser.test.mjs`: V3 browser journeys, stale responses and responsive checks.
 - `web/tests/test_presentation.py`: offline Python request, parser and endpoint tests.
+
+
+## V4 isolated presentation workspace (Darren, 12 October 2026)
+
+Authorized V4 implementation; V1/V2/V3 remain available.
+
+- `web/v4-catalog.json`: shared approved component recipes and objective guidance.
+- `web/presentation_v4.py`: bounded EdgeOne evaluator adapter; presentation only.
+- `web/src/app/v4/page.tsx`, `web/src/app/v4/v4.css`: V4 route and scoped design.
+- `web/src/lib/v4-state.ts`: typed resolved handoff, drafts, scenarios and review state.
+- `web/src/lib/v4-demo.ts`: synthetic Winston journeys and banking fixtures.
+- `web/src/lib/v4-catalog.ts`: eligible app-owned recipes and schema.
+- `web/src/lib/v4-composition.ts`: upstream composer integration, acceptance and fallback.
+- `web/src/components/v4-workspace.tsx`: stable task component rendering and motion.
+- `web/src/components/v4-editors.tsx`: bound task editors and review.
+- `web/src/components/v4-analysis.tsx`: deterministic projections, scenarios and context.
+- `web/src/components/v4-primitives.tsx`: accessible V4 form/metric primitives.
+- `web/tests/v4.test.ts`, `web/tests/v4.browser.test.mjs`, `web/tests/test_presentation_v4.py`: V4 validation and interaction tests.
+- `web/vendor/json-render/{actions,directives,experimental-compose,experimental-composition-batch,experimental-composition-tree,props,spec-validator,types,visibility}.ts`: unchanged minimal upstream composer dependency closure.
+- `web/vendor/json-render/LICENSE`, `web/vendor/json-render/provenance.json`: Apache license and exact source pin.
+
+
+V4 financial-context additions (Darren):
+- `web/src/lib/v4-financial.ts`: optional typed account context, exact-cent commitment and reserve calculations.
+- `web/src/components/v4-context.tsx`: mandatory financial notices and optional bill timeline/spending diagrams.
+
+
+V4 financial-context additions (Darren):
+- `web/src/lib/v4-financial.ts`: optional typed account context and exact-cent commitment/reserve calculations.
+- `web/src/components/v4-context.tsx`: financial notices and optional bill timeline/spending diagrams.
+`web/src/app/v4/components/page.tsx`: interactive preview of real V4 financial components using mock data, without JEV calls.
+
+## V5 orb interface (Darren, 2026-10-13)
+
+- `web/src/app/v5/page.tsx`: orb entry, explicit mock Winston choices, validated handoff and existing JEV orchestration.
+- `web/src/app/v5/v5.css`: scoped responsive dark shell and white task surfaces; reduced motion.
+- `web/src/components/v5-orb.tsx`: accessible animated orb and shared surface transition.
+- `web/tests/v5.browser.test.mjs`: entry gating, clarification, JEV composition, edits, cancellation, review and responsive checks.
+
+### V5 task confirmation and bank connection
+
+- `web/src/components/v5-cards.tsx`: concise action summaries and financial impact charts, with optional account context collapsed.
+- `web/src/components/v5-payment.tsx`: single confirmation action, bank result and conditional OTP entry.
+- `web/src/lib/v5-bank.ts`: runtime-checked validation, persistent non-extractable device key, challenge binding, signing and execution.
+- `web/tests/v5-bank.test.ts`: exact displayed-draft challenge binding and expiry checks.
