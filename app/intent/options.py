@@ -10,6 +10,7 @@ import hmac
 import re
 from dataclasses import dataclass
 from decimal import Decimal
+from itertools import groupby
 
 from app import config
 from app.contracts import AccountsResponse, Draft, QuoteResponse
@@ -55,7 +56,7 @@ _FRACTIONS = {
 _FRACTION = re.compile(r"\b(" + "|".join(_FRACTIONS) + r")\b")
 # Matched on the original text (not text.lower()) so spans index the text mask() rewrites.
 _TOKEN = re.compile(r"(\d[\d,]*(?:\.\d+)?)(k|m)?\b|[a-z]+", re.IGNORECASE)
-_DIGITS = re.compile(r"\d+")
+_EMAIL = re.compile(r"\S+@\S+")
 
 
 @dataclass(frozen=True)
@@ -162,7 +163,8 @@ def mask(text: str, scope: str) -> str:
 
     Stand-ins come from a keyed hash of the value and the scope (user and session): normally
     the same for a whole conversation, different across conversations, and impossible to work
-    back without config.MASK_KEY. Digits the parser missed become "[number]".
+    back without config.MASK_KEY. Digits the parser missed become "[number]", and email
+    addresses become "[email]".
     """
     # ponytail: number words parse_numbers doesn't know ("dozen", "couple") pass through
     # unmasked; add them to _SMALL / _SCALES if they turn up in real transcripts.
@@ -170,10 +172,15 @@ def mask(text: str, scope: str) -> str:
     parts, last = [], 0
     for n, stand_in in zip(numbers, stand_ins(numbers, scope), strict=True):
         start, end = n.span
-        parts += [_DIGITS.sub("[number]", text[last:start]), str(stand_in)]
+        parts += [_hide_digits(text[last:start]), str(stand_in)]
         last = end
-    parts.append(_DIGITS.sub("[number]", text[last:]))
-    return "".join(parts)
+    parts.append(_hide_digits(text[last:]))
+    return _EMAIL.sub("[email]", "".join(parts))
+
+
+def _hide_digits(text: str) -> str:
+    # Digits the parser missed, in any script ("⑨", "²", "九"), not just 0-9.
+    return "".join("[number]" if n else "".join(run) for n, run in groupby(text, str.isnumeric))
 
 
 # One yes/no pair per action type. Saying what does NOT count keeps Jev from hesitating
