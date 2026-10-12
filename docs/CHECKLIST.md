@@ -54,6 +54,9 @@ IDs: `S` setup · `W` Winston · `J` Jayanth · `D` Darren · `I` integration ·
 - [ ] **W-13** · Tue · Follow-up turns: a new `transcript` in an open session amends the current draft ("make it $300 from savings"); `simulate` returns code-computed `scenario` values that never enter the draft.
   *Done when:* the transfer and multi-task journeys in `web/src/lib/v3-state.ts` run against the real endpoint.
 
+- [x] **W-14** · Mon · Keep real amounts from Jev: keyed stand-in numbers, value-free options and follow-up context (D-026).
+  *Done when:* `test_no_amount_said_ever_reaches_jev` passes and the live demo commands still pass.
+
 ### Jayanth: validation and transactions
 
 - [ ] **J-01** · Sat · `data/bank.json`: `u_demo` with Savings (SGD), Current (SGD), Invest (USD); payees John Doe, John Smith, Tan Mei Ling, Mum; a credit card biller with amount due; 5 tickers with prices; KYC complete.
