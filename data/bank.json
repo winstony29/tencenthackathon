@@ -122,7 +122,10 @@
             "credit card",
             "DBS credit card",
             "card bill"
-          ]
+          ],
+          "payment_state": "outstanding",
+          "from_account_id": "acc_1234",
+          "obligation_id": "obl_card_2026_10"
         }
       ],
       "holdings": [
@@ -278,6 +281,56 @@
           "time": "2026-09-12T12:00:00+08:00",
           "status": "completed",
           "description": "Synthetic savings interest"
+        }
+      ],
+      "cashflow_schedule": [
+        {
+          "occurrence_id": "occ_card_2026_10",
+          "obligation_id": "obl_card_2026_10",
+          "biller_id": "bil_0001",
+          "label": "Fictional scheduled DBS card payment",
+          "kind": "expense",
+          "account_id": "acc_1234",
+          "currency": "SGD",
+          "due_at": "2026-10-20T23:59:00+08:00",
+          "state": "scheduled",
+          "synthetic": true
+        },
+        {
+          "occurrence_id": "occ_rent_2026_11",
+          "label": "Fictional monthly rent",
+          "kind": "expense",
+          "account_id": "acc_1234",
+          "currency": "SGD",
+          "amount": "1450.00",
+          "due_at": "2026-11-01T09:00:00+08:00",
+          "state": "scheduled",
+          "recurrence": "monthly",
+          "synthetic": true
+        },
+        {
+          "occurrence_id": "occ_utilities_2026_11",
+          "label": "Fictional monthly utilities",
+          "kind": "expense",
+          "account_id": "acc_1234",
+          "currency": "SGD",
+          "amount": "92.40",
+          "due_at": "2026-11-05T09:00:00+08:00",
+          "state": "scheduled",
+          "recurrence": "monthly",
+          "synthetic": true
+        },
+        {
+          "occurrence_id": "occ_salary_2026_10",
+          "label": "Fictional expected salary (demo assumption)",
+          "kind": "income",
+          "account_id": "acc_5678",
+          "currency": "SGD",
+          "amount": "6200.00",
+          "due_at": "2026-10-30T09:00:00+08:00",
+          "state": "confirmed_demo",
+          "recurrence": "monthly",
+          "synthetic": true
         }
       ]
     }

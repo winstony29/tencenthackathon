@@ -5,16 +5,18 @@ Diagram box: Mock gateway, Risk & KYC rules, Mock ledger
 Contract: docs/CONTRACTS.md §3.3 and §4
 """
 
+import ast
 import base64
 import hashlib
 import importlib
 import json
 import re
+import socket
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
-from decimal import Decimal
+from datetime import datetime, timedelta
+from decimal import Decimal, localcontext
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +27,7 @@ from pydantic import ValidationError
 
 from app import audit
 from app.bank import devices, readonly
-from app.contracts import AccountsResponse, QuoteResponse
+from app.contracts import Account, AccountsResponse, QuoteResponse
 from app.main import app
 
 
@@ -783,3 +785,430 @@ def test_device_storage_path_is_independent_of_working_directory(
     assert devices.register_public_key("u_demo", public_jwk).status == "registered"
     assert device_path.is_file()
     assert devices.get_public_key("u_demo")["x"] == public_jwk["x"]
+
+
+@pytest.fixture
+def forecast_seed(bank_seed: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Use independent in-memory schedule data without touching the committed seed."""
+    monkeypatch.setattr(readonly, "_load_database", lambda: bank_seed)
+    return bank_seed
+
+
+def _demo_forecast(account_id: str = "acc_1234", amount: str = "500.00") -> dict[str, Any]:
+    return readonly.get_cashflow_forecast(
+        "u_demo",
+        account_id,
+        as_of=datetime.fromisoformat("2026-10-12T00:00:00+08:00"),
+        horizon_days=30,
+        proposed_amount=Decimal(amount),
+    )
+
+
+def test_cashflow_demo_totals_and_negative_projection_are_advisory(
+    forecast_seed: dict[str, Any],
+) -> None:
+    before = json.dumps(forecast_seed, sort_keys=True)
+    forecast = _demo_forecast()
+    assert forecast["current_balance"] == "3200.00"
+    assert forecast["scheduled_income_total"] == "0.00"
+    assert forecast["commitment_total"] == "2782.40"
+    assert forecast["projected_balance_before"] == "417.60"
+    assert forecast["projected_balance_after"] == "-82.40"
+    assert forecast["transaction_difference"] == "-500.00"
+    assert forecast["projected_shortfall"] == "82.40"
+    assert [item["occurrence_id"] for item in forecast["commitments"]] == [
+        "occ_card_2026_10",
+        "occ_rent_2026_11",
+        "occ_utilities_2026_11",
+    ]
+    assert forecast["estimate"] is True
+    assert forecast["synthetic"] is True
+    assert "externally verified" in " ".join(forecast["assumptions"])
+    assert "other expenses" in " ".join(forecast["assumptions"])
+    assert "status" not in forecast
+    assert json.dumps(forecast_seed, sort_keys=True) == before
+
+
+def test_cashflow_salary_is_a_separate_fictional_current_account_inflow(
+    forecast_seed: dict[str, Any],
+) -> None:
+    result = _demo_forecast("acc_5678", "50.00")
+    assert result["scheduled_income_total"] == "6200.00"
+    assert result["commitment_total"] == "0.00"
+    assert result["projected_balance_after"] == "71150.00"
+    assert result["scheduled_income"][0]["synthetic"] is True
+    assert _demo_forecast("acc_7788")["projected_balance_after"] == "29500.00"
+    assert _demo_forecast("acc_7788")["currency"] == "USD"
+
+
+def test_cashflow_paid_bill_is_excluded_despite_stale_schedule(
+    forecast_seed: dict[str, Any],
+) -> None:
+    user = forecast_seed["users"]["u_demo"]
+    user["billers"][0]["payment_state"] = "paid"
+    result = _demo_forecast()
+    assert result["commitment_total"] == "1542.40"
+    assert len(result["commitments"]) == 2
+
+
+def test_cashflow_empty_schedule_still_includes_known_outstanding_bill(
+    forecast_seed: dict[str, Any],
+) -> None:
+    forecast_seed["users"]["u_demo"]["cashflow_schedule"] = []
+    assert _demo_forecast()["commitment_total"] == "1240.00"
+
+
+def test_cashflow_no_upcoming_commitments_requires_explicit_schedule(
+    forecast_seed: dict[str, Any],
+) -> None:
+    user = forecast_seed["users"]["u_demo"]
+    user["cashflow_schedule"] = []
+    user["billers"][0]["payment_state"] = "paid"
+    result = _demo_forecast()
+    assert result["commitment_total"] == "0.00"
+    assert result["projected_balance_after"] == "2700.00"
+    assert result["commitments"] == []
+
+
+@pytest.mark.parametrize("state", ["paid", "cancelled"])
+def test_cashflow_paid_or_cancelled_recurring_expenses_are_excluded(
+    forecast_seed: dict[str, Any],
+    state: str,
+) -> None:
+    forecast_seed["users"]["u_demo"]["cashflow_schedule"][1]["state"] = state
+    assert _demo_forecast()["commitment_total"] == "1332.40"
+
+
+def test_cancelling_card_payment_does_not_erase_outstanding_bill(
+    forecast_seed: dict[str, Any],
+) -> None:
+    forecast_seed["users"]["u_demo"]["cashflow_schedule"][0]["state"] = "cancelled"
+    assert _demo_forecast()["commitment_total"] == "2782.40"
+
+
+@pytest.mark.parametrize("state", ["received", "cancelled", "unconfirmed"])
+def test_cashflow_only_explicit_demo_confirmed_income_is_counted(
+    forecast_seed: dict[str, Any],
+    state: str,
+) -> None:
+    forecast_seed["users"]["u_demo"]["cashflow_schedule"][3]["state"] = state
+    assert _demo_forecast("acc_5678")["scheduled_income_total"] == "0.00"
+
+
+@pytest.mark.parametrize("mutation", ["occurrence", "obligation"])
+def test_cashflow_duplicate_payments_are_rejected_instead_of_double_counted(
+    forecast_seed: dict[str, Any],
+    mutation: str,
+) -> None:
+    schedule = forecast_seed["users"]["u_demo"]["cashflow_schedule"]
+    duplicate = dict(schedule[0])
+    if mutation == "obligation":
+        duplicate["occurrence_id"] = "occ_duplicate"
+    schedule.append(duplicate)
+    with pytest.raises(readonly.ForecastDataError):
+        _demo_forecast()
+
+
+@pytest.mark.parametrize(
+    "offset,expected", [(-1, "0.00"), (0, "1450.00"), (2591999, "1450.00"), (2592000, "0.00")]
+)
+def test_cashflow_date_window_is_start_inclusive_end_exclusive(
+    forecast_seed: dict[str, Any],
+    offset: int,
+    expected: str,
+) -> None:
+    user = forecast_seed["users"]["u_demo"]
+    item = dict(user["cashflow_schedule"][1])
+    start = datetime.fromisoformat("2026-10-12T00:00:00+08:00")
+    item["due_at"] = (start + timedelta(seconds=offset)).isoformat()
+    user["cashflow_schedule"] = [item]
+    user["billers"][0]["payment_state"] = "paid"
+    assert _demo_forecast()["commitment_total"] == expected
+
+
+def test_cashflow_dates_compare_absolute_instants_across_offsets(
+    forecast_seed: dict[str, Any],
+) -> None:
+    user = forecast_seed["users"]["u_demo"]
+    user["billers"][0]["payment_state"] = "paid"
+    item = dict(user["cashflow_schedule"][1], due_at="2026-10-11T16:00:00+00:00")
+    user["cashflow_schedule"] = [item]
+    assert _demo_forecast()["commitment_total"] == "1450.00"
+
+
+@pytest.mark.parametrize("schedule", [None, {}, "invalid"])
+def test_cashflow_missing_or_invalid_schedule_is_not_zero_expenses(
+    forecast_seed: dict[str, Any],
+    schedule: Any,
+) -> None:
+    forecast_seed["users"]["u_demo"]["cashflow_schedule"] = schedule
+    with pytest.raises(readonly.ForecastDataError, match="unavailable"):
+        _demo_forecast()
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("amount", "NaN"),
+        ("amount", "-1.00"),
+        ("amount", "12.345"),
+        ("amount", 12.5),
+        ("amount", "12"),
+        ("due_at", "2026-11-01T00:00:00"),
+        ("due_at", "bad"),
+        ("state", "unknown"),
+        ("kind", "unknown"),
+        ("account_id", "acc_unknown"),
+        ("currency", "USD"),
+        ("synthetic", False),
+    ],
+)
+def test_cashflow_invalid_occurrences_never_produce_a_projection(
+    forecast_seed: dict[str, Any],
+    field: str,
+    value: Any,
+) -> None:
+    forecast_seed["users"]["u_demo"]["cashflow_schedule"][1][field] = value
+    with pytest.raises(readonly.ForecastDataError):
+        _demo_forecast()
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("biller_id", "bil_unknown"),
+        ("obligation_id", "obl_wrong"),
+        ("account_id", "acc_5678"),
+        ("amount", "10.00"),
+        ("state", "paid"),
+        ("due_at", "2026-10-21T00:00:00+08:00"),
+    ],
+)
+def test_cashflow_bill_reference_and_payment_state_must_be_consistent(
+    forecast_seed: dict[str, Any],
+    field: str,
+    value: Any,
+) -> None:
+    forecast_seed["users"]["u_demo"]["cashflow_schedule"][0][field] = value
+    with pytest.raises(readonly.ForecastDataError):
+        _demo_forecast()
+
+
+@pytest.mark.parametrize("horizon", [0, -1, True, 30.5])
+def test_cashflow_requires_explicit_positive_integer_horizon(
+    forecast_seed: dict[str, Any],
+    horizon: Any,
+) -> None:
+    with pytest.raises(readonly.ForecastDataError):
+        readonly.get_cashflow_forecast(
+            "u_demo",
+            "acc_1234",
+            as_of=datetime.fromisoformat("2026-10-12T00:00:00+08:00"),
+            horizon_days=horizon,
+            proposed_amount=Decimal("0.00"),
+        )
+
+
+def test_cashflow_horizon_is_configurable_without_changing_config(
+    forecast_seed: dict[str, Any],
+) -> None:
+    result = readonly.get_cashflow_forecast(
+        "u_demo",
+        "acc_1234",
+        as_of=datetime.fromisoformat("2026-10-12T00:00:00+08:00"),
+        horizon_days=7,
+        proposed_amount=Decimal("0"),
+    )
+    assert result["commitment_total"] == "0.00"
+
+
+def test_cashflow_can_use_current_snapshot_without_ledger_access(
+    forecast_seed: dict[str, Any],
+) -> None:
+    account = (
+        readonly.get_accounts("u_demo")
+        .accounts[0]
+        .model_copy(update={"balance": Decimal("4000.00")})
+    )
+    result = readonly.get_cashflow_forecast(
+        "u_demo",
+        "acc_1234",
+        as_of=datetime.fromisoformat("2026-10-12T00:00:00+08:00"),
+        horizon_days=30,
+        proposed_amount=Decimal("500.00"),
+        balance_snapshot=account,
+    )
+    assert result["current_balance"] == "4000.00"
+    assert result["projected_balance_after"] == "717.60"
+    wrong = account.model_copy(update={"currency": "USD"})
+    with pytest.raises(readonly.ForecastDataError):
+        readonly.get_cashflow_forecast(
+            "u_demo",
+            "acc_1234",
+            as_of=datetime.fromisoformat("2026-10-12T00:00:00+08:00"),
+            horizon_days=30,
+            proposed_amount=Decimal("500.00"),
+            balance_snapshot=wrong,
+        )
+
+
+def test_pure_forecast_uses_exact_decimal_arithmetic_under_low_precision() -> None:
+    account = Account(
+        account_id="acc_test", label="Demo", type="savings", currency="SGD", balance="1234.56"
+    )
+    with localcontext() as context:
+        context.prec = 2
+        result = readonly.calculate_cashflow_forecast(
+            account=account,
+            occurrences=[],
+            as_of=datetime.fromisoformat("2026-10-12T00:00:00+08:00"),
+            horizon_days=30,
+            proposed_amount=Decimal("500.00"),
+        )
+    assert result["projected_balance_after"] == "734.56"
+
+
+def test_cashflow_forecast_preserves_database_and_existing_api_responses(
+    bank_client: TestClient,
+) -> None:
+    path = Path(__file__).resolve().parents[1] / "data" / "bank.json"
+    before = path.read_bytes()
+    accounts = bank_client.get("/api/accounts?user_id=u_demo").json()
+    quote = bank_client.get("/api/quote?ticker=AAPL").json()
+    assert _demo_forecast()["projected_balance_after"] == "-82.40"
+    assert path.read_bytes() == before
+    assert bank_client.get("/api/accounts?user_id=u_demo").json() == accounts
+    assert bank_client.get("/api/quote?ticker=AAPL").json() == quote
+
+
+def test_forecasting_has_no_ai_or_execution_dependencies() -> None:
+    tree = ast.parse(Path(readonly.__file__).read_text())
+    imports = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imports.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            imports.append(node.module or "")
+    assert not any(
+        name.startswith(
+            (
+                "app.intent",
+                "app.llm",
+                "app.validation",
+                "app.bank.ledger",
+                "app.bank.gateway",
+                "httpx",
+            )
+        )
+        for name in imports
+    )
+
+
+@pytest.mark.parametrize(
+    "user_id,account_id", [("u_unknown", "acc_1234"), ("u_demo", "acc_unknown")]
+)
+def test_cashflow_unknown_users_or_accounts_return_not_found(user_id: str, account_id: str) -> None:
+    with pytest.raises(HTTPException) as error:
+        readonly.get_cashflow_forecast(
+            user_id,
+            account_id,
+            as_of=datetime.fromisoformat("2026-10-12T00:00:00+08:00"),
+            horizon_days=30,
+            proposed_amount=Decimal("0.00"),
+        )
+    assert error.value.status_code == 404
+
+
+def test_cashflow_never_opens_a_network_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbidden(*arguments: Any, **keywords: Any) -> None:
+        pytest.fail("Forecast attempted network access")
+
+    monkeypatch.setattr(socket, "socket", forbidden)
+    assert _demo_forecast()["projected_balance_after"] == "-82.40"
+
+
+@pytest.mark.parametrize(
+    "amount",
+    [Decimal("-1.00"), Decimal("NaN"), Decimal("Infinity"), Decimal("0.001"), 500.0, "500.00"],
+)
+def test_cashflow_rejects_invalid_hypothetical_money(
+    forecast_seed: dict[str, Any],
+    amount: Any,
+) -> None:
+    with pytest.raises(readonly.ForecastDataError):
+        readonly.get_cashflow_forecast(
+            "u_demo",
+            "acc_1234",
+            as_of=datetime.fromisoformat("2026-10-12T00:00:00+08:00"),
+            horizon_days=30,
+            proposed_amount=amount,
+        )
+
+
+def test_cashflow_requires_aware_as_of_and_does_not_repeat_monthly_occurrences(
+    forecast_seed: dict[str, Any],
+) -> None:
+    with pytest.raises(readonly.ForecastDataError):
+        readonly.get_cashflow_forecast(
+            "u_demo",
+            "acc_1234",
+            as_of=datetime(2026, 10, 12),
+            horizon_days=30,
+            proposed_amount=Decimal("0.00"),
+        )
+    result = readonly.get_cashflow_forecast(
+        "u_demo",
+        "acc_1234",
+        as_of=datetime.fromisoformat("2026-10-12T00:00:00+08:00"),
+        horizon_days=60,
+        proposed_amount=Decimal("0.00"),
+    )
+    assert result["commitment_total"] == "2782.40"
+    assert result["transaction_difference"] == "0.00"
+
+
+def test_cashflow_currency_mismatch_in_pure_calculation_is_rejected() -> None:
+    account = Account(
+        account_id="acc_test", label="Demo", type="investment", currency="USD", balance="30000.00"
+    )
+    occurrence = {
+        "occurrence_id": "occ_test",
+        "account_id": "acc_test",
+        "currency": "SGD",
+        "kind": "expense",
+        "state": "scheduled",
+        "synthetic": True,
+        "label": "Fictional expense",
+        "amount": "50.00",
+        "due_at": "2026-10-20T00:00:00+08:00",
+    }
+    with pytest.raises(readonly.ForecastDataError):
+        readonly.calculate_cashflow_forecast(
+            account=account,
+            occurrences=[occurrence],
+            as_of=datetime.fromisoformat("2026-10-12T00:00:00+08:00"),
+            horizon_days=30,
+            proposed_amount=Decimal("0.00"),
+        )
+
+
+def test_cashflow_history_does_not_change_opening_balances_or_scheduled_totals(
+    forecast_seed: dict[str, Any],
+) -> None:
+    before = _demo_forecast()
+    forecast_seed["users"]["u_demo"]["transaction_history"][5]["amount"] = "9999.00"
+    assert _demo_forecast() == before
+
+
+def test_cashflow_unknown_bill_payment_state_and_absent_schedule_fail_clearly(
+    forecast_seed: dict[str, Any],
+) -> None:
+    user = forecast_seed["users"]["u_demo"]
+    user["billers"][0].pop("payment_state")
+    with pytest.raises(readonly.ForecastDataError):
+        _demo_forecast()
+    user.pop("cashflow_schedule")
+    with pytest.raises(readonly.ForecastDataError, match="unavailable"):
+        _demo_forecast()
