@@ -11,6 +11,7 @@ from decimal import Decimal
 
 from app import config
 from app.contracts import AccountsResponse, Draft, QuoteResponse
+from app.intent import shield
 from app.intent.jev import Question
 
 ACTION_TYPES = ("transfer", "bill_payment", "stock_order")
@@ -290,9 +291,9 @@ def build(transcript: str, data: UserData) -> Options:
         "objective": ("What does the user want to do with the task?", OBJECTIVES),
     }
     return Options(
-        questions=[
-            Question(name, text, {o: c for o, c, _ in opts}) for name, (text, opts) in spec.items()
-        ],
+        # The shield question rides in the same call, so a command costs one Jev call.
+        questions=[shield.QUESTION]
+        + [Question(name, text, {o: c for o, c, _ in opts}) for name, (text, opts) in spec.items()],
         labels={name: {o: label for o, _, label in opts} for name, (_, opts) in spec.items()},
         numbers={oid: n.value for oid, n in said.items()},
     )
@@ -357,9 +358,8 @@ def build_followup(text: str, draft: Draft, data: UserData) -> Options:
             payees = [(p.payee_id, _payee(p.name), p.label) for p in a.payees]
             spec[f"a{i}_recipient"] = (f"{task}, who should now receive it?", [*payees, KEEP])
     return Options(
-        questions=[
-            Question(name, q, {o: c for o, c, _ in opts}) for name, (q, opts) in spec.items()
-        ],
+        questions=[shield.QUESTION]
+        + [Question(name, q, {o: c for o, c, _ in opts}) for name, (q, opts) in spec.items()],
         labels={name: {o: label for o, _, label in opts} for name, (_, opts) in spec.items()},
         numbers={oid: n.value for oid, n in said.items()},
     )

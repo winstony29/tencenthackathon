@@ -182,24 +182,28 @@ async def transcribe(audio: UploadFile) -> dict[str, Any]:
 async def understand(request: UnderstandRequest) -> dict[str, Any]:
     """Turn a transcript, or the answer to a question, into the next step.
 
-    A transcript is checked by the input shield first. In a session that already
-    holds a draft it is a follow-up turn about that draft; otherwise it starts a new
-    command. Either way Jev answers one batch of questions per phrasing. An answer
-    settles the open question from the stored replies without asking Jev again.
+    A transcript with a known attack phrase is blocked before any model sees it. In a
+    session that already holds a draft it is a follow-up turn about that draft;
+    otherwise it starts a new command. Either way one Jev batch on the original text
+    also carries the input shield's question; if Jev flags an injection, nothing else
+    from that batch is used. An answer settles the open question from the stored
+    replies without asking Jev again.
     """
     if not _live():
         return _stub_understand(request)
     started = time.monotonic()
     if request.transcript is not None:
-        blocked, model = await shield.check(request.transcript)
-        if blocked:
+        if shield.obvious(request.transcript):
             session.drop(request.session_id)
-            return _blocked(model, started)
+            return _blocked("", started)
         current = session.load(request.session_id, request.user_id)
         if current and current.draft:
             await _start_followup(current, request.transcript)
         else:
             current = await _start(request.user_id, request.transcript)
+        if shield.flagged(current.replies[0]):
+            session.drop(request.session_id)
+            return _blocked(current.replies[0].model, started)
     else:
         current = session.load(request.session_id, request.user_id)
         if current is None:
@@ -228,7 +232,9 @@ async def _start(user_id: str, transcript: str) -> session.Session:
     except LookupError as error:
         raise HTTPException(404, "Unknown user.") from error
     built = options.build(transcript, data)
-    phrasings = [transcript]  # W-04 adds the K rewrites; the original always stays first
+    # W-04: ask the K rewrites only after this batch clears the shield (it carries the shield
+    # question), so injected text never reaches the rewriter's LLM.
+    phrasings = [transcript]
     replies = await jev.ask_all(phrasings, built.questions)
     return session.Session(user_id, transcript, built, data, replies)
 
@@ -287,7 +293,8 @@ async def _followup_step(
     if objective == "new_task":
         fresh = await _start(current.user_id, current.followup)
         return _command_step(request, fresh, _meta(fresh, started))
-    names = [q.name for q in current.options.questions if q.name != "objective"]
+    skip = {"objective", shield.QUESTION.name}
+    names = [q.name for q in current.options.questions if q.name not in skip]
     rest = gate.decide_each(current.replies, current.answers, _amount(current), names)
     if rest.ask:
         return _ask(request, current, rest, meta) or _unsupported(_HELP, meta)
@@ -343,6 +350,7 @@ def _keep_draft(request, current, built, objective, scenario, meta) -> dict[str,
 
 
 def _blocked(model: str, started: float) -> dict[str, Any]:
+    # No model means the phrase backstop blocked it before any Jev call.
     return {
         "status": "blocked",
         "reason": "possible_injection",
@@ -350,8 +358,8 @@ def _blocked(model: str, started: float) -> dict[str, Any]:
         "meta": {
             "latency_ms": round((time.monotonic() - started) * 1000),
             "model": model,
-            "source": "jev",
-            "phrasings": 1,
+            "source": "jev" if model else "none",
+            "phrasings": 1 if model else 0,
             "cached": False,
         },
     }

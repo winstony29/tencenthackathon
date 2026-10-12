@@ -2,7 +2,7 @@
 
 Owner: Winston
 Diagram box: Input shield (Intent detection column)
-Contract: none; a hit makes /api/understand return "blocked"
+Contract: none; a hit makes /api/understand return "blocked"; asked inside the main Jev batch
 """
 
 import re
@@ -30,12 +30,16 @@ _ALWAYS = re.compile(
 )
 
 
-async def check(text: str) -> tuple[bool, str]:
-    """Return whether the text must be blocked, and the model that judged it.
+def obvious(text: str) -> bool:
+    """A known attack phrase: blocked before any model sees the text."""
+    return bool(_ALWAYS.search(text))
 
-    Runs before the rewriter so injected text never reaches an LLM. Blocks when
-    Jev's probability of "yes" reaches the threshold, or a known attack phrase appears.
+
+def flagged(reply: jev.Reply) -> bool:
+    """Whether Jev judged the text an injection, from the batch QUESTION was asked in.
+
+    QUESTION rides in the first Jev call on the original transcript, so checking it
+    costs no extra call. That call comes before the rewriter, so injected text still
+    never reaches an LLM.
     """
-    reply = await jev.ask(text, [QUESTION])
-    p_yes = reply.answers[QUESTION.name].probabilities["yes"]
-    return p_yes >= config.SHIELD_BLOCK_AT or bool(_ALWAYS.search(text)), reply.model
+    return reply.answers[QUESTION.name].probabilities["yes"] >= config.SHIELD_BLOCK_AT

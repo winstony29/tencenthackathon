@@ -186,3 +186,9 @@ Use existing Motion for staggered entry, exit, position changes and a shared pri
 **Gate:** An unsure objective on a first command becomes `prepare` (it only changes the layout). In a follow-up it is asked, because it decides whether values change. Amendment picks pass the same gate as first commands.
 **Front end impact:** Darren's response schemas are strict, so `objective` and `scenario` must be added to his draft-reply schema when this reaches `main`. V1 keeps working by starting a new session per command.
 **Limits:** Follow-ups can change amounts, quantities, funding accounts and recipients. They cannot add or remove actions (say the new command instead). One action per type per command still applies.
+
+## D-025 · The input shield rides in the main Jev call
+2026-10-12 · Winston · Status: decided
+**Decision:** The shield's injection question is asked inside the one Jev batch on the original transcript, not in a call of its own. If Jev flags an injection, nothing else from that batch is used. Known attack phrases ("ignore previous instructions", "you are now", …) are blocked before any Jev call. When the rewriter arrives (W-04), the K rewrites are asked only after that first batch clears the shield, so injected text still never reaches an LLM.
+**Why:** The EdgeOne gateway returned HTTP 429 after a few dozen quick calls, and the key is shared with Darren's presentation demo. One call per command instead of two halves the load and cut live latency from about 2 s to 0.8–1.4 s.
+**Rejected:** A separate shield call first (doubles calls and latency for the same answer).
