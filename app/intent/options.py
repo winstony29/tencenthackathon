@@ -570,10 +570,12 @@ def spoken_reply_question(built: Options, name: str, offered: set[str]) -> Quest
     first = next(q for q in built.questions if q.name == name)
     asked = _ASK.get(name) or _ASK[name.split("_", 1)[1]]
     if set(first.criteria) == {"yes", "no"}:
+        # No "none" here: it would split a spoken "no" with "no"; the router cancels on an
+        # unoffered "no" anyway.
         criteria = {"yes": "The reply agrees, e.g. 'yes' or 'sure'.", "no": "The reply disagrees."}
     else:
         criteria = {o: first.criteria[o] for o in sorted(offered)}
-    criteria["none"] = "The reply rejects every option above, e.g. 'neither' or 'no'."
+        criteria["none"] = "The reply rejects every option above, e.g. 'neither' or 'no'."
     criteria[NEW_REQUEST] = (
         "The reply asks for a different banking task instead, e.g. 'actually, pay my bill'."
     )

@@ -157,7 +157,7 @@ def _shares(
         return _whole(options.numbers[oid]), "default", None
     oid = "n" + oid[1:]
     n = options.said[oid]
-    money = _sum(oid, options, data, spent)
+    money = _sum(oid, options, data, spent).quantize(CENT, rounding=ROUND_DOWN)
     rate = None if n.currency == quote.currency else _rate(n.currency, quote.currency)
     worth = money if rate is None else (money * rate.rate).quantize(CENT, rounding=ROUND_DOWN)
     quantity = int(worth / quote.price)  # whole shares, rounding down
@@ -175,8 +175,12 @@ def _shares(
 
 
 def _rate(sell: str, buy: str) -> FxResponse:
+    # Jayanth's readonly module may not provide rates yet; say so instead of crashing.
+    get_fx_rate = getattr(readonly, "get_fx_rate", None)
+    if get_fx_rate is None:
+        raise Unbuildable("Currency conversion isn't available yet.")
     try:
-        return readonly.get_fx_rate(sell, buy)
+        return get_fx_rate(sell, buy)
     except LookupError:
         raise Unbuildable(f"I can't convert {sell} to {buy}.") from None
 
@@ -199,7 +203,7 @@ def _conversion(
         from_account_label=source.label,
         to_account_id=target.account_id,
         to_account_label=target.label,
-        sell_amount=money.quantize(CENT),
+        sell_amount=money,
         sell_currency=rate.from_,
         buy_amount=worth,
         buy_currency=rate.to,
@@ -249,9 +253,10 @@ def _same_currency(options: Options, oid: str, source: Account) -> None:
 
 
 def _money(value: Decimal) -> Decimal:
-    if value <= 0:
+    cents = value.quantize(CENT)  # a sub-cent value must fail here, not in model validation
+    if cents <= 0:
         raise Unbuildable("Please say an amount above zero.")
-    return value.quantize(CENT)
+    return cents
 
 
 def _first_mention(text: str, kind: str) -> int:
@@ -321,12 +326,11 @@ def amend(
 
 
 def _no_stale_conversion(current: Draft, changed: dict[int, dict]) -> None:
-    # A conversion is derived from the actions before it; amending doesn't recompute it.
-    types = [a.type for a in current.actions]
-    if "fx_conversion" not in types:
+    # A conversion is sized from the amounts around it and amending doesn't recompute it, so
+    # any amount, source or share-count change would leave it funding the wrong sum.
+    if all(a.type != "fx_conversion" for a in current.actions):
         return
-    last = len(types) - 1 - types[::-1].index("fx_conversion")
-    if any(i < last and ({"amount", "from"} & fields.keys()) for i, fields in changed.items()):
+    if any({"amount", "from", "quantity"} & fields.keys() for fields in changed.values()):
         raise Unbuildable(
             "Please say the whole command again to change an amount that a conversion depends on."
         )

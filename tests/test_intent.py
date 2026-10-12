@@ -1018,3 +1018,47 @@ def test_live_demo_commands(client, bank, text: str, expect: str) -> None:
     print(f"\n{text!r} -> {json.dumps(reply, indent=1, ensure_ascii=False)}")
     assert response.status_code == 200, reply
     assert reply["status"] == expect
+
+
+def test_changing_a_share_count_after_a_conversion_asks_to_start_over(
+    client, fake_jev, bank
+) -> None:
+    fake_jev.script = _sum_order_script()
+    assert _understand(client, "invest 2k in apple").json()["status"] == "draft"
+    reply = _followup(
+        client,
+        fake_jev,
+        "make it 10 shares",
+        {"a1_quantity": {"n0": SURE, "keep": 1 - SURE}},  # action 0 is the conversion
+    )
+    assert reply["status"] == "unsupported" and "whole command" in reply["message"]
+
+
+def test_a_missing_fx_rate_is_unsupported_not_a_crash(client, fake_jev, bank, monkeypatch) -> None:
+    monkeypatch.delattr(readonly, "get_fx_rate", raising=False)
+    fake_jev.script = _sum_order_script()
+    response = _understand(client, "invest 2k in apple")
+    assert response.status_code == 200
+    reply = response.json()
+    assert reply["status"] == "unsupported" and "conversion" in reply["message"]
+
+
+def test_a_yes_no_spoken_reply_has_no_separate_none(client, fake_jev, bank) -> None:
+    fake_jev.script = {"has_transfer": {"yes": 0.6, "no": 0.4}}
+    reply = _understand(client, "send fifty to john").json()
+    assert reply["question"]["text"] == "Do you want to send money to someone?"
+    _understand(client, "no thanks")
+    spoken = next(q for q in fake_jev.calls[-1][1] if q.name == "spoken_reply")
+    assert set(spoken.criteria) == {"yes", "no", "new_request"}
+
+
+def test_the_converted_amount_rounds_down_from_the_cent_sum(client, fake_jev, bank) -> None:
+    fake_jev.script = _sum_order_script()
+    reply = _understand(client, "invest 1000.01 in apple").json()
+    fx, _ = reply["draft"]["actions"]
+    assert (fx["sell_amount"], fx["buy_amount"]) == ("1000.01", "740.00")  # 740.0074 rounded down
+
+
+def test_a_sub_cent_amount_is_unbuildable() -> None:
+    with pytest.raises(draft.Unbuildable):
+        draft._money(Decimal("0.004"))
