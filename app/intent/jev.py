@@ -36,6 +36,37 @@ class Reply:
     answers: dict[str, Answer]
 
 
+# One connection kept open for the server's life: a new one per call cost 150-250 ms each,
+# and 1.8-2.5 s on the first call (measured live, 13 Oct). Opened by app/main.py at startup.
+_client: httpx.AsyncClient | None = None
+
+
+async def open_connection() -> None:
+    """Open the shared connection to the gateway and warm it, so the first command is fast."""
+    global _client
+    _client = httpx.AsyncClient(timeout=config.MAKERS_JEV_TIMEOUT_SECONDS)
+    if config.MAKERS_MODELS_KEY:
+        try:  # any reply leaves a warm connection in the pool; this costs no Jev quota
+            await _client.head(config.MAKERS_JEV_ENDPOINT)
+        except httpx.HTTPError:
+            pass  # the first real call will connect instead
+
+
+async def close_connection() -> None:
+    global _client
+    if _client is not None:
+        await _client.aclose()
+        _client = None
+
+
+async def _post(client: httpx.AsyncClient, payload: dict) -> httpx.Response:
+    return await client.post(
+        config.MAKERS_JEV_ENDPOINT,
+        headers={"Authorization": f"Bearer {config.MAKERS_MODELS_KEY}"},
+        json=payload,
+    )
+
+
 async def ask(text: str, questions: list[Question], context: dict[str, Any] | None = None) -> Reply:
     """Ask Jev every question about one text in a single System One call.
 
@@ -54,12 +85,11 @@ async def ask(text: str, questions: list[Question], context: dict[str, Any] | No
         },
     }
     try:
-        async with httpx.AsyncClient(timeout=config.MAKERS_JEV_TIMEOUT_SECONDS) as client:
-            response = await client.post(
-                config.MAKERS_JEV_ENDPOINT,
-                headers={"Authorization": f"Bearer {config.MAKERS_MODELS_KEY}"},
-                json=payload,
-            )
+        if _client is not None:
+            response = await _post(_client, payload)
+        else:  # tests and scripts that skip the app's startup
+            async with httpx.AsyncClient(timeout=config.MAKERS_JEV_TIMEOUT_SECONDS) as client:
+                response = await _post(client, payload)
         response.raise_for_status()
         return parse(response.json(), questions)
     except (httpx.HTTPError, ValueError, TypeError) as error:

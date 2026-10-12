@@ -39,8 +39,14 @@ def main() -> None:
     _use_mock_bank()
     if args.verbose:
         _show_what_jev_reads()
-    client, session_id, question = TestClient(app), _new_session(), None
     print(HELP)
+    # "with" runs the app's startup, so every turn reuses one warm connection to Jev.
+    with TestClient(app) as client:
+        _converse(client, args.verbose)
+
+
+def _converse(client: TestClient, verbose: bool) -> None:
+    session_id, question = _new_session(), None
     while True:
         try:
             line = input("\nyou> ").strip()
@@ -55,7 +61,7 @@ def main() -> None:
         if line:
             body = {"user_id": "u_demo", "session_id": session_id, **_turn(line, question)}
             response = client.post("/api/understand", json=body)
-            question = _show(response.json(), response.status_code, args.verbose)
+            question = _show(response.json(), response.status_code, verbose)
 
 
 def _use_mock_bank() -> None:
