@@ -273,6 +273,9 @@ def build(transcript: str, data: UserData, scope: str) -> Options:
     parsed = parse_numbers(transcript)
     said = {f"n{i}": n for i, n in enumerate(parsed + _relative(transcript, a))}
     amounts = _number_options(said, stand_ins(parsed, scope))
+    # A share count or a price is always said, never a fraction of a balance: offering
+    # "the rest of the Invest balance" (25,000) for "How many shares?" could draft 25,000 shares.
+    said_aloud = amounts[: len(parsed)]
     no_number = ("none", "No such number is said.", "None of these")
     accounts = [
         (x.account_id, f"Use the {x.label} account ({x.type}, {x.currency})", x.label)
@@ -339,7 +342,7 @@ def build(transcript: str, data: UserData, scope: str) -> Options:
             "Should shares be bought or sold?",
             [("buy", "Buy shares.", "Buy"), ("sell", "Sell shares.", "Sell")],
         ),
-        "quantity": ("How many shares?", [*amounts, no_number]),
+        "quantity": ("How many shares?", [*said_aloud, no_number]),
         "order_type": (
             "Should the order trade now or only at a stated price?",
             [
@@ -355,7 +358,7 @@ def build(transcript: str, data: UserData, scope: str) -> Options:
                 ),
             ],
         ),
-        "limit_price": ("What price limit is said for the order?", [*amounts, no_number]),
+        "limit_price": ("What price limit is said for the order?", [*said_aloud, no_number]),
         "objective": ("What does the user want to do with the task?", OBJECTIVES),
     }
     return Options(
@@ -402,6 +405,7 @@ def build_followup(text: str, draft: Draft, data: UserData, scope: str) -> Optio
     parsed = parse_numbers(text)
     said = {f"n{i}": n for i, n in enumerate(parsed + _relative(text, a))}
     amounts = _number_options(said, stand_ins(parsed, scope))
+    said_aloud = amounts[: len(parsed)]  # share counts are never balance fractions (see build)
     accounts = [
         (x.account_id, f"Use the {x.label} account ({x.type}, {x.currency})", x.label)
         for x in a.accounts
@@ -412,7 +416,7 @@ def build_followup(text: str, draft: Draft, data: UserData, scope: str) -> Optio
         if action.type == "stock_order":
             spec[f"a{i}_quantity"] = (
                 f"{task}, what new number of shares is said?",
-                [*amounts, KEEP],
+                [*said_aloud, KEEP],
             )
             continue
         due = (

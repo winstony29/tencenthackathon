@@ -182,6 +182,15 @@ def test_options_for_buy_100_apple() -> None:
     assert set(criteria["side"]) == {"buy", "sell"}
 
 
+def test_share_counts_and_prices_never_come_from_balances() -> None:
+    text = "send 500 to John Doe and buy 10 Apple with the rest"
+    built = options.build(text, options.UserData(BANK, QUOTES), "u|s1")
+    criteria = {q.name: q.criteria for q in built.questions}
+    assert set(criteria["transfer_amount"]) == {"n0", "n1", "n2", "n3", "n4", "none"}
+    assert set(criteria["quantity"]) == {"n0", "n1", "none"}  # only the numbers said
+    assert set(criteria["limit_price"]) == {"n0", "n1", "none"}
+
+
 # --- gate (W-05) ---
 
 
@@ -464,6 +473,19 @@ def _transfer_500_to_john(client, fake_jev) -> dict:
 def _followup(client, fake_jev, text: str, script: dict) -> dict:
     fake_jev.script = script
     return _understand(client, text).json()
+
+
+def test_followup_share_counts_never_come_from_balances(client, fake_jev, bank) -> None:
+    fake_jev.script = {
+        "has_stock_order": {"yes": SURE, "no": 1 - SURE},
+        "ticker": {"AAPL": SURE, "none": 1 - SURE},
+        "side": {"buy": SURE, "sell": 1 - SURE},
+        "quantity": {"n0": SURE, "none": 1 - SURE},
+    }
+    assert _understand(client, "buy 100 Apple shares").json()["status"] == "draft"
+    _followup(client, fake_jev, "what if I use half my savings?", {})
+    questions = {q.name: q.criteria for q in fake_jev.calls[-1][1]}
+    assert set(questions["a0_quantity"]) == {"keep"}  # "half my savings" is never a share count
 
 
 def test_afford_keeps_the_draft_and_changes_the_objective(client, fake_jev, bank) -> None:
