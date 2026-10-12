@@ -1,0 +1,135 @@
+import { z } from "zod";
+
+const money = z.string().regex(/^\d+\.\d{2}$/);
+const currency = z.string().regex(/^[A-Z]{3}$/);
+const probability = z.number().min(0).max(1);
+const common = { from_account_id: z.string(), from_account_label: z.string(), currency };
+export const actionSchema = z.discriminatedUnion("type", [
+  z.strictObject({
+    ...common,
+    type: z.literal("transfer"),
+    to_payee_id: z.string(),
+    to_payee_label: z.string(),
+    amount: money,
+  }),
+  z.strictObject({
+    ...common,
+    type: z.literal("bill_payment"),
+    biller_id: z.string(),
+    biller_label: z.string(),
+    bill_reference: z.string(),
+    amount: money,
+  }),
+  z
+    .strictObject({
+      ...common,
+      type: z.literal("stock_order"),
+      side: z.enum(["buy", "sell"]),
+      ticker: z.string(),
+      company_name: z.string(),
+      quantity: z.number().int().positive(),
+      order_type: z.enum(["market", "limit"]),
+      limit_price: money.nullable(),
+    })
+    .refine((a) => (a.order_type === "limit") === (a.limit_price !== null), "Invalid limit price"),
+]);
+export const metaSchema = z.strictObject({
+  latency_ms: z.number().int().nonnegative(),
+  model: z.string(),
+  source: z.enum(["jev", "fallback", "fake", "none"]),
+  phrasings: z.number().int().nonnegative(),
+  cached: z.boolean(),
+});
+const evidence = z.strictObject({
+  question: z.string(),
+  pick: z.string(),
+  avg_p: probability,
+  spread: probability,
+  probabilities: z.record(z.string(), probability),
+});
+// Reject unknown draft fields rather than silently dropping part of a transaction.
+export const draftSchema = z.strictObject({
+  draft_id: z.string(),
+  user_id: z.string(),
+  session_id: z.string(),
+  transcript: z.string(),
+  created_at: z.iso.datetime({ offset: true }),
+  actions: z.array(actionSchema).min(1).max(4),
+  evidence: z.array(evidence),
+});
+export const understandSchema = z.discriminatedUnion("status", [
+  z.strictObject({ status: z.literal("draft"), draft: draftSchema, meta: metaSchema }),
+  z.strictObject({
+    status: z.literal("question"),
+    question: z.strictObject({
+      question_id: z.string(),
+      text: z.string(),
+      options: z.array(z.strictObject({ option_id: z.string(), label: z.string() })),
+      allow_none: z.boolean(),
+    }),
+    evidence: z.array(evidence),
+    meta: metaSchema,
+  }),
+  z.strictObject({
+    status: z.literal("blocked"),
+    reason: z.literal("possible_injection"),
+    message: z.string(),
+    meta: metaSchema,
+  }),
+  z.strictObject({ status: z.literal("unsupported"), message: z.string(), meta: metaSchema }),
+  z.strictObject({
+    status: z.literal("cancelled"),
+    reason: z.enum(["user_declined", "too_many_questions"]),
+    message: z.string(),
+    meta: metaSchema,
+  }),
+]);
+export const previewSchema = z.strictObject({
+  intent: z.strictObject({
+    value: z.enum(["transfer", "bill_payment", "stock_order", "none"]),
+    confidence: probability,
+    probabilities: z.record(z.string(), probability),
+  }),
+  meta: metaSchema,
+});
+export const transcribeSchema = z.strictObject({
+  transcript: z.string(),
+  confidence: probability.nullable(),
+});
+export const accountsSchema = z.strictObject({
+  accounts: z.array(
+    z.strictObject({ account_id: z.string(), label: z.string(), type: z.string(), currency, balance: money }),
+  ),
+  payees: z.array(z.strictObject({ payee_id: z.string(), name: z.string(), label: z.string() })),
+  billers: z.array(
+    z.strictObject({ biller_id: z.string(), name: z.string(), label: z.string(), amount_due: money }),
+  ),
+  holdings: z.array(z.strictObject({ ticker: z.string(), quantity: z.number().int().nonnegative() })),
+});
+export const quoteSchema = z.strictObject({
+  ticker: z.string(),
+  company_name: z.string(),
+  price: money,
+  currency,
+  as_of: z.iso.datetime({ offset: true }),
+});
+export const validationSchema = z.discriminatedUnion("status", [
+  z.strictObject({ status: z.literal("match"), receipt: z.string() }),
+  z.strictObject({
+    status: z.literal("mismatch"),
+    fields: z.array(
+      z.strictObject({
+        field: z.string(),
+        draft_value: z.string(),
+        transcript_says: z.string(),
+        note: z.string(),
+      }),
+    ),
+  }),
+]);
+export type Action = z.infer<typeof actionSchema>;
+export type Draft = z.infer<typeof draftSchema>;
+export type Understand = z.infer<typeof understandSchema>;
+export type Accounts = z.infer<typeof accountsSchema>;
+export type Quote = z.infer<typeof quoteSchema>;
+export type Validation = z.infer<typeof validationSchema>;

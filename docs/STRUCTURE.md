@@ -86,11 +86,50 @@ dcta/
 
 ## 2. `web/` files
 
-Empty until Darren records the front-end stack in `docs/DECISIONS.md` (D-004). He then lists every file and folder of `web/` here before creating it. Build output (`web/dist/`) and `web/node_modules/` are never committed.
+The first frontend slice uses the stack in D-004 and the integration choices in D-016. Build output (`web/out/`, `web/.next/`, `web/dist/`) and `web/node_modules/` are never committed.
 
 ```
 web/
-└── (to be listed by Darren)
+├── jev.py                    presentation-only System One router (mock Winston outputs)
+├── package.json              dependencies and checks
+├── package-lock.json         npm lockfile (Bun can install package.json)
+├── next.config.ts            static export and development API proxy
+├── next-env.d.ts             Next.js generated type references
+├── tsconfig.json             strict TypeScript settings
+├── postcss.config.mjs        Tailwind v4
+├── eslint.config.mjs         Next.js lint rules
+├── THIRD_PARTY_LICENSES.txt  component attribution and licence notices
+├── src/
+│   ├── app/
+│   │   ├── layout.tsx        document shell
+│   │   ├── page.tsx          adaptive banking workspace
+│   │   ├── v2/page.tsx       complete Winston-output presentation experiment
+│   │   └── globals.css       responsive design tokens and styling
+│   ├── components/
+│   │   ├── ui/
+│   │   │   ├── button.tsx   adapted Coss button with DBS-inspired variants
+│   │   │   ├── checkbox.tsx adapted Coss / Base UI checkbox
+│   │   │   ├── card.tsx     adapted shadcn card composition
+│   │   │   └── textarea.tsx adapted shadcn text area
+│   │   ├── v2-workspace.tsx   V2 approved forms and interactive support registry
+│   │   ├── workspace-renderer.tsx  approved layout registry and projections
+│   │   ├── action-card.tsx   editable transfer, bill and stock review cards
+│   │   ├── task-review.tsx   draft review and workflow result states
+│   │   ├── context-panel.tsx related balances, holdings and quotes
+│   │   └── command-input.tsx typed input and audio recording
+│   └── lib/
+│       ├── v2-conversation.ts complete handoff reconciliation and explicit review state
+│       ├── v2-parser.ts      mock banking records only (historical filename)
+│       ├── v2-presentation.ts approved bundles, presentation context and UI stability
+│       ├── composition.ts   typed manifest, eligibility and selection adapter
+│       ├── draft-editor.ts  immutable edits, validation and projections
+│       ├── contracts.ts     runtime schemas matching contracts v0.2
+│       ├── api.ts           cancellable JSON requests
+│       ├── examples.ts      explicitly selected UI demo fixtures
+│       └── money.ts         exact estimated stock totals
+└── tests/
+    ├── contracts.test.ts    boundary and exact-money checks
+    └── browser.test.mjs     browser integration and layout checks
 ```
 
 ## 3. Screenshot naming
@@ -104,3 +143,23 @@ web/
 | 2026-10-10 | Winston | First version |
 | 2026-10-10 | Winston | Add `docs/GITHUB.md` |
 | 2026-10-10 | Winston | Add `docs/DCTA_endpoints_and_data.pptx` |
+| 2026-10-10 | Darren | Register first frontend slice (D-01 to D-04) |
+
+## V3 presentation experiment (Darren, D-022)
+
+The V3 brief authorizes this separate route and these focused modules. V1 and V2 remain available.
+
+- `web/presentation-catalog.json`: shared approved functional component metadata and dependencies.
+- `web/presentation.py`: structural V3 JEV request builder, checked answers and router.
+- `web/src/app/v3/page.tsx`: complete mock Winston journeys, live composition and inspector.
+- `web/src/app/v3/v3.css`: scoped banking design and motion tokens.
+- `web/src/lib/v3-registry.ts`: typed component bindings, eligibility and privacy-minimized context.
+- `web/src/lib/v3-presentation.ts`: deterministic manifest validation, fallback and stability.
+- `web/src/lib/v3-state.ts`: complete handoffs, isolated scenarios and review state.
+- `web/src/components/v3-primitives.tsx`: reusable field, metric and section primitives.
+- `web/src/components/v3-editors.tsx`: mandatory task editors and explicit review.
+- `web/src/components/v3-analysis.tsx`: projections, scenario controls and supporting context.
+- `web/src/components/v3-workspace.tsx`: stable keyed functional registry renderer.
+- `web/tests/v3.test.ts`: registry, manifest, state and financial integrity tests.
+- `web/tests/v3.browser.test.mjs`: V3 browser journeys, stale responses and responsive checks.
+- `web/tests/test_presentation.py`: offline Python request, parser and endpoint tests.

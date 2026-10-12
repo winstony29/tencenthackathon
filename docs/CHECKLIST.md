@@ -68,12 +68,16 @@ IDs: `S` setup · `W` Winston · `J` Jayanth · `D` Darren · `I` integration ·
 
 - [ ] **D-01** · Sat · Choose the front-end stack. Record it in D-004, list `web/` files in `docs/STRUCTURE.md` §2, and add front-end rules to `docs/STYLE.md` §3.
   *Done when:* those three edits are merged.
-- [ ] **D-02** · Sun · App shell: mic button and a text box fallback; calls `/api/transcribe` then `/api/understand`.
+  *Local status (10 Oct):* setup docs and frontend prepared on `darren`; merge pending.
+- [x] **D-02** · Sun · App shell: mic button and a text box fallback; calls `/api/transcribe` then `/api/understand`.
   *Done when:* typed and spoken input both reach the stub and show its response.
-- [ ] **D-03** · Sun · Question view: question text, one chip per option, "None of these"; sends the answer back.
+  *Verified (10 Oct):* Playwright typed request and synthetic microphone recording reach the actual API stubs. Real ASR audio compatibility remains D-006.
+- [x] **D-03** · Sun · Question view: question text, one chip per option, "None of these"; sends the answer back.
   *Done when:* the stub question renders and the answer call is sent.
-- [ ] **D-04** · Sun–Mon · Confirmation window: one card per action, as in CONTRACTS §5, with a live quote for stock orders.
+  *Verified (10 Oct):* John selection produces the stub draft; "None of these" cancels.
+- [x] **D-04** · Sun–Mon · Confirmation window: one card per action, as in CONTRACTS §5, with a live quote for stock orders.
   *Done when:* the transfer, bill and stock-order stub drafts all render correctly on a phone-sized screen.
+  *Verified (10 Oct):* three action cards and multi-action examples render; layouts checked at 320/768/1024/1440px. A test stock draft loads the actual quote stub; mismatched ticker quotes are rejected. Signing remains D-05.
 - [ ] **D-05** · Mon · Signing flow: device key, register, `/api/validate` → `/api/challenge` → sign → `/api/execute`.
   *Done when:* the full flow runs against stubs, and the private key cannot be exported.
 - [ ] **D-06** · Mon · All other states: blocked, unsupported, frozen, needs extra check, executed, rejected.

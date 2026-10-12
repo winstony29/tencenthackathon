@@ -7,6 +7,9 @@ CODEBUDDY.local.md
 # runtime state
 var/
 
+# generated repository graphs
+graphify-out/
+
 # python
 __pycache__/
 *.pyc
@@ -17,6 +20,11 @@ __pycache__/
 # front end
 web/node_modules/
 web/dist/
+web/out/
+web/.next/
+web/*.tsbuildinfo
+web/.env*
+.npm-cache/
 
 # editors and OS
 .DS_Store

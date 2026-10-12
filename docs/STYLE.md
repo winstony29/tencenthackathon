@@ -61,10 +61,16 @@ Comments explain **why**, not what. Good: `# Keep the original transcript as R0 
 
 ## 3. Front end (once Darren chooses the stack)
 
-- Every field shown in a confirmation card comes from the draft or `/api/quote`. The UI never computes or edits money values, except the estimated total, which is labelled "estimate".
+- Every field shown in a confirmation card comes from the draft or `/api/quote`. Local form edits and labelled scenario projections are permitted under D-017, using decimal strings and integer cents. They are not backend-validated drafts.
 - The UI never re-serialises the draft for signing. It signs `signing_payload` exactly as received.
 - Text the user reads is plain, short and specific: "Which John did you mean?", not "Ambiguity detected in recipient field".
 - Darren adds framework-specific rules here when D-004 is recorded.
+- Use strict TypeScript and runtime-checked API responses. Select React cards by `actions[].type`; never infer transaction values in the browser.
+- Tailwind v4 and semantic CSS tokens: white task surfaces, cool neutral background, red primary action, visible keyboard focus, mobile single-column layout. Motion respects reduced-motion preferences.
+- Keep money as strings. Stock estimates use integer cents; every estimate is labelled.
+- A correction restarts `/api/understand` in a new session; the previous draft and validation result are discarded. Local field edits are preserved through recomposition but cannot be signed or submitted as the original API draft; backend correction support remains pending (D-017).
+- Explicitly selected examples are UI demos, never a fallback classifier and never executable. API stubs are labelled as stubs.
+- Run `npm run check`, `npm run build`, and `npm run test:browser` (with both development servers running). Bun may run the same scripts.
 
 ## 4. Documentation
 
@@ -83,3 +89,5 @@ Comments explain **why**, not what. Good: `# Keep the original transcript as R0 
 
 Good: `bank: reject reused nonces in gateway`
 Bad: `fixed stuff`, `WIP`, `update`
+
+- Adapt shadcn/ui card and textarea primitives and Coss MIT apps/ui button and checkbox primitives. Style them with DBS-inspired red and neutral tokens in `globals.css`; preserve visible focus and native form semantics. Source notices live in `web/THIRD_PARTY_LICENSES.txt`.
