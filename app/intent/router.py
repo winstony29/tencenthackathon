@@ -132,7 +132,8 @@ async def preview(request: PreviewRequest) -> dict[str, Any]:
     """
     if not config.MAKERS_MODELS_KEY:
         return _STUB_PREVIEW
-    masked = options.mask(request.text)
+    # ponytail: previews carry no session, so their stand-ins are shared by everyone until restart.
+    masked = options.mask(request.text, "preview")
     key = " ".join(masked.lower().split())
     if len(key) < 2:
         certain = {o: float(o == "none") for o in _PREVIEW_QUESTION.criteria}
@@ -186,8 +187,8 @@ async def understand(request: UnderstandRequest) -> dict[str, Any]:
     A transcript with a known attack phrase is blocked before any model sees it. In a
     session that already holds a draft it is a follow-up turn about that draft;
     otherwise it starts a new command. Either way one Jev batch on the original text
-    (numbers masked) also carries the input shield's question; if Jev flags an injection,
-    nothing else from that batch is used. An answer settles the open question from the
+    (numbers swapped for stand-ins) also carries the input shield's question; if Jev flags
+    an injection, nothing else from that batch is used. An answer settles the open question from the
     stored replies without asking Jev again.
     """
     if not _live():
@@ -199,9 +200,9 @@ async def understand(request: UnderstandRequest) -> dict[str, Any]:
             return _blocked("", started)
         current = session.load(request.session_id, request.user_id)
         if current and current.draft:
-            await _start_followup(current, request.transcript)
+            await _start_followup(current, request.transcript, request.session_id)
         else:
-            current = await _start(request.user_id, request.transcript)
+            current = await _start(request.user_id, request.transcript, request.session_id)
         if shield.flagged(current.replies[0]):
             session.drop(request.session_id)
             return _blocked(current.replies[0].model, started)
@@ -227,24 +228,24 @@ def _live() -> bool:
     return bool(config.MAKERS_MODELS_KEY) and hasattr(readonly, "get_accounts")
 
 
-async def _start(user_id: str, transcript: str) -> session.Session:
+async def _start(user_id: str, transcript: str, session_id: str) -> session.Session:
     try:
         data = options.UserData(readonly.get_accounts(user_id), readonly.list_quotes())
     except LookupError as error:
         raise HTTPException(404, "Unknown user.") from error
-    built = options.build(transcript, data)
-    # Jev reads the text with numbers masked (D-026). W-04: ask the K rewrites of that masked
-    # text only after this batch clears the shield (it carries the shield question), so
-    # injected text never reaches the rewriter's LLM; rewrites must keep the [Nk] markers.
-    phrasings = [options.mask(transcript)]
+    built = options.build(transcript, data, f"{user_id}|{session_id}")
+    # Jev reads the text with stand-in numbers (D-026). W-04 rewrites that text after this
+    # batch clears the shield, and rewrites must keep the stand-in numbers unchanged.
+    phrasings = [built.text]
     replies = await jev.ask_all(phrasings, built.questions)
     return session.Session(user_id, transcript, built, data, replies)
 
 
-async def _start_followup(current: session.Session, text: str) -> None:
-    current.options = options.build_followup(text, current.draft, current.data)
+async def _start_followup(current: session.Session, text: str, session_id: str) -> None:
+    scope = f"{current.user_id}|{session_id}"
+    current.options = options.build_followup(text, current.draft, current.data, scope)
     context = {"current_tasks": [options.describe(a) for a in current.draft.actions]}
-    current.replies = await jev.ask_all([options.mask(text)], current.options.questions, context)
+    current.replies = await jev.ask_all([current.options.text], current.options.questions, context)
     current.followup, current.answers, current.asked, current.pending = text, {}, 0, None
 
 
@@ -293,7 +294,7 @@ async def _followup_step(
         return _ask(request, current, first, meta) or _unsupported(_HELP, meta)
     objective = first.picks["objective"].option
     if objective == "new_task":
-        fresh = await _start(current.user_id, current.followup)
+        fresh = await _start(current.user_id, current.followup, request.session_id)
         return _command_step(request, fresh, _meta(fresh, started))
     skip = {"objective", shield.QUESTION.name}
     names = [q.name for q in current.options.questions if q.name not in skip]

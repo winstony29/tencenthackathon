@@ -6,6 +6,7 @@ Contract: the variables listed in .env.example
 """
 
 import os
+import secrets
 from decimal import Decimal
 
 from dotenv import load_dotenv
@@ -18,6 +19,9 @@ MAKERS_MODELS_KEY = os.getenv("MAKERS_MODELS_KEY", "")  # Jev gateway key (D-005
 MAKERS_JEV_ENDPOINT = "https://ai-gateway.edgeone.link/v1/systemone"  # Native System One API
 MAKERS_JEV_MODEL = "@makers/jev"  # Gateway model alias
 MAKERS_JEV_TIMEOUT_SECONDS = 12  # Presentation request deadline; UI falls back on failure
+# HMAC key for the stand-in numbers Jev reads (D-026). A random key per process is enough,
+# because sessions live in memory; set it to keep stand-ins stable across restarts.
+MASK_KEY = os.getenv("MASK_KEY", "").encode() or secrets.token_bytes(32)
 
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")  # OpenAI-compatible endpoint for app/llm.py (D-009)
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")  # key for that endpoint

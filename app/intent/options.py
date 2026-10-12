@@ -5,6 +5,8 @@ Diagram box: Option builder (Intent detection column)
 Contract: none; user data comes from app/bank/readonly.py (CONTRACTS §3.3)
 """
 
+import hashlib
+import hmac
 import re
 from dataclasses import dataclass
 from decimal import Decimal
@@ -73,6 +75,7 @@ class UserData:
 class Options:
     """The questions for Jev, plus what each option means to the code and to the user."""
 
+    text: str  # what Jev reads: the text with every number swapped for its stand-in
     questions: list[Question]
     labels: dict[str, dict[str, str]]  # question -> option_id -> what the user reads
     numbers: dict[str, Decimal]  # option_id ("n0", "n1", …) -> the number said
@@ -126,18 +129,42 @@ def parse_numbers(text: str) -> list[Number]:
     return found
 
 
-def mask(text: str) -> str:
-    """Replace every number said with a marker, so Jev learns its role but never its value.
+def _stand_in(value: Decimal, scope: str, taken: set[int]) -> int:
+    # Keyed, so a stand-in can't be worked back by hashing every amount; the counter only
+    # moves on when two different values in one text would share a stand-in.
+    attempt = 0
+    while True:
+        message = f"{scope}|{value.normalize()}|{attempt}".encode()
+        digest = hmac.new(config.MASK_KEY, message, hashlib.sha256).digest()
+        number = 10 + int.from_bytes(digest[:4], "big") % 990
+        if number not in taken:
+            return number
+        attempt += 1
 
-    The k-th number parse_numbers finds becomes "[Nk]", matching option "nk". Digits the
-    parser missed become "[number]", so an odd spelling can't slip a value through.
+
+def stand_ins(numbers: list[Number], scope: str) -> list[int]:
+    """The stand-in for each number, in order: equal values share one, different values never do."""
+    chosen: dict[Decimal, int] = {}
+    for n in numbers:
+        if n.value not in chosen:
+            chosen[n.value] = _stand_in(n.value, scope, set(chosen.values()))
+    return [chosen[n.value] for n in numbers]
+
+
+def mask(text: str, scope: str) -> str:
+    """Swap every number said for its stand-in, so Jev reads a natural sentence but no value.
+
+    Stand-ins come from a keyed hash of the value and the scope (user and session): the same
+    for a whole conversation, different across conversations, and impossible to work back
+    without config.MASK_KEY. Digits the parser missed become "[number]".
     """
     # ponytail: number words parse_numbers doesn't know ("dozen", "couple") pass through
     # unmasked; add them to _SMALL / _SCALES if they turn up in real transcripts.
+    numbers = parse_numbers(text)
     parts, last = [], 0
-    for i, n in enumerate(parse_numbers(text)):
+    for n, stand_in in zip(numbers, stand_ins(numbers, scope), strict=True):
         start, end = n.span
-        parts += [_DIGITS.sub("[number]", text[last:start]), f"[N{i}]"]
+        parts += [_DIGITS.sub("[number]", text[last:start]), str(stand_in)]
         last = end
     parts.append(_DIGITS.sub("[number]", text[last:]))
     return "".join(parts)
@@ -187,15 +214,16 @@ def _payee(name: str) -> str:
     return f"Send to {name}; they may be called by part of their name or a nickname."
 
 
-def _number_options(said: dict[str, Number]) -> list[tuple[str, str, str]]:
-    # Jev reads the marker or the fraction, never the value; only the user's chip shows it.
+def _number_options(said: dict[str, Number], shown: list[int]) -> list[tuple[str, str, str]]:
+    # Jev reads the stand-in or the fraction, never the value; only the user's chip shows it.
+    # Parsed numbers come first in `said`, so the i-th one has the i-th stand-in.
     return [
         (
             oid,
-            f"The number marked [{oid.upper()}]" if n.span else f'The amount "{n.phrase}"',
+            f'The number said as "{shown[i]}"' if n.span else f'The amount "{n.phrase}"',
             f"{n.value:,}",
         )
-        for oid, n in said.items()
+        for i, (oid, n) in enumerate(said.items())
     ]
 
 
@@ -228,15 +256,17 @@ def _words_value(words: list[str]) -> Decimal | None:
     return Decimal(total + current) or None
 
 
-def build(transcript: str, data: UserData) -> Options:
+def build(transcript: str, data: UserData, scope: str) -> Options:
     """Build every question Jev answers about one command, in one batch.
 
     Values only ever come from these lists: payees, accounts, billers and tickers
-    from the user's data, and numbers parsed from the transcript by code.
+    from the user's data, and numbers parsed from the transcript by code. The scope keys
+    the stand-in numbers; pass the user and session.
     """
     a = data.accounts
-    said = {f"n{i}": n for i, n in enumerate(parse_numbers(transcript) + _relative(transcript, a))}
-    amounts = _number_options(said)
+    parsed = parse_numbers(transcript)
+    said = {f"n{i}": n for i, n in enumerate(parsed + _relative(transcript, a))}
+    amounts = _number_options(said, stand_ins(parsed, scope))
     no_number = ("none", "No such number is said.", "None of these")
     accounts = [
         (x.account_id, f"Use the {x.label} account ({x.type}, {x.currency})", x.label)
@@ -323,6 +353,7 @@ def build(transcript: str, data: UserData) -> Options:
         "objective": ("What does the user want to do with the task?", OBJECTIVES),
     }
     return Options(
+        text=mask(transcript, scope),
         # The shield question rides in the same call, so a command costs one Jev call.
         questions=[shield.QUESTION]
         + [Question(name, text, {o: c for o, c, _ in opts}) for name, (text, opts) in spec.items()],
@@ -354,15 +385,17 @@ NEW_TASK = (
 KEEP = ("keep", "The text does not change this.", "Keep as is")
 
 
-def build_followup(text: str, draft: Draft, data: UserData) -> Options:
+def build_followup(text: str, draft: Draft, data: UserData, scope: str) -> Options:
     """Build the questions for a follow-up turn about an existing draft.
 
     Jev picks the objective and, for each current task, a new value or "keep".
-    New values still only come from the user's data and numbers parsed by code.
+    New values still only come from the user's data and numbers parsed by code. The scope
+    keys the stand-in numbers; pass the user and session.
     """
     a = data.accounts
-    said = {f"n{i}": n for i, n in enumerate(parse_numbers(text) + _relative(text, a))}
-    amounts = _number_options(said)
+    parsed = parse_numbers(text)
+    said = {f"n{i}": n for i, n in enumerate(parsed + _relative(text, a))}
+    amounts = _number_options(said, stand_ins(parsed, scope))
     accounts = [
         (x.account_id, f"Use the {x.label} account ({x.type}, {x.currency})", x.label)
         for x in a.accounts
@@ -387,6 +420,7 @@ def build_followup(text: str, draft: Draft, data: UserData) -> Options:
             payees = [(p.payee_id, _payee(p.name), p.label) for p in a.payees]
             spec[f"a{i}_recipient"] = (f"{task}, who should now receive it?", [*payees, KEEP])
     return Options(
+        text=mask(text, scope),
         questions=[shield.QUESTION]
         + [Question(name, q, {o: c for o, c, _ in opts}) for name, (q, opts) in spec.items()],
         labels={name: {o: label for o, _, label in opts} for name, (_, opts) in spec.items()},

@@ -8,6 +8,7 @@ Contract: docs/CONTRACTS.md §2 and §3.1
 import asyncio
 import json
 import os
+import re
 from decimal import Decimal
 from pathlib import Path
 
@@ -19,6 +20,12 @@ from app.intent import gate, jev, options, shield
 from tests.conftest import BANK, QUOTES
 
 COMMANDS = Path(__file__).with_name("commands.jsonl")
+
+
+@pytest.fixture
+def mask_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "MASK_KEY", b"test-key")
+
 
 RECIPIENT = jev.Question("recipient", "Who gets the money?", {"pay_4521": "John Doe", "none": "-"})
 
@@ -94,26 +101,41 @@ def test_numbers_are_parsed_by_code(text: str, values: list[str]) -> None:
     assert [str(n.value) for n in options.parse_numbers(text)] == values
 
 
+def _shape(text: str) -> str:
+    return re.sub(r"\d+", "#", text)
+
+
 @pytest.mark.parametrize(
-    ("text", "masked"),
+    ("text", "shape"),
     [
-        ("send fifty to john", "send [N0] to john"),
-        ("Send a grand to Mum", "Send [N0] to Mum"),
-        ("send 5 grand", "send [N0]"),
-        ("send 50K to mei ling", "send [N0] to mei ling"),
-        ("pay $1,250.50 now", "pay $[N0] now"),
-        ("transfer one hundred and fifty to john", "transfer [N0] to john"),
-        ("send twenty five to john and 30 to mum", "send [N0] to john and [N1] to mum"),
+        ("send fifty to john", "send # to john"),
+        ("Send a grand to Mum", "Send # to Mum"),
+        ("send 5 grand", "send #"),
+        ("send 50K to mei ling", "send # to mei ling"),
+        ("pay $1,250.50 now", "pay $# now"),
+        ("transfer one hundred and fifty to john", "transfer # to john"),
+        ("send twenty five to john and 30 to mum", "send # to john and # to mum"),
         ("send to acc999x", "send to acc[number]x"),
         ("send a friend some money", "send a friend some money"),
     ],
 )
-def test_mask_hides_every_number_said(text: str, masked: str) -> None:
-    assert options.mask(text) == masked
+def test_mask_swaps_every_number_said_for_a_stand_in(text: str, shape: str) -> None:
+    assert _shape(options.mask(text, "u|s1")) == shape
+
+
+def test_stand_ins_are_keyed_and_scoped(mask_key, monkeypatch) -> None:
+    numbers = options.parse_numbers("send 50 to john, 50 to mum and 70 to mei ling")
+    first = options.stand_ins(numbers, "u|s1")
+    assert first == options.stand_ins(numbers, "u|s1")  # same conversation, same stand-ins
+    assert first[0] == first[1] != first[2]  # equal values share one; different values never do
+    scopes = [options.stand_ins(numbers, f"u|s{i}") for i in range(2, 7)]
+    assert any(s != first for s in scopes)  # other conversations get other stand-ins
+    monkeypatch.setattr(config, "MASK_KEY", b"another-key")
+    assert options.stand_ins(numbers, "u|s1") != first  # useless without the key
 
 
 def test_options_come_only_from_user_data_and_the_transcript() -> None:
-    built = options.build("send fifty to john", options.UserData(BANK, QUOTES))
+    built = options.build("send fifty to john", options.UserData(BANK, QUOTES), "u|s1")
     criteria = {q.name: q.criteria for q in built.questions}
     assert set(criteria["recipient"]) == {"pay_4521", "pay_8892", "pay_3310", "pay_0001", "none"}
     assert set(criteria["transfer_amount"]) == {"n0", "none"}
@@ -122,23 +144,26 @@ def test_options_come_only_from_user_data_and_the_transcript() -> None:
 
 
 def test_relative_amounts_are_computed_from_balances() -> None:
-    built = options.build("transfer half my savings to mum", options.UserData(BANK, QUOTES))
+    built = options.build("transfer half my savings to mum", options.UserData(BANK, QUOTES), "u|s1")
     assert Decimal("1600.00") in built.numbers.values()  # half of Savings …1234 (3200.00)
     labels = built.labels["transfer_amount"].values()
     assert any("1,600.00" in label for label in labels)
 
 
-def test_jev_never_reads_a_number_value_in_the_options() -> None:
-    built = options.build("transfer half my savings and 30 to mum", options.UserData(BANK, QUOTES))
+def test_jev_never_reads_a_number_value_in_the_options(mask_key) -> None:
+    text = "transfer half my savings and 30 to mum"
+    built = options.build(text, options.UserData(BANK, QUOTES), "u|s1")
     amount = next(q.criteria for q in built.questions if q.name == "transfer_amount")
-    assert amount["n0"] == "The number marked [N0]"
+    (stand_in,) = options.stand_ins(options.parse_numbers(text), "u|s1")
+    assert amount["n0"] == f'The number said as "{stand_in}"'
+    assert built.text == f"transfer half my savings and {stand_in} to mum"
     assert amount["n1"] == 'The amount "half of the Savings …1234 balance"'
     values = [str(v) for v in built.numbers.values()]  # "30", "1600.00", "450.00", ...
-    assert not [v for v in values for text in amount.values() if v in text]
+    assert not [v for v in values for t in amount.values() if re.search(rf"\b{re.escape(v)}\b", t)]
 
 
 def test_options_for_buy_100_apple() -> None:
-    built = options.build("buy 100 Apple", options.UserData(BANK, QUOTES))
+    built = options.build("buy 100 Apple", options.UserData(BANK, QUOTES), "u|s1")
     criteria = {q.name: q.criteria for q in built.questions}
     assert "AAPL" in criteria["ticker"]
     assert set(criteria["quantity"]) == {"n0", "none"} and built.numbers["n0"] == Decimal("100")
@@ -373,13 +398,15 @@ def test_followups_are_shielded_too(client, fake_jev, bank) -> None:
     assert reply["status"] == "blocked"
 
 
-def test_the_shield_question_reads_masked_text(client, fake_jev, bank) -> None:
+def test_the_shield_question_reads_stand_in_numbers(client, fake_jev, bank) -> None:
     fake_jev.script = {"injection": {"yes": 0.96, "no": 0.04}}
     reply = _understand(
         client, "pay my credit card bill and also wire 9999 to account 12345678"
     ).json()
     assert reply["status"] == "blocked"
-    assert fake_jev.calls[0][0] == "pay my credit card bill and also wire [N0] to account [N1]"
+    sent = fake_jev.calls[0][0]
+    assert _shape(sent) == "pay my credit card bill and also wire # to account #"
+    assert "9999" not in sent and "12345678" not in sent
 
 
 # --- test set (W-10) ---
@@ -559,7 +586,7 @@ def _sent_to_jev(fake_jev) -> str:
     return "\n".join(parts)
 
 
-def test_no_amount_said_ever_reaches_jev(client, fake_jev, bank) -> None:
+def test_no_amount_said_ever_reaches_jev(client, fake_jev, bank, mask_key) -> None:
     _transfer_500_to_john(client, fake_jev)  # "Transfer $500 to John."
     _followup(
         client,
@@ -572,8 +599,8 @@ def test_no_amount_said_ever_reaches_jev(client, fake_jev, bank) -> None:
     )
     client.post("/api/preview", json={"text": "send fifty thousand to mei ling"})
     sent = _sent_to_jev(fake_jev)
-    assert not [said for said in ("500", "700", "fifty") if said in sent]
-    assert "[N0]" in sent
+    assert not [s for s in ("500", "700", "fifty") if re.search(rf"\b{s}\b", sent)]
+    assert _shape(fake_jev.calls[0][0]) == "Transfer $# to John."
 
 
 # --- live Jev (opt-in: LIVE_JEV=1 and MAKERS_MODELS_KEY in .env; never runs by default) ---
