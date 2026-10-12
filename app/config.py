@@ -41,6 +41,8 @@ CLARIFY_MAX_OPTIONS = 4  # most chips one clarifying question shows
 CLARIFY_MIN_PROBABILITY = 0.05  # options below this average probability are not offered as chips
 PREVIEW_CACHE_SIZE = 500  # distinct texts /api/preview remembers before dropping the oldest
 
+SHIELD_BLOCK_AT = 0.5  # Jev's probability of an injection at which the shield blocks (W-08)
+
 # Confidence gate (W-05). Starting guesses, tuned with scripts/eval_intent.py in H-01.
 GATE_TAU_BASE = 0.80  # least average probability Jev's pick needs to proceed
 GATE_TAU_HIGH = 0.90  # the same, once the largest number said is above GATE_HIGH_AMOUNT

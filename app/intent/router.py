@@ -22,7 +22,7 @@ from app.contracts import (
     UnderstandRequest,
     UnderstandResponse,
 )
-from app.intent import draft, gate, jev, options, session
+from app.intent import draft, gate, jev, options, session, shield
 
 router = APIRouter(prefix="/api", tags=["intent"])
 
@@ -180,7 +180,8 @@ async def transcribe(audio: UploadFile) -> dict[str, Any]:
 async def understand(request: UnderstandRequest) -> dict[str, Any]:
     """Turn a transcript, or the answer to a question, into the next step.
 
-    A transcript starts a session: one batch of Jev questions per phrasing. An answer
+    A transcript is checked by the input shield first, then starts a session: one
+    batch of Jev questions per phrasing. An answer
     settles the open question from the stored replies without asking Jev again.
     The gate then asks the next unsure question, or the draft is built.
     """
@@ -188,6 +189,20 @@ async def understand(request: UnderstandRequest) -> dict[str, Any]:
         return _stub_understand(request)
     started = time.monotonic()
     if request.transcript is not None:
+        blocked, model = await shield.check(request.transcript)
+        if blocked:
+            return {
+                "status": "blocked",
+                "reason": "possible_injection",
+                "message": _BLOCKED,
+                "meta": {
+                    "latency_ms": round((time.monotonic() - started) * 1000),
+                    "model": model,
+                    "source": "jev",
+                    "phrasings": 1,
+                    "cached": False,
+                },
+            }
         current = await _start(request.user_id, request.transcript)
     else:
         current = session.load(request.session_id, request.user_id)
@@ -268,6 +283,7 @@ def _next_step(request: UnderstandRequest, current: session.Session, meta: dict)
 
 
 _HELP = "I can help with transfers, bill payments and stock orders."
+_BLOCKED = "This request contains instructions I can't act on. Please say it again."
 _MISSING = {
     "transfer_amount": 'Please say how much to send, for example "send fifty to John".',
     "quantity": 'Please say how many shares, for example "buy 100 Apple shares".',
