@@ -250,10 +250,18 @@ def _number_options(said: dict[str, Number], shown: list[int]) -> list[tuple[str
         (
             oid,
             f'The number said as "{shown[i]}"' if n.span else f'The amount "{n.phrase}"',
-            f"{n.value:,}",
+            _label(n),
         )
         for i, (oid, n) in enumerate(said.items())
     ]
+
+
+def _label(n: Number) -> str:
+    # What the chip shows. "The rest" depends on the earlier actions, so it names the account
+    # instead of a balance that would be wrong; other fractions show their value too.
+    if n.span:
+        return f"{n.value:,}"
+    return n.phrase if n.remaining else f"{n.phrase} ({n.value:,})"
 
 
 def _biller(name: str, label: str, only: bool) -> str:
@@ -310,6 +318,8 @@ def build(transcript: str, data: UserData, scope: str) -> Options:
     # A sum of money for shares ("invest 2k in Apple"); draft.py turns it into whole shares.
     sums = [
         ("m" + oid[1:], f"A sum of money: {text[0].lower()}{text[1:]}", f"{label} worth")
+        if said[oid].span
+        else ("m" + oid[1:], f"A sum of money: {text[0].lower()}{text[1:]}", label)
         for oid, text, label in amounts
     ]
     no_number = ("none", "No such number is said.", "None of these")
@@ -514,7 +524,7 @@ _ASK = {
     "bill_from": "Which account should I pay from?",
     "ticker": "Which stock did you mean?",
     "side": "Do you want to buy or sell?",
-    "quantity": "How many shares?",
+    "quantity": "How many shares, or how much money?",
     "order_type": "At the market price, or only at your price?",
     "limit_price": "At what price?",
 }
