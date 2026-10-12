@@ -211,3 +211,11 @@ Use existing Motion for staggered entry, exit, position changes and a shared pri
 **Rejected:** A `budget` field on `stock_order`. Code converts the sum to a quantity, so the card and the signed shape stay as they are. Refusing cross-currency "rest" instead of converting would have broken the headline example.
 **Currency of a sum (decided 13 Oct):** any amount said is in SGD unless the user names another currency ("2k" and "$2,000" are SGD; "US$2,000" is USD). An SGD sum for a USD share adds an `fx_conversion`.
 **Open:** Validation must re-derive amounts that are computed rather than said (§10.7).
+
+## D-028 · Stage 1 device public-key registration
+2026-10-12 · Jayanth · Status: decided (shared documentation for team review)
+**Decision:** Store only validated EC/P-256 public coordinates in `var/devices.json`. Pin the first key per known demo user; identical repeats succeed and different keys are refused. Thread/process locks, atomic replacement and disk synchronization protect local persistent storage. No dependencies or public contracts change.
+**Limitation:** The client supplies `user_id` without authenticated customer identity or proof of private-key possession. An attacker registering first can take over that user's key slot. This is controlled demo enrollment only, not production authentication; do not expose it as a public banking enrollment feature. Use a supervised private instance for the demo.
+**Later:** Authenticated sessions, step-up verification, proof of possession and secure replacement/recovery need a separate design and team approval after the core pipeline works. No automatic reset or key replacement is provided now.
+**Errors:** Invalid keys and replacement attempts use HTTP 400 `bad_request`; unknown users use HTTP 404 `not_found`. Corrupt or unavailable registry storage fails with a sanitized server error and is never silently reset.
+**Why:** J-06 needs a persistent public key while advanced customer enrollment remains out of scope for J-04. Pinning prevents silent replacement but does not secure the initial enrollment.
