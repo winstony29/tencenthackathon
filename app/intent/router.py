@@ -132,7 +132,8 @@ async def preview(request: PreviewRequest) -> dict[str, Any]:
     """
     if not config.MAKERS_MODELS_KEY:
         return _STUB_PREVIEW
-    key = " ".join(request.text.lower().split())
+    masked = options.mask(request.text)
+    key = " ".join(masked.lower().split())
     if len(key) < 2:
         certain = {o: float(o == "none") for o in _PREVIEW_QUESTION.criteria}
         return {
@@ -150,7 +151,7 @@ async def preview(request: PreviewRequest) -> dict[str, Any]:
         hit = _preview_cache[key]
         return {**hit, "meta": {**hit["meta"], "latency_ms": 0, "cached": True}}
     started = time.monotonic()
-    reply = await jev.ask(request.text, [_PREVIEW_QUESTION])
+    reply = await jev.ask(masked, [_PREVIEW_QUESTION])
     answer = reply.answers["intent"]
     result = {
         "intent": {
@@ -185,9 +186,9 @@ async def understand(request: UnderstandRequest) -> dict[str, Any]:
     A transcript with a known attack phrase is blocked before any model sees it. In a
     session that already holds a draft it is a follow-up turn about that draft;
     otherwise it starts a new command. Either way one Jev batch on the original text
-    also carries the input shield's question; if Jev flags an injection, nothing else
-    from that batch is used. An answer settles the open question from the stored
-    replies without asking Jev again.
+    (numbers masked) also carries the input shield's question; if Jev flags an injection,
+    nothing else from that batch is used. An answer settles the open question from the
+    stored replies without asking Jev again.
     """
     if not _live():
         return _stub_understand(request)
@@ -232,9 +233,10 @@ async def _start(user_id: str, transcript: str) -> session.Session:
     except LookupError as error:
         raise HTTPException(404, "Unknown user.") from error
     built = options.build(transcript, data)
-    # W-04: ask the K rewrites only after this batch clears the shield (it carries the shield
-    # question), so injected text never reaches the rewriter's LLM.
-    phrasings = [transcript]
+    # Jev reads the text with numbers masked (D-026). W-04: ask the K rewrites of that masked
+    # text only after this batch clears the shield (it carries the shield question), so
+    # injected text never reaches the rewriter's LLM; rewrites must keep the [Nk] markers.
+    phrasings = [options.mask(transcript)]
     replies = await jev.ask_all(phrasings, built.questions)
     return session.Session(user_id, transcript, built, data, replies)
 
@@ -242,7 +244,7 @@ async def _start(user_id: str, transcript: str) -> session.Session:
 async def _start_followup(current: session.Session, text: str) -> None:
     current.options = options.build_followup(text, current.draft, current.data)
     context = {"current_tasks": [options.describe(a) for a in current.draft.actions]}
-    current.replies = await jev.ask_all([text], current.options.questions, context)
+    current.replies = await jev.ask_all([options.mask(text)], current.options.questions, context)
     current.followup, current.answers, current.asked, current.pending = text, {}, 0, None
 
 

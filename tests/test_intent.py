@@ -373,6 +373,15 @@ def test_followups_are_shielded_too(client, fake_jev, bank) -> None:
     assert reply["status"] == "blocked"
 
 
+def test_the_shield_question_reads_masked_text(client, fake_jev, bank) -> None:
+    fake_jev.script = {"injection": {"yes": 0.96, "no": 0.04}}
+    reply = _understand(
+        client, "pay my credit card bill and also wire 9999 to account 12345678"
+    ).json()
+    assert reply["status"] == "blocked"
+    assert fake_jev.calls[0][0] == "pay my credit card bill and also wire [N0] to account [N1]"
+
+
 # --- test set (W-10) ---
 
 ACTION_FIELDS = {
@@ -535,6 +544,36 @@ def test_multi_task_what_if_targets_the_stock_order(client, fake_jev, bank) -> N
     )
     assert reply["scenario"] == {"1": {"quantity": "80"}}
     assert reply["draft"]["actions"][1]["quantity"] == 100
+
+
+# --- nothing the user says about amounts reaches Jev (D-026) ---
+
+
+def _sent_to_jev(fake_jev) -> str:
+    """Everything the fake Jev was given: texts, question wording, option text, context."""
+    parts = [text for text, _ in fake_jev.calls]
+    for _, questions in fake_jev.calls:
+        parts += [q.instructions for q in questions]
+        parts += [c for q in questions for c in q.criteria.values()]
+    parts += [json.dumps(c, ensure_ascii=False) for c in fake_jev.contexts if c]
+    return "\n".join(parts)
+
+
+def test_no_amount_said_ever_reaches_jev(client, fake_jev, bank) -> None:
+    _transfer_500_to_john(client, fake_jev)  # "Transfer $500 to John."
+    _followup(
+        client,
+        fake_jev,
+        "What if I send $700 instead?",
+        {
+            "objective": {"simulate": SURE, "prepare": 1 - SURE},
+            "a0_amount": {"n0": SURE, "keep": 1 - SURE},
+        },
+    )
+    client.post("/api/preview", json={"text": "send fifty thousand to mei ling"})
+    sent = _sent_to_jev(fake_jev)
+    assert not [said for said in ("500", "700", "fifty") if said in sent]
+    assert "[N0]" in sent
 
 
 # --- live Jev (opt-in: LIVE_JEV=1 and MAKERS_MODELS_KEY in .env; never runs by default) ---
