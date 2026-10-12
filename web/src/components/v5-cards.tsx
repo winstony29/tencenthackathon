@@ -73,6 +73,10 @@ function Task({
         {a.type === "fx_conversion" ? (
           <>
             <div>
+              <dt>From</dt>
+              <dd>{label(a.from_account_label)}</dd>
+            </div>
+            <div>
               <dt>Rate</dt>
               <dd>
                 1 {a.sell_currency} = {a.rate} {a.buy_currency}
@@ -103,10 +107,12 @@ function Task({
             <dd>{a.bill_reference}</dd>
           </div>
         )}
-        <div>
-          <dt>{stock && a.side === "sell" ? "Into" : "From"}</dt>
-          <dd>{label(a.from_account_label)}</dd>
-        </div>
+        {!fx && (
+          <div>
+            <dt>{stock && a.side === "sell" ? "Into" : "From"}</dt>
+            <dd>{label(a.from_account_label)}</dd>
+          </div>
+        )}
         {stock && (
           <>
             <div>

@@ -84,7 +84,7 @@ export const understandSchema = z.discriminatedUnion("status", [
     draft: draftSchema,
     objective: objectiveSchema,
     // Hypothetical values for `simulate`, by action index; never validated, signed or executed.
-    scenario: z.record(z.string(), z.record(z.enum(["amount", "quantity"]), z.string())).nullable(),
+    scenario: z.record(z.string(), z.partialRecord(z.enum(["amount", "quantity"]), z.string())).nullable(),
     meta: metaSchema,
   }),
   z.strictObject({
