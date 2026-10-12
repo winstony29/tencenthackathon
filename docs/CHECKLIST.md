@@ -13,8 +13,9 @@ IDs: `S` setup · `W` Winston · `J` Jayanth · `D` Darren · `I` integration ·
   *Done when:* all three teammates can clone it and see the three branches.
 - [x] **S-02** · Winston · Build the skeleton: every file in `docs/STRUCTURE.md` §1 except `web/`, each with its header docstring (`docs/STYLE.md` §1.1). `app/contracts.py` has every model in `docs/CONTRACTS.md`. Every router returns the stub responses from CONTRACTS §7. Add `requirements.txt` and `pyproject.toml`.
   *Done when:* `uvicorn app.main:app --reload` starts, `http://localhost:8000/docs` lists every endpoint, and each one returns its stub.
-- [ ] **S-03** · Winston · Write `tests/test_boundary.py` (import rules) and `tests/conftest.py` (test client, fake Jev, fake LLM, fake ASR).
+- [x] **S-03** · Winston · Write `tests/test_boundary.py` (import rules) and `tests/conftest.py` (test client, fake Jev, fake LLM, fake ASR).
   *Done when:* `pytest` passes and the boundary test fails if you add `from app.bank import ledger` to any intent file.
+  *Note (12 Oct):* the fake Jev arrives with W-03; the fake LLM and ASR arrive with W-04 and W-09, once their clients exist.
 - [ ] **S-04** · Everyone · Clone, create a venv, run the app, install CodeBuddy, take your first screenshot into `docs/screenshots/`.
   *Done when:* each person has committed one screenshot on their branch.
 
