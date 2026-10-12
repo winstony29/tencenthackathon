@@ -236,7 +236,7 @@ Prices are mock data from `data/bank.json`.
 ```json
 {"from": "SGD", "to": "USD", "rate": "0.740000", "as_of": "2026-10-13T09:30:00+08:00"}
 ```
-Rates are mock data in `data/bank.json` (at least SGD→USD and USD→SGD). An unknown pair returns 404 `not_found`. *Pending: until Jayanth builds it, the stub returns this example (§7).*
+Rates are mock data in `data/bank.json` (at least SGD→USD and USD→SGD). An unknown pair returns 404 `not_found`. *Pending: not built yet, and there is no stub; until Jayanth adds it, this endpoint returns 404. The UI does not need it: every `fx_conversion` in a draft already carries its `rate`.*
 
 **`POST /api/device/register`**: stores the phone's public key.
 Request: `{"user_id": "u_demo", "public_key_jwk": { /* EC P-256 public JWK */ }}`
