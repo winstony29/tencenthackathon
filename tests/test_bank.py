@@ -5,6 +5,7 @@ Diagram box: Mock gateway, Risk & KYC rules, Mock ledger
 Contract: docs/CONTRACTS.md §3.3 and §4
 """
 
+import base64
 import hashlib
 import importlib
 import json
@@ -18,11 +19,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app import audit
-from app.bank import readonly
+from app.bank import devices, readonly
 from app.contracts import AccountsResponse, QuoteResponse
 from app.main import app
 
@@ -472,3 +474,312 @@ def test_user_input_cannot_change_audit_record_structure(audit_path: Path) -> No
     with pytest.raises(audit.AuditError):
         audit.append_event("gateway", "signature_invalid", {"reason": {"otp": "secret"}})
     assert not audit_path.exists()
+
+
+@pytest.fixture
+def device_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Keep device registration tests away from real runtime state."""
+    monkeypatch.setattr(devices, "__file__", str(tmp_path / "app" / "bank" / "devices.py"))
+    return tmp_path / "var" / "devices.json"
+
+
+@pytest.fixture
+def public_jwk() -> dict[str, Any]:
+    """Use the public P-256 generator point; no private key is stored or required."""
+    x = bytes.fromhex("6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296")
+    y = bytes.fromhex("4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5")
+    return {
+        "kty": "EC",
+        "crv": "P-256",
+        "ext": True,
+        "key_ops": ["verify"],
+        "x": base64.urlsafe_b64encode(x).rstrip(b"=").decode(),
+        "y": base64.urlsafe_b64encode(y).rstrip(b"=").decode(),
+    }
+
+
+def _other_public_jwk(public_jwk: dict[str, Any]) -> dict[str, Any]:
+    key = dict(public_jwk)
+    prime = int("ffffffff00000001000000000000000000000000ffffffffffffffffffffffff", 16)
+    y = int.from_bytes(base64.urlsafe_b64decode(key["y"] + "="), "big")
+    key["y"] = base64.urlsafe_b64encode((prime - y).to_bytes(32, "big")).rstrip(b"=").decode()
+    return key
+
+
+def test_device_registration_persists_only_public_coordinates(
+    device_path: Path,
+    public_jwk: dict[str, Any],
+    bank_client: TestClient,
+) -> None:
+    assert devices.get_public_key("u_demo") is None
+    response = bank_client.post(
+        "/api/device/register", json={"user_id": "u_demo", "public_key_jwk": public_jwk}
+    )
+    assert response.status_code == 200
+    assert response.json() == {"status": "registered"}
+    expected = {key: public_jwk[key] for key in ("kty", "crv", "x", "y")}
+    assert devices.get_public_key("u_demo") == expected
+    assert json.loads(device_path.read_text()) == {"u_demo": expected}
+    importlib.reload(devices)
+    assert devices.get_public_key("u_demo", storage_path=device_path) == expected
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"kty": "RSA"},
+        {"crv": "P-384"},
+        {"d": "private-test-value"},
+        {"private_key": "private-test-value"},
+        {"x": "!" * 43},
+        {"x": "AA"},
+        {"x": None},
+        {"x": 123},
+        {"y": "A" * 43},
+        {"x": "_" * 42 + "8"},
+        {"x": "A" * 42 + "B"},
+        {"key_ops": ["sign"]},
+        {"ext": "true"},
+        {"use": "enc"},
+        {"alg": "ES384"},
+        {"kid": {}},
+    ],
+)
+def test_device_registration_rejects_invalid_keys_without_writing(
+    device_path: Path,
+    public_jwk: dict[str, Any],
+    bank_client: TestClient,
+    patch: dict[str, Any],
+) -> None:
+    response = bank_client.post(
+        "/api/device/register", json={"user_id": "u_demo", "public_key_jwk": public_jwk | patch}
+    )
+    assert response.status_code == 400
+    assert response.json() == {
+        "error": {"code": "bad_request", "message": "Invalid ECDSA P-256 public key."}
+    }
+    assert not device_path.exists()
+
+
+@pytest.mark.parametrize("field", ["kty", "crv", "x", "y"])
+def test_device_registration_requires_all_key_fields(
+    device_path: Path,
+    public_jwk: dict[str, Any],
+    bank_client: TestClient,
+    field: str,
+) -> None:
+    del public_jwk[field]
+    response = bank_client.post(
+        "/api/device/register", json={"user_id": "u_demo", "public_key_jwk": public_jwk}
+    )
+    assert response.status_code == 400
+    assert not device_path.exists()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"user_id": "u_demo"},
+        {"public_key_jwk": {}},
+        {"user_id": "u_demo", "public_key_jwk": []},
+    ],
+)
+def test_device_endpoint_requires_request_fields(
+    device_path: Path,
+    bank_client: TestClient,
+    body: dict[str, Any],
+) -> None:
+    response = bank_client.post("/api/device/register", json=body)
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "bad_request"
+    assert not device_path.exists()
+
+
+def test_device_unknown_user_is_not_registered(
+    device_path: Path,
+    public_jwk: dict[str, Any],
+    bank_client: TestClient,
+) -> None:
+    response = bank_client.post(
+        "/api/device/register", json={"user_id": "u_missing", "public_key_jwk": public_jwk}
+    )
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+    with pytest.raises(HTTPException) as error:
+        devices.get_public_key("u_missing")
+    assert error.value.status_code == 404
+    assert not device_path.exists()
+
+
+def test_device_repeat_is_idempotent_and_replacement_is_refused(
+    device_path: Path,
+    public_jwk: dict[str, Any],
+    bank_client: TestClient,
+) -> None:
+    devices.register_public_key("u_demo", public_jwk)
+    before = device_path.read_bytes()
+    minimal = {key: public_jwk[key] for key in ("kty", "crv", "x", "y")}
+    assert devices.register_public_key("u_demo", minimal).status == "registered"
+    assert device_path.read_bytes() == before
+    for key in (_other_public_jwk(public_jwk), public_jwk | {"d": "secret"}):
+        response = bank_client.post(
+            "/api/device/register", json={"user_id": "u_demo", "public_key_jwk": key}
+        )
+        assert response.status_code == 400
+        assert device_path.read_bytes() == before
+    retrieved = devices.get_public_key("u_demo")
+    retrieved["x"] = "changed"
+    assert devices.get_public_key("u_demo") == minimal
+
+
+@pytest.mark.parametrize(
+    "content", ["", "broken", "[]", '{"u_demo":{}}', '{"u_demo":{},"u_demo":{}}']
+)
+def test_corrupt_device_registry_is_never_reset(
+    device_path: Path,
+    public_jwk: dict[str, Any],
+    content: str,
+) -> None:
+    device_path.parent.mkdir(parents=True)
+    device_path.write_text(content)
+    with pytest.raises(devices.DeviceStorageError):
+        devices.get_public_key("u_demo")
+    with pytest.raises(devices.DeviceStorageError):
+        devices.register_public_key("u_demo", public_jwk)
+    assert device_path.read_text() == content
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/api/device/register", json={"user_id": "u_demo", "public_key_jwk": public_jwk}
+    )
+    assert response.status_code == 500
+    assert response.text == "Internal Server Error"
+
+
+@pytest.mark.parametrize("failure", ["fsync", "replace"])
+def test_device_storage_failure_preserves_existing_registry(
+    device_path: Path,
+    public_jwk: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    device_path.parent.mkdir(parents=True)
+    device_path.write_text("{}\n")
+
+    def fail(*arguments: Any) -> None:
+        raise OSError("secret-test-value")
+
+    monkeypatch.setattr(devices.os, failure, fail)
+    with pytest.raises(devices.DeviceStorageError) as error:
+        devices.register_public_key("u_demo", public_jwk)
+    assert "secret-test-value" not in str(error.value)
+    assert device_path.read_text() == "{}\n"
+    assert not list(device_path.parent.glob("*.tmp"))
+
+
+def test_concurrent_device_registrations_pin_one_key(
+    device_path: Path,
+    public_jwk: dict[str, Any],
+    bank_client: TestClient,
+) -> None:
+    other = _other_public_jwk(public_jwk)
+
+    def register(number: int) -> int:
+        return bank_client.post(
+            "/api/device/register",
+            json={"user_id": "u_demo", "public_key_jwk": public_jwk if number % 2 else other},
+        ).status_code
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        statuses = list(pool.map(register, range(20)))
+    assert statuses.count(200) == 10
+    assert statuses.count(400) == 10
+    stored = devices.get_public_key("u_demo")
+    assert stored in [{k: key[k] for k in ("kty", "crv", "x", "y")} for key in (public_jwk, other)]
+
+
+def test_device_process_lock_prevents_competing_key_replacement(
+    device_path: Path,
+    public_jwk: dict[str, Any],
+) -> None:
+    source = (
+        "import sys,json; from pathlib import Path; from fastapi import HTTPException; "
+        "from app.bank.devices import register_public_key\n"
+        "try:\n register_public_key('u_demo', json.loads(sys.argv[2]), "
+        "storage_path=Path(sys.argv[1]))\n"
+        "except HTTPException as error:\n sys.exit(2 if error.status_code == 400 else 3)\n"
+    )
+    keys = [public_jwk, _other_public_jwk(public_jwk)] * 2
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", source, str(device_path), json.dumps(key)],
+            cwd=Path(__file__).resolve().parents[1],
+        )
+        for key in keys
+    ]
+    statuses = [process.wait(timeout=30) for process in processes]
+    assert sorted(statuses) == [0, 0, 2, 2]
+    assert devices.get_public_key("u_demo") is not None
+
+
+def test_device_registry_invalid_encoding_is_sanitized(
+    device_path: Path,
+    public_jwk: dict[str, Any],
+) -> None:
+    device_path.parent.mkdir(parents=True)
+    device_path.write_bytes(b"\xff\xfe")
+    with pytest.raises(devices.DeviceStorageError):
+        devices.register_public_key("u_demo", public_jwk)
+    assert device_path.read_bytes() == b"\xff\xfe"
+
+
+def test_device_registry_read_failure_never_fabricates_an_empty_registry(
+    device_path: Path,
+    public_jwk: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = Path.read_text
+
+    def read(path: Path, *arguments: Any, **keywords: Any) -> str:
+        if path == device_path:
+            raise PermissionError("sensitive-test-value")
+        return original(path, *arguments, **keywords)
+
+    monkeypatch.setattr(Path, "read_text", read)
+    with pytest.raises(devices.DeviceStorageError, match="storage operation failed"):
+        devices.register_public_key("u_demo", public_jwk)
+    assert not device_path.exists()
+
+
+def test_device_directory_sync_failure_does_not_report_success(
+    device_path: Path,
+    public_jwk: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = devices.os.fsync
+    calls = []
+
+    def sync(descriptor: int) -> None:
+        calls.append(descriptor)
+        if len(calls) == 2:
+            raise OSError("directory synchronization failed")
+        original(descriptor)
+
+    monkeypatch.setattr(devices.os, "fsync", sync)
+    with pytest.raises(devices.DeviceStorageError):
+        devices.register_public_key("u_demo", public_jwk)
+    # Replace may have committed before directory fsync failed; the file stays whole.
+    assert json.loads(device_path.read_text())["u_demo"]["x"] == public_jwk["x"]
+    assert len(calls) == 2
+    assert not list(device_path.parent.glob("*.tmp"))
+
+
+def test_device_storage_path_is_independent_of_working_directory(
+    device_path: Path,
+    public_jwk: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    assert devices.register_public_key("u_demo", public_jwk).status == "registered"
+    assert device_path.is_file()
+    assert devices.get_public_key("u_demo")["x"] == public_jwk["x"]

@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import APIRouter, Query
 
 from app.audit import read_events
+from app.bank.devices import register_public_key
 from app.bank.readonly import get_accounts, get_quote
 from app.config import AUDIT_DEFAULT_LIMIT
 from app.contracts import (
@@ -27,7 +28,6 @@ from app.contracts import (
 router = APIRouter(prefix="/api", tags=["bank"])
 
 # Stub responses copied from CONTRACTS §3.3 (CONTRACTS §7); J-02 to J-08 replace them.
-_STUB_REGISTERED = {"status": "registered"}
 _STUB_CHALLENGE = {
     "nonce": "n_7d21…",
     "signing_payload": "<canonical draft JSON>.n_7d21…",
@@ -49,9 +49,9 @@ async def quote(ticker: str) -> QuoteResponse:
 
 
 @router.post("/device/register", response_model=DeviceRegisterResponse)
-async def register_device(request: DeviceRegisterRequest) -> dict[str, Any]:
-    """Store the phone's public key. Stub: stores nothing."""
-    return _STUB_REGISTERED
+async def register_device(request: DeviceRegisterRequest) -> DeviceRegisterResponse:
+    """Pin the public key for controlled demo enrollment; customer identity is not verified."""
+    return register_public_key(request.user_id, request.public_key_jwk)
 
 
 @router.post("/challenge", response_model=ChallengeResponse)

@@ -89,3 +89,12 @@ Rejected: ...
 **Decision:** Keep one branch per person (D-002). Each person opens a PR into `main` at least once a day; PRs are merged with "Create a merge commit". After any merge, everyone merges `origin/main` into their own branch. Integration happens continuously on `main`, not in one big merge. Commands are in `docs/GITHUB.md`.
 **Why:** Folder ownership already keeps people apart, so per-task branches add naming and cleanup with nothing gained. Squash merging breaks long-lived branches (the same changes conflict again on the next merge).
 **Rejected:** A new branch per task (more git to learn, more branches to track); squash or rebase merging.
+
+
+## D-015 · Stage 1 device public-key registration
+2026-10-12 · Jayanth · Status: decided (shared documentation for team review)
+**Decision:** Store only validated EC/P-256 public coordinates in `var/devices.json`. Pin the first key per known demo user; identical repeats succeed and different keys are refused. Thread/process locks, atomic replacement and disk synchronization protect local persistent storage. No dependencies or public contracts change.
+**Limitation:** The client supplies `user_id` without authenticated customer identity or proof of private-key possession. An attacker registering first can take over that user's key slot. This is controlled demo enrollment only, not production authentication; do not expose it as a public banking enrollment feature. Use a supervised private instance for the demo.
+**Later:** Authenticated sessions, step-up verification, proof of possession and secure replacement/recovery need a separate design and team approval after the core pipeline works. No automatic reset or key replacement is provided now.
+**Errors:** Invalid keys and replacement attempts use HTTP 400 `bad_request`; unknown users use HTTP 404 `not_found`. Corrupt or unavailable registry storage fails with a sanitized server error and is never silently reset.
+**Why:** J-06 needs a persistent public key while advanced customer enrollment remains out of scope for J-04. Pinning prevents silent replacement but does not secure the initial enrollment.
