@@ -6,6 +6,7 @@ Contract: the variables listed in .env.example
 """
 
 import os
+from decimal import Decimal
 
 from dotenv import load_dotenv
 
@@ -35,4 +36,14 @@ MAX_ACTIONS_PER_DRAFT = 4  # most actions one draft may hold (CONTRACTS §2)
 MAX_TEXT_CHARS = 500  # longest text or transcript the server accepts (CONTRACTS §1)
 MAX_QUESTIONS = 3  # clarify questions before giving up with "too_many_questions" (CONTRACTS §3.1)
 SESSION_TIMEOUT_SECONDS = 300  # a clarify session expires after this long without a call
+TIMEZONE = "Asia/Singapore"  # offset written into draft times (CONTRACTS §1)
+CLARIFY_MAX_OPTIONS = 4  # most chips one clarifying question shows
+CLARIFY_MIN_PROBABILITY = 0.05  # options below this average probability are not offered as chips
+PREVIEW_CACHE_SIZE = 500  # distinct texts /api/preview remembers before dropping the oldest
+
+# Confidence gate (W-05). Starting guesses, tuned with scripts/eval_intent.py in H-01.
+GATE_TAU_BASE = 0.80  # least average probability Jev's pick needs to proceed
+GATE_TAU_HIGH = 0.90  # the same, once the largest number said is above GATE_HIGH_AMOUNT
+GATE_HIGH_AMOUNT = Decimal("1000")  # where the stricter threshold starts
+GATE_DELTA = 0.15  # most a pick's probability may vary across phrasings
 AUDIT_DEFAULT_LIMIT = 50  # entries GET /api/audit returns when no limit is given (CONTRACTS §3.3)
