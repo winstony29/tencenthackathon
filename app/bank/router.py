@@ -7,8 +7,9 @@ Contract: docs/CONTRACTS.md §3.3
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
+from app.audit import read_events
 from app.bank.readonly import get_accounts, get_quote
 from app.config import AUDIT_DEFAULT_LIMIT
 from app.contracts import (
@@ -33,21 +34,6 @@ _STUB_CHALLENGE = {
     "expires_at": "2026-10-12T09:35:00+08:00",
 }
 _STUB_EXECUTED = {"status": "executed", "results": [{"action_index": 0, "reference": "TX-000123"}]}
-# The CONTRACTS example writes the time as "…"; a real time is used so the stub passes validation.
-_STUB_AUDIT = {
-    "chain_valid": True,
-    "entries": [
-        {
-            "index": 41,
-            "time": "2026-10-12T09:30:00+08:00",
-            "actor": "intent",
-            "event": "jev_answer",
-            "data": {},
-            "prev_hash": "…",
-            "hash": "…",
-        }
-    ],
-}
 
 
 @router.get("/accounts", response_model=AccountsResponse)
@@ -81,6 +67,6 @@ async def execute(request: ExecuteRequest) -> dict[str, Any]:
 
 
 @router.get("/audit", response_model=AuditResponse)
-async def audit(limit: int = AUDIT_DEFAULT_LIMIT) -> dict[str, Any]:
-    """Return the latest audit entries and whether the chain is intact. Stub: one entry."""
-    return _STUB_AUDIT
+async def audit(limit: int = Query(default=AUDIT_DEFAULT_LIMIT, gt=0)) -> AuditResponse:
+    """Return real audit entries and verify the entire stored chain."""
+    return read_events(limit)

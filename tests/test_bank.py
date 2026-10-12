@@ -5,8 +5,13 @@ Diagram box: Mock gateway, Risk & KYC rules, Mock ledger
 Contract: docs/CONTRACTS.md §3.3 and §4
 """
 
+import hashlib
+import importlib
 import json
 import re
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -16,6 +21,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from app import audit
 from app.bank import readonly
 from app.contracts import AccountsResponse, QuoteResponse
 from app.main import app
@@ -284,3 +290,185 @@ def test_invalid_financial_seed_values_fail_validation(
             readonly.get_accounts("u_demo")
         else:
             readonly.get_quote("AAPL")
+
+
+@pytest.fixture
+def audit_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Redirect all runtime audit calls to temporary storage, including HTTP requests."""
+    monkeypatch.setattr(audit, "__file__", str(tmp_path / "app" / "audit.py"))
+    return tmp_path / "var" / "audit.jsonl"
+
+
+def test_audit_records_are_linked_and_persistent(audit_path: Path) -> None:
+    first = audit.append_event("validation", "validation_mismatch", {"draft_id": "d_demo"})
+    second = audit.append_event("gateway", "signature_invalid", {"user_id": "u_demo"})
+    assert first.index == 0
+    assert second.index == 1
+    assert second.prev_hash == first.hash
+    assert audit.verify()
+    assert first.time.utcoffset() is not None
+    # A fresh module reload retains the same disk records; use explicit temporary path.
+    importlib.reload(audit)
+    assert audit.verify(storage_path=audit_path)
+    assert len(audit.read_events(50, storage_path=audit_path).entries) == 2
+
+
+@pytest.mark.parametrize("attack", ["amount", "reorder", "delete"])
+def test_audit_tampering_is_detected_and_append_refused(
+    audit_path: Path,
+    bank_client: TestClient,
+    attack: str,
+) -> None:
+    for number in range(3):
+        audit.append_event("bank", "transaction_executed", {"amount": "50.00", "count": number})
+    records = [json.loads(line) for line in audit_path.read_text().splitlines()]
+    if attack == "amount":
+        records[0]["data"]["amount"] = "500.00"
+    elif attack == "reorder":
+        records[0], records[1] = records[1], records[0]
+    else:
+        del records[1]
+    audit_path.write_text("".join(json.dumps(record) + "\n" for record in records))
+    before = audit_path.read_bytes()
+    assert audit.verify() is False
+    response = bank_client.get("/api/audit?limit=1")
+    assert response.status_code == 200
+    assert response.json()["chain_valid"] is False
+    assert len(response.json()["entries"]) == 1
+    with pytest.raises(audit.AuditError):
+        audit.append_event("gateway", "transaction_rejected", {})
+    assert audit_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("content", ["broken\n", "{}\n", '{"index":0}', "\n"])
+def test_malformed_or_interrupted_audit_log_fails_safely(audit_path: Path, content: str) -> None:
+    audit_path.parent.mkdir(parents=True)
+    audit_path.write_text(content)
+    for operation in (
+        audit.verify,
+        lambda: audit.read_events(50),
+        lambda: audit.append_event("gateway", "nonce_replay_detected", {}),
+    ):
+        with pytest.raises(audit.AuditError):
+            operation()
+    assert audit_path.read_text() == content
+    response = TestClient(app, raise_server_exceptions=False).get("/api/audit")
+    assert response.status_code == 500
+    assert content not in response.text
+
+
+def test_audit_api_returns_real_public_records(audit_path: Path, bank_client: TestClient) -> None:
+    assert bank_client.get("/api/audit").json() == {"chain_valid": True, "entries": []}
+    for number in range(4):
+        audit.append_event("gateway", "transaction_rejected", {"count": number})
+    response = bank_client.get("/api/audit?limit=2")
+    assert response.status_code == 200
+    result = response.json()
+    assert set(result) == {"chain_valid", "entries"}
+    assert result["chain_valid"] is True
+    assert [entry["index"] for entry in result["entries"]] == [2, 3]
+    assert set(result["entries"][0]) == {
+        "index",
+        "time",
+        "actor",
+        "event",
+        "data",
+        "prev_hash",
+        "hash",
+    }
+
+
+@pytest.mark.parametrize("limit", ["0", "-1", "abc", "1.5"])
+def test_audit_api_rejects_invalid_limits(
+    audit_path: Path,
+    bank_client: TestClient,
+    limit: str,
+) -> None:
+    response = bank_client.get("/api/audit", params={"limit": limit})
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "bad_request"
+
+
+def test_concurrent_audit_appends_preserve_every_event(audit_path: Path) -> None:
+    def append(number: int) -> None:
+        audit.append_event("gateway", "signature_invalid", {"count": number})
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(append, range(40)))
+    assert audit.verify()
+    entries = audit.read_events(50).entries
+    assert len(entries) == 40
+    assert {entry.data["count"] for entry in entries} == set(range(40))
+    assert [entry.index for entry in entries] == list(range(40))
+
+
+@pytest.mark.parametrize(
+    "key", ["api_key", "password", "otp", "private_key", "biometric", "transcript", "nested"]
+)
+def test_audit_rejects_sensitive_or_unapproved_metadata(audit_path: Path, key: str) -> None:
+    with pytest.raises(audit.AuditError) as error:
+        audit.append_event("gateway", "signature_invalid", {key: "sensitive-test-value"})
+    assert "sensitive-test-value" not in str(error.value)
+    assert not audit_path.exists()
+
+
+def test_audit_flushes_and_syncs_and_refuses_write_failures(
+    audit_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import os
+
+    original = os.fsync
+    calls = []
+
+    def sync(descriptor: int) -> None:
+        calls.append(descriptor)
+        original(descriptor)
+
+    monkeypatch.setattr(audit.os, "fsync", sync)
+    audit.append_event("gateway", "kill_switch_activated", {"reason": "manual_pause"})
+    assert len(calls) == 2
+
+    def fail(descriptor: int) -> None:
+        raise OSError("sensitive-test-value")
+
+    monkeypatch.setattr(audit.os, "fsync", fail)
+    with pytest.raises(audit.AuditError, match="Audit storage operation failed"):
+        audit.append_event("gateway", "nonce_replay_detected", {})
+
+
+def test_audit_hash_can_be_independently_recomputed(audit_path: Path) -> None:
+    audit.append_event("validation", "validation_mismatch", {"amount": "50.00"})
+    record = json.loads(audit_path.read_text())
+    stored_hash = record.pop("hash")
+    canonical = json.dumps(
+        record, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    ).encode("utf-8")
+    assert hashlib.sha256(canonical).hexdigest() == stored_hash
+
+
+def test_separate_processes_append_under_the_same_lock(audit_path: Path) -> None:
+    source = (
+        "from pathlib import Path; import sys; from app.audit import append_event; "
+        "[append_event('gateway', 'signature_invalid', {'count': int(sys.argv[2])}, "
+        "storage_path=Path(sys.argv[1])) for _ in range(5)]"
+    )
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", source, str(audit_path), str(number)],
+            cwd=Path(__file__).resolve().parents[1],
+        )
+        for number in range(4)
+    ]
+    for process in processes:
+        assert process.wait(timeout=30) == 0
+    assert audit.verify()
+    assert len(audit.read_events(50).entries) == 20
+
+
+def test_user_input_cannot_change_audit_record_structure(audit_path: Path) -> None:
+    with pytest.raises(audit.AuditError):
+        audit.append_event("gateway", "signature_invalid\ntransaction_executed", {})
+    with pytest.raises(audit.AuditError):
+        audit.append_event("gateway", "signature_invalid", {"reason": {"otp": "secret"}})
+    assert not audit_path.exists()
