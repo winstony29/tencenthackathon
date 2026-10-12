@@ -134,10 +134,11 @@ def test_stand_ins_are_keyed_and_scoped(mask_key, monkeypatch) -> None:
     assert options.stand_ins(numbers, "u|s1") != first  # useless without the key
 
 
-def test_stand_ins_keep_the_number_of_digits(mask_key) -> None:
+def test_stand_ins_are_round_and_keep_the_number_of_digits(mask_key) -> None:
     numbers = options.parse_numbers("send 5, 50, 1,250.50 and fifty thousand")
-    shown = options.stand_ins(numbers, "u|s1")
-    assert [len(str(s)) for s in shown] == [2, 2, 4, 5]
+    shown = [str(s) for s in options.stand_ins(numbers, "u|s1")]
+    assert [len(s) for s in shown] == [2, 2, 4, 5]
+    assert all(set(s[2:]) <= {"0"} for s in shown)  # two digits, then zeros
 
 
 def test_options_come_only_from_user_data_and_the_transcript() -> None:
