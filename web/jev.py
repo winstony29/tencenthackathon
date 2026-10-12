@@ -14,9 +14,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app import config
 from web.presentation import router as component_router
+from web.presentation_v4 import router as v4_router
 
 router = APIRouter(prefix="/api", tags=["presentation demo"])
 router.include_router(component_router)
+router.include_router(v4_router)
 Bundle = Literal[
     "transfer_editing",
     "recipient_check",
