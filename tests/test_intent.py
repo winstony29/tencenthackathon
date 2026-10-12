@@ -566,7 +566,8 @@ def test_jev_failure_is_an_upstream_error(client, fake_jev, bank) -> None:
     assert response.json()["error"]["code"] == "upstream_error"
 
 
-def test_stubs_answer_until_jev_and_bank_data_exist(client) -> None:
+def test_stubs_answer_without_a_jev_key(client, monkeypatch) -> None:
+    monkeypatch.setattr(config, "MAKERS_MODELS_KEY", "")
     assert _understand(client, "send fifty to john").json()["question"]["question_id"] == "q_1"
 
 
