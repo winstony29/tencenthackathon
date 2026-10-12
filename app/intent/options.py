@@ -457,10 +457,6 @@ def build_followup(text: str, draft: Draft, data: UserData, scope: str) -> Optio
     said = {f"n{i}": n for i, n in enumerate(parsed + _relative(text, a))}
     amounts = _number_options(said, stand_ins(parsed, scope))
     said_aloud = amounts[: len(parsed)]  # share counts are never balance fractions (see build)
-    accounts = [
-        (x.account_id, f"Use the {x.label} account ({x.type}, {x.currency})", x.label)
-        for x in a.accounts
-    ]
     spec = {"objective": ("What does the user want to do now?", [*OBJECTIVES, NEW_TASK])}
     for i, action in enumerate(draft.actions):
         if action.type == "fx_conversion":
@@ -478,9 +474,20 @@ def build_followup(text: str, draft: Draft, data: UserData, scope: str) -> Optio
             else []
         )
         spec[f"a{i}_amount"] = (f"{task}, what new amount is said?", [*due, *amounts, KEEP])
+        # The current value is left out: picking it means "keep", and offering both splits
+        # Jev's probability between two options that mean the same thing.
+        accounts = [
+            (x.account_id, f"Use the {x.label} account ({x.type}, {x.currency})", x.label)
+            for x in a.accounts
+            if x.account_id != action.from_account_id
+        ]
         spec[f"a{i}_from"] = (f"{task}, which account should it now come from?", [*accounts, KEEP])
         if action.type == "transfer":
-            payees = [(p.payee_id, _payee(p.name), p.label) for p in a.payees]
+            payees = [
+                (p.payee_id, _payee(p.name), p.label)
+                for p in a.payees
+                if p.payee_id != action.to_payee_id
+            ]
             spec[f"a{i}_recipient"] = (f"{task}, who should now receive it?", [*payees, KEEP])
     return Options(
         text=mask(text, scope),

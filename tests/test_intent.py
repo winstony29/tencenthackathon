@@ -844,6 +844,16 @@ def test_an_unsure_followup_objective_asks(client, fake_jev, bank) -> None:
     assert reply["objective"] == "simulate"
 
 
+def test_a_followup_never_offers_the_current_value_beside_keep(client, fake_jev, bank) -> None:
+    # Offering Savings next to "keep" for a transfer already from Savings splits Jev's
+    # probability between two options that mean the same, so the gate asked for nothing.
+    _transfer_500_to_john(client, fake_jev)
+    _followup(client, fake_jev, "can I afford that?", {"objective": {"assess_affordability": SURE}})
+    questions = {q.name: q.criteria for q in fake_jev.calls[-1][1]}
+    assert "acc_1234" not in questions["a0_from"] and "keep" in questions["a0_from"]
+    assert "pay_4521" not in questions["a0_recipient"] and "pay_8892" in questions["a0_recipient"]
+
+
 def test_a_new_task_replaces_the_draft(client, fake_jev, bank) -> None:
     _transfer_500_to_john(client, fake_jev)
     reply = _followup(
