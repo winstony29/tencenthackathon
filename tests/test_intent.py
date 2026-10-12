@@ -17,7 +17,7 @@ from fastapi import HTTPException
 
 from app import config
 from app.bank import readonly
-from app.contracts import AccountsResponse
+from app.contracts import AccountsResponse, Draft
 from app.intent import draft, gate, jev, options, session, shield
 from tests.conftest import BANK, QUOTES
 
@@ -314,6 +314,34 @@ def test_an_sgd_sum_for_us_shares_waits_for_conversion(client, fake_jev, bank) -
     fake_jev.script = _sum_order_script()
     reply = _understand(client, "invest 2k in apple").json()
     assert reply["status"] == "unsupported" and "SGD" in reply["message"]
+
+
+def test_fx_conversion_is_a_draft_action() -> None:
+    action = {
+        "type": "fx_conversion",
+        "from_account_id": "acc_1234",
+        "from_account_label": "Savings …1234",
+        "to_account_id": "acc_7788",
+        "to_account_label": "Invest (USD) …7788",
+        "sell_amount": "2700.00",
+        "sell_currency": "SGD",
+        "buy_amount": "1998.00",
+        "buy_currency": "USD",
+        "rate": "0.740000",
+        "rate_as_of": "2026-10-13T09:30:00+08:00",
+    }
+    draft = Draft.model_validate(
+        {
+            "draft_id": "d_1",
+            "user_id": "u_demo",
+            "session_id": "s_1",
+            "transcript": "x",
+            "created_at": "2026-10-13T09:30:00+08:00",
+            "actions": [action],
+            "evidence": [],
+        }
+    )
+    assert draft.model_dump(mode="json")["actions"][0] == action
 
 
 # --- gate (W-05) ---

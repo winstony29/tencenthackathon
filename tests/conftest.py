@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from app import config
 from app.bank import readonly
-from app.contracts import AccountsResponse, QuoteResponse
+from app.contracts import AccountsResponse, FxResponse, QuoteResponse
 from app.intent import jev, session
 from app.main import app
 
@@ -118,6 +118,20 @@ QUOTES = [
     )
     for t, n, p in [("AAPL", "Apple Inc.", "227.50"), ("TSLA", "Tesla Inc.", "251.00")]
 ]
+FX = {("SGD", "USD"): "0.740000", ("USD", "SGD"): "1.351351"}
+
+
+def _fx_rate(from_currency: str, to_currency: str) -> FxResponse:
+    if (from_currency, to_currency) not in FX:
+        raise LookupError(f"no rate for {from_currency} to {to_currency}")
+    return FxResponse.model_validate(
+        {
+            "from": from_currency,
+            "to": to_currency,
+            "rate": FX[from_currency, to_currency],
+            "as_of": "2026-10-13T09:30:00+08:00",
+        }
+    )
 
 
 @pytest.fixture
@@ -128,3 +142,4 @@ def bank(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         readonly, "get_bill_reference", lambda biller_id: "4120-XXXX-XXXX-9012", raising=False
     )
+    monkeypatch.setattr(readonly, "get_fx_rate", _fx_rate, raising=False)
