@@ -136,14 +136,16 @@ def _stand_in(value: Decimal, scope: str, taken: set[int]) -> int:
     # "send 437" as less like a transfer than "send 72000" (live, 12 Oct): Jev learns the
     # order of magnitude, never the value.
     scale = 10 ** max(0, len(str(int(value))) - 2)
-    attempt = 0
-    while True:
+    # After STAND_IN_TRIES a clash is accepted: two numbers sharing a stand-in read the same to
+    # Jev, so its pick splits between them and the gate asks the user, whose chips show the
+    # real values.
+    for attempt in range(config.STAND_IN_TRIES):
         message = f"{scope}|{value.normalize()}|{attempt}".encode()
         digest = hmac.new(config.MASK_KEY, message, hashlib.sha256).digest()
         number = (10 + int.from_bytes(digest[:4], "big") % 90) * scale
         if number not in taken:
             return number
-        attempt += 1
+    return number
 
 
 def stand_ins(numbers: list[Number], scope: str) -> list[int]:
@@ -158,9 +160,9 @@ def stand_ins(numbers: list[Number], scope: str) -> list[int]:
 def mask(text: str, scope: str) -> str:
     """Swap every number said for its stand-in, so Jev reads a natural sentence but no value.
 
-    Stand-ins come from a keyed hash of the value and the scope (user and session): the same
-    for a whole conversation, different across conversations, and impossible to work back
-    without config.MASK_KEY. Digits the parser missed become "[number]".
+    Stand-ins come from a keyed hash of the value and the scope (user and session): normally
+    the same for a whole conversation, different across conversations, and impossible to work
+    back without config.MASK_KEY. Digits the parser missed become "[number]".
     """
     # ponytail: number words parse_numbers doesn't know ("dozen", "couple") pass through
     # unmasked; add them to _SMALL / _SCALES if they turn up in real transcripts.

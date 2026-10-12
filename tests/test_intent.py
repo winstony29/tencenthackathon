@@ -134,6 +134,11 @@ def test_stand_ins_are_keyed_and_scoped(mask_key, monkeypatch) -> None:
     assert options.stand_ins(numbers, "u|s1") != first  # useless without the key
 
 
+def test_mask_finishes_even_with_more_numbers_than_stand_ins(mask_key) -> None:
+    text = " ".join(str(i) for i in range(1, 100))
+    assert len(options.mask(text, "u|s1").split()) == 99
+
+
 def test_stand_ins_are_round_and_keep_the_number_of_digits(mask_key) -> None:
     numbers = options.parse_numbers("send 5, 50, 1,250.50 and fifty thousand")
     shown = [str(s) for s in options.stand_ins(numbers, "u|s1")]
@@ -604,10 +609,21 @@ def test_no_amount_said_ever_reaches_jev(client, fake_jev, bank, mask_key) -> No
             "a0_amount": {"n0": SURE, "keep": 1 - SURE},
         },
     )
+    _followup(
+        client,
+        fake_jev,
+        "What if I send half my savings instead?",
+        {"objective": {"simulate": SURE, "prepare": 1 - SURE}},
+    )
     client.post("/api/preview", json={"text": "send fifty thousand to mei ling"})
     sent = _sent_to_jev(fake_jev)
-    assert not [s for s in ("500", "700", "fifty") if re.search(rf"\b{s}\b", sent)]
-    assert _shape(fake_jev.calls[0][0]) == "Transfer $# to John."
+    # Amounts said, balances, the bill due, and quote prices (tests/conftest.py BANK, QUOTES).
+    secrets = (
+        "500", "700", "fifty", "3200", "1600", "900", "450", "25000", "12500", "1240",
+        "227.50", "251.00",
+    )  # fmt: skip
+    assert not [s for s in secrets if re.search(rf"\b{re.escape(s)}\b", sent)]
+    assert fake_jev.calls[0][0] == options.mask("Transfer $500 to John.", "u_demo|s_test")
 
 
 # --- live Jev (opt-in: LIVE_JEV=1 and MAKERS_MODELS_KEY in .env; never runs by default) ---

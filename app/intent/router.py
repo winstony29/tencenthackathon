@@ -128,7 +128,8 @@ _preview_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
 async def preview(request: PreviewRequest) -> dict[str, Any]:
     """Guess the action type while the user types; display only, never a draft or a value.
 
-    One Jev call on the raw text, cached by normalised text so retyping costs nothing.
+    One Jev call on the text with numbers swapped for stand-ins, cached by that normalised
+    text, so retyping costs nothing.
     """
     if not config.MAKERS_MODELS_KEY:
         return _STUB_PREVIEW
