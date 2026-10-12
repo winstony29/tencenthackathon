@@ -16,6 +16,7 @@ from app import config
 from app.bank import readonly
 from app.contracts import (
     NONE_OPTION_ID,
+    Answer,
     PreviewRequest,
     PreviewResponse,
     TranscribeResponse,
@@ -190,7 +191,8 @@ async def understand(request: UnderstandRequest) -> dict[str, Any]:
     otherwise it starts a new command. Either way one Jev batch on the original text
     (numbers swapped for stand-ins) also carries the input shield's question; if Jev flags
     an injection, nothing else from that batch is used. An answer settles the open question
-    from the stored replies without asking Jev again.
+    from the stored replies without asking Jev again. A transcript sent while a question is
+    open answers it instead (CONTRACTS §10.2).
     """
     if not _live():
         return _stub_understand(request)
@@ -200,13 +202,18 @@ async def understand(request: UnderstandRequest) -> dict[str, Any]:
             session.drop(request.session_id)
             return _blocked("", started)
         current = session.load(request.session_id, request.user_id)
-        if current and current.draft:
-            await _start_followup(current, request.transcript, request.session_id)
+        if current and current.pending:
+            finished = await _spoken_answer(request, current, started)
+            if finished is not None:
+                return finished
         else:
-            current = await _start(request.user_id, request.transcript, request.session_id)
-        if shield.flagged(current.replies[0]):
-            session.drop(request.session_id)
-            return _blocked(current.replies[0].model, started)
+            if current and current.draft:
+                await _start_followup(current, request.transcript, request.session_id)
+            else:
+                current = await _start(request.user_id, request.transcript, request.session_id)
+            if shield.flagged(current.replies[0]):
+                session.drop(request.session_id)
+                return _blocked(current.replies[0].model, started)
     else:
         current = session.load(request.session_id, request.user_id)
         if current is None:
@@ -221,6 +228,45 @@ async def understand(request: UnderstandRequest) -> dict[str, Any]:
     if current.followup is not None:
         return await _followup_step(request, current, started)
     return _command_step(request, current, _meta(current, started))
+
+
+async def _spoken_answer(
+    request: UnderstandRequest, current: session.Session, started: float
+) -> dict[str, Any] | None:
+    """Read a spoken or typed reply to the open question (CONTRACTS §10.2).
+
+    Records the pick and returns None so the caller carries on as if a chip was tapped;
+    otherwise returns the finished reply (blocked, cancelled, a re-ask, or a fresh command).
+    """
+    question_id, name, offered = current.pending
+    scope = f"{current.user_id}|{request.session_id}"
+    question = options.spoken_reply_question(current.options, name, offered)
+    reply = await jev.ask(options.mask(request.transcript, scope), [shield.QUESTION, question])
+    meta = {
+        "latency_ms": round((time.monotonic() - started) * 1000),
+        "model": reply.model,
+        "source": "jev",
+        "phrasings": 1,
+        "cached": False,
+    }
+    if shield.flagged(reply):
+        session.drop(request.session_id)
+        return _blocked(reply.model, started)
+    p = gate.pick([reply], question.name)
+    if not gate.trusted(p, _amount(current)):
+        again = gate.Decision({name: gate.pick(current.replies, name)}, ask=name)
+        return _ask(request, current, again, meta) or _unsupported(_HELP, meta)
+    if p.option == options.NEW_REQUEST:
+        fresh = await _start(current.user_id, request.transcript, request.session_id)
+        if shield.flagged(fresh.replies[0]):
+            session.drop(request.session_id)
+            return _blocked(fresh.replies[0].model, started)
+        return _command_step(request, fresh, _meta(fresh, started))
+    if p.option not in offered:  # "none", or a "no" that wasn't one of the chips
+        session.drop(request.session_id)
+        return _cancelled("user_declined", meta)
+    current.record(Answer(question_id=question_id, option_id=p.option))
+    return None
 
 
 def _live() -> bool:

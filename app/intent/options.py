@@ -504,3 +504,27 @@ def clarify(
     if question == "recipient" and enough and len(chips) > 1 and len(first_names) == 1:
         text = f"Which {first_names.pop()} did you mean?"
     return text, chips
+
+
+SPOKEN_REPLY = "spoken_reply"
+NEW_REQUEST = "new_request"
+
+
+def spoken_reply_question(built: Options, name: str, offered: set[str]) -> Question:
+    """The question Jev answers about a spoken reply to an open clarify question (§10.2).
+
+    Offers the chips' options worded as Jev first saw them, so a reply about an amount is
+    matched by stand-in and no real value appears, plus "none of these" and "new request".
+    """
+    first = next(q for q in built.questions if q.name == name)
+    asked = _ASK.get(name) or _ASK[name.split("_", 1)[1]]
+    if set(first.criteria) == {"yes", "no"}:
+        criteria = {"yes": "The reply agrees, e.g. 'yes' or 'sure'.", "no": "The reply disagrees."}
+    else:
+        criteria = {o: first.criteria[o] for o in sorted(offered)}
+    criteria["none"] = "The reply rejects every option above, e.g. 'neither' or 'no'."
+    criteria[NEW_REQUEST] = (
+        "The reply asks for a different banking task instead, e.g. 'actually, pay my bill'."
+    )
+    instructions = f'The user was asked "{asked}" and replied. Which option does the reply choose?'
+    return Question(SPOKEN_REPLY, instructions, criteria)
