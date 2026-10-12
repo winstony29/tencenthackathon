@@ -12,8 +12,8 @@ from dotenv import load_dotenv
 # Real environment variables win over .env, so a server can set them directly.
 load_dotenv()
 
-TYPESAFE_API_KEY = os.getenv("TYPESAFE_API_KEY", "")  # TypeSafe Jev key (app/intent/jev.py)
-MAKERS_MODELS_KEY = os.getenv("MAKERS_MODELS_KEY", "")  # EdgeOne presentation demo (web/jev.py)
+TYPESAFE_API_KEY = os.getenv("TYPESAFE_API_KEY", "")  # direct TypeSafe key; unused (D-005)
+MAKERS_MODELS_KEY = os.getenv("MAKERS_MODELS_KEY", "")  # Jev gateway key (D-005)
 MAKERS_JEV_ENDPOINT = "https://ai-gateway.edgeone.link/v1/systemone"  # Native System One API
 MAKERS_JEV_MODEL = "@makers/jev"  # Gateway model alias
 MAKERS_JEV_TIMEOUT_SECONDS = 12  # Presentation request deadline; UI falls back on failure

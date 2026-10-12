@@ -204,6 +204,9 @@ On `needs_extra_check`, the UI asks for the code and calls `/api/execute` again 
  "entries": [{"index": 41, "time": "…", "actor": "intent", "event": "jev_answer",
               "data": {}, "prev_hash": "…", "hash": "…"}]}
 ```
+The intent engine reads user data only through `app/bank/readonly.py` (AGENTS §4), which provides:
+`get_accounts(user_id: str) -> AccountsResponse` (the same shape as `GET /api/accounts`), `list_quotes() -> list[QuoteResponse]` (every tradable ticker), and `get_bill_reference(biller_id: str) -> str`.
+
 Every area writes events through `app/audit.py`: `append(actor: str, event: str, data: dict) -> None`, where `actor` is `intent`, `validation` or `bank`. Event names are in §8.
 
 ## 4. Signing

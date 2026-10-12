@@ -41,9 +41,10 @@ Rejected: ...
 **Constraints:** FastAPI must be able to serve the built files; no second deployment; build output not committed.
 
 ## D-005 · Fallback if Jev doesn't work
-2026-10-10 · Winston · Status: **open (due Sat 10 Oct, 23:00)**
+2026-10-10 · Winston · Status: decided (12 Oct): no fallback needed
 **Decision:** If no real Jev call works by Saturday 23:00, use an LLM with structured output (forced choice from the same option lists) behind the same `jev.py` interface.
 **Why:** Nobody else should be blocked by Jev's early-access status.
+**Outcome (12 Oct):** Jev works through the EdgeOne Makers gateway (native System One API, model `@makers/jev`, key `MAKERS_MODELS_KEY`); Darren's live calls returned `jev-1.13.0` (D-019, D-022). `app/intent/jev.py` uses the same gateway settings in `app/config.py`. `TYPESAFE_API_KEY` stays unused unless the gateway fails.
 
 ## D-006 · Audio format for speech to text
 2026-10-10 · Winston + Darren · Status: **open (due Mon 12 Oct)**

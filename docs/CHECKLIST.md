@@ -44,6 +44,10 @@ IDs: `S` setup · `W` Winston · `J` Jayanth · `D` Darren · `I` integration ·
   *Done when:* the file has at least 30 lines, and Jayanth has added 5 mismatch cases.
 - [ ] **W-11** · Mon · `/api/preview`: one Jev call on the raw text for the action type, cached by normalised text; `meta` on every intent reply.
   *Done when:* typing "send fifty to jo" returns `transfer` with the CONTRACTS shape, and a repeat of the same text is served from cache.
+- [ ] **W-12** · Tue · Contracts v0.3 for Darren's `/v3`: `objective` on the `draft` reply (`prepare`, `assess_affordability`, `simulate`, `check_recipient`, `review`), picked by Jev.
+  *Done when:* "can I afford that?" in an open session returns the same draft with `objective: "assess_affordability"`, and `/v3` renders it from the real endpoint.
+- [ ] **W-13** · Tue · Follow-up turns: a new `transcript` in an open session amends the current draft ("make it $300 from savings"); `simulate` returns code-computed `scenario` values that never enter the draft.
+  *Done when:* the transfer and multi-task journeys in `web/src/lib/v3-state.ts` run against the real endpoint.
 
 ### Jayanth: validation and transactions
 
