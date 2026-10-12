@@ -305,7 +305,7 @@ def _amount(current: session.Session) -> Decimal:
 def _command_step(
     request: UnderstandRequest, current: session.Session, meta: dict
 ) -> dict[str, Any]:
-    decision = gate.decide(current.replies, current.answers, _amount(current))
+    decision = gate.decide(current.replies, current.answers, _amount(current), current.options)
     if decision.ask:
         question = _ask(request, current, decision, meta)
         if question:
@@ -363,7 +363,9 @@ def _ask(
 ) -> dict | None:
     """Return a clarifying question about decision.ask, or None when no chips can be offered."""
     p = decision.picks[decision.ask]
-    text, chips = options.clarify(current.options, decision.ask, p.probabilities)
+    # Chips come from the unmerged answers, so an account the gate counted as "default" shows.
+    unmerged = gate.pick(current.replies, decision.ask).probabilities
+    text, chips = options.clarify(current.options, decision.ask, unmerged)
     if not chips:
         return None
     if current.asked >= config.MAX_QUESTIONS:

@@ -430,6 +430,13 @@ def test_gate_tau_rises_with_the_amount() -> None:
     assert gate.trusted(p, Decimal("50")) and not gate.trusted(p, Decimal("50000"))
 
 
+def test_gate_counts_options_that_build_the_same_draft_together() -> None:
+    table = {"default": 0.68, "acc_1234": 0.31, "acc_5678": 0.01}
+    p = gate.pick(_replies(table), "q", same={"acc_1234": "default"})
+    assert (p.option, round(p.average_probability, 2)) == ("default", 0.99)
+    assert gate.pick(_replies(table), "q", "acc_1234", {"acc_1234": "default"}).option == "default"
+
+
 # --- /api/understand end to end (W-06, W-07) ---
 
 SURE = 0.97
@@ -1073,3 +1080,32 @@ def test_the_converted_amount_rounds_down_from_the_cent_sum(client, fake_jev, ba
 def test_a_sub_cent_amount_is_unbuildable() -> None:
     with pytest.raises(draft.Unbuildable):
         draft._money(Decimal("0.004"))
+
+
+def test_naming_the_usual_account_does_not_split_the_pick(client, fake_jev, bank) -> None:
+    # "default" means Savings for a transfer, so Jev wavering between them is no doubt at all.
+    fake_jev.script = {
+        "has_transfer": {"yes": SURE, "no": 1 - SURE},
+        "recipient": {"pay_4521": SURE, "pay_8892": 1 - SURE},
+        "transfer_amount": {"n0": SURE, "none": 1 - SURE},
+        "transfer_from": {"default": 0.6, "acc_1234": 0.4},
+    }
+    reply = _understand(client, "send 50 from my savings to John Doe").json()
+    assert reply["status"] == "draft"
+    assert reply["draft"]["actions"][0]["from_account_id"] == "acc_1234"
+
+
+def test_default_follows_an_account_the_amount_names(client, fake_jev, bank) -> None:
+    # "half my current" draws from Current by default, so Savings is a real alternative.
+    text = "send half my current to John Doe"
+    built = options.build(text, options.UserData(BANK, QUOTES), "u|s")
+    (half,) = [o for o, n in built.said.items() if n.account_id == "acc_5678"]
+    fake_jev.script = {
+        "has_transfer": {"yes": SURE, "no": 1 - SURE},
+        "recipient": {"pay_4521": SURE, "pay_8892": 1 - SURE},
+        "transfer_amount": {half: SURE, "none": 1 - SURE},
+        "transfer_from": {"default": 0.6, "acc_1234": 0.4},
+    }
+    reply = _understand(client, text).json()
+    assert reply["status"] == "question"
+    assert "acc_1234" in [o["option_id"] for o in reply["question"]["options"]]

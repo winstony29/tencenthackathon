@@ -10,7 +10,7 @@ from decimal import Decimal
 
 from app import config
 from app.intent.jev import Reply
-from app.intent.options import ACTION_TYPES
+from app.intent.options import ACTION_TYPES, Options
 
 SLOTS = {
     "transfer": ("recipient", "transfer_amount", "transfer_from"),
@@ -21,6 +21,9 @@ SLOTS = {
 _PICK_FROM_LIST = {"recipient", "biller", "ticker"}
 # "none" on these means a number was never said; chips can't offer a value nobody said.
 _NEED_NUMBER = {"transfer_amount", "quantity", "limit_price"}
+# Each account question and the amount it pays. "default" resolves to one account, so
+# picking that account builds the same draft and their probabilities count together.
+_FROM_AMOUNT = {"transfer_from": "transfer_amount", "bill_from": "bill_amount"}
 
 
 @dataclass(frozen=True)
@@ -40,14 +43,26 @@ class Decision:
     missing: str | None = None  # a number the user never said
 
 
-def pick(replies: list[Reply], question: str, option: str | None = None) -> Pick:
+def pick(
+    replies: list[Reply],
+    question: str,
+    option: str | None = None,
+    same: dict[str, str] | None = None,
+) -> Pick:
     """Find the option with the highest average probability across phrasings, and its spread.
 
-    Pass `option` to report on that option instead (the one the user chose).
+    Pass `option` to report on that option instead (the one the user chose). `same` maps
+    an option to another that builds the same draft; its probability counts for that one.
     """
-    tables = [r.answers[question].probabilities for r in replies]
+    same = same or {}
+    tables = []
+    for r in replies:
+        merged: dict[str, float] = {}
+        for o, p in r.answers[question].probabilities.items():
+            merged[same.get(o, o)] = merged.get(same.get(o, o), 0.0) + p
+        tables.append(merged)
     average = {o: sum(t[o] for t in tables) / len(tables) for o in tables[0]}
-    best = option or max(average, key=average.get)
+    best = same.get(option, option) if option else max(average, key=average.get)
     seen = [t[best] for t in tables]
     return Pick(question, best, average[best], max(seen) - min(seen), average)
 
@@ -62,7 +77,18 @@ def trusted(p: Pick, amount: Decimal) -> bool:
     return p.average_probability >= tau(amount) and p.spread <= config.GATE_DELTA
 
 
-def decide(replies: list[Reply], answers: dict[str, str], amount: Decimal) -> Decision:
+def _same(name: str, picks: dict[str, Pick], options: Options | None) -> dict[str, str]:
+    """The account "default" resolves to for this account question, as an alias of it."""
+    if options is None or name not in _FROM_AMOUNT:
+        return {}
+    said = options.said.get(picks[_FROM_AMOUNT[name]].option)
+    account = said.account_id if said and said.account_id else options.usual_account
+    return {account: "default"} if account else {}
+
+
+def decide(
+    replies: list[Reply], answers: dict[str, str], amount: Decimal, options: Options | None = None
+) -> Decision:
     """Decide whether Jev's answers are trustworthy enough to build a draft.
 
     Checks which action types were asked for, then every slot those actions need,
@@ -72,7 +98,7 @@ def decide(replies: list[Reply], answers: dict[str, str], amount: Decimal) -> De
     picks: dict[str, Pick] = {}
 
     def settle(name: str) -> bool:
-        picks[name] = pick(replies, name, answers.get(name))
+        picks[name] = pick(replies, name, answers.get(name), _same(name, picks, options))
         return name in answers or trusted(picks[name], amount)
 
     for kind in ACTION_TYPES:

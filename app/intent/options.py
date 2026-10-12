@@ -8,7 +8,7 @@ Contract: none; user data comes from app/bank/readonly.py (CONTRACTS §3.3)
 import hashlib
 import hmac
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from itertools import groupby
 
@@ -88,6 +88,9 @@ class Options:
     labels: dict[str, dict[str, str]]  # question -> option_id -> what the user reads
     numbers: dict[str, Decimal]  # option_id ("n0", "n1", …) -> the number said
     said: dict[str, Number]  # option_id -> the full number (currency, account, "the rest")
+    # The account a transfer or bill uses when none is said: the first savings account,
+    # as draft._account picks it.
+    usual_account: str | None = field(default=None)
 
 
 def parse_numbers(text: str) -> list[Number]:
@@ -419,6 +422,10 @@ def build(transcript: str, data: UserData, scope: str) -> Options:
         labels={name: {o: label for o, _, label in opts} for name, (_, opts) in spec.items()},
         numbers={oid: n.value for oid, n in said.items()},
         said=said,
+        usual_account=next(
+            (x.account_id for x in a.accounts if "savings" in x.type),
+            a.accounts[0].account_id if a.accounts else None,
+        ),
     )
 
 
