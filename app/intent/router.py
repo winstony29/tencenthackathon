@@ -5,10 +5,14 @@ Diagram box: Speech to text, Confidence gate, Draft builder (Intent detection co
 Contract: docs/CONTRACTS.md §3.1
 """
 
+import time
+from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, UploadFile
+from fastapi import APIRouter, HTTPException, UploadFile
 
+from app import config
+from app.bank import readonly
 from app.contracts import (
     NONE_OPTION_ID,
     PreviewRequest,
@@ -17,6 +21,7 @@ from app.contracts import (
     UnderstandRequest,
     UnderstandResponse,
 )
+from app.intent import draft, gate, jev, options, session
 
 router = APIRouter(prefix="/api", tags=["intent"])
 
@@ -119,9 +124,124 @@ async def transcribe(audio: UploadFile) -> dict[str, Any]:
 async def understand(request: UnderstandRequest) -> dict[str, Any]:
     """Turn a transcript, or the answer to a question, into the next step.
 
-    Stub: a transcript gets the "Which John?" question, "none of these" cancels,
-    and any other answer gets the example draft.
+    A transcript starts a session: one batch of Jev questions per phrasing. An answer
+    settles the open question from the stored replies without asking Jev again.
+    The gate then asks the next unsure question, or the draft is built.
     """
+    if not _live():
+        return _stub_understand(request)
+    started = time.monotonic()
+    if request.transcript is not None:
+        current = await _start(request.user_id, request.transcript)
+    else:
+        current = session.load(request.session_id, request.user_id)
+        if current is None:
+            raise HTTPException(404, "This conversation has expired. Please start again.")
+        if request.answer.option_id == NONE_OPTION_ID:
+            session.drop(request.session_id)
+            return _cancelled("user_declined", _meta(current, started))
+        try:
+            current.record(request.answer)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+    return _next_step(request, current, _meta(current, started))
+
+
+def _live() -> bool:
+    # ponytail: stubs answer until the Jev key and Jayanth's readonly views exist (CONTRACTS §7);
+    # delete this check and the stubs once both are in place everywhere.
+    return bool(config.MAKERS_MODELS_KEY) and hasattr(readonly, "get_accounts")
+
+
+async def _start(user_id: str, transcript: str) -> session.Session:
+    try:
+        data = options.UserData(readonly.get_accounts(user_id), readonly.list_quotes())
+    except LookupError as error:
+        raise HTTPException(404, "Unknown user.") from error
+    built = options.build(transcript, data)
+    phrasings = [transcript]  # W-04 adds the K rewrites; the original always stays first
+    replies = await jev.ask_all(phrasings, built.questions)
+    return session.Session(user_id, transcript, built, data, replies)
+
+
+def _next_step(request: UnderstandRequest, current: session.Session, meta: dict) -> dict[str, Any]:
+    # ponytail: the largest number said stands in for the amount when choosing tau; the exact
+    # amount needs the picks this decision is still making.
+    amount = max(current.options.numbers.values(), default=Decimal(0))
+    decision = gate.decide(current.replies, current.answers, amount)
+    if decision.ask:
+        p = decision.picks[decision.ask]
+        text, chips = options.clarify(current.options, decision.ask, p.probabilities)
+        if chips and current.asked >= config.MAX_QUESTIONS:
+            session.drop(request.session_id)
+            return _cancelled("too_many_questions", meta)
+        if chips:
+            current.asked += 1
+            question_id = f"q_{current.asked}"
+            current.pending = (question_id, decision.ask, {o for o, _ in chips})
+            session.save(request.session_id, current)
+            return {
+                "status": "question",
+                "question": {
+                    "question_id": question_id,
+                    "text": text,
+                    "options": [{"option_id": o, "label": label} for o, label in chips],
+                    "allow_none": True,
+                },
+                "evidence": [draft.evidence(p)],
+                "meta": meta,
+            }
+        decision = gate.Decision(decision.picks, decision.actions, missing=decision.ask)
+    session.drop(request.session_id)
+    if decision.missing:
+        return _unsupported(_MISSING.get(decision.missing, _HELP), meta)
+    if not decision.actions:
+        return _unsupported(_HELP, meta)
+    try:
+        built = draft.build(
+            current.transcript,
+            current.user_id,
+            request.session_id,
+            decision,
+            current.options,
+            current.data,
+        )
+    except draft.Unbuildable as error:
+        return _unsupported(str(error), meta)
+    return {"status": "draft", "draft": built, "meta": meta}
+
+
+_HELP = "I can help with transfers, bill payments and stock orders."
+_MISSING = {
+    "transfer_amount": 'Please say how much to send, for example "send fifty to John".',
+    "quantity": 'Please say how many shares, for example "buy 100 Apple shares".',
+    "limit_price": "Please say the price for your order.",
+}
+
+
+def _meta(current: session.Session, started: float) -> dict[str, Any]:
+    return {
+        "latency_ms": round((time.monotonic() - started) * 1000),
+        "model": current.replies[0].model,
+        "source": "jev",
+        "phrasings": len(current.replies),
+        "cached": bool(current.answers) or current.pending is not None,
+    }
+
+
+def _cancelled(reason: str, meta: dict) -> dict[str, Any]:
+    messages = {
+        "user_declined": "Okay, nothing was sent.",
+        "too_many_questions": "I couldn't work out what you meant. Please try again.",
+    }
+    return {"status": "cancelled", "reason": reason, "message": messages[reason], "meta": meta}
+
+
+def _unsupported(message: str, meta: dict) -> dict[str, Any]:
+    return {"status": "unsupported", "message": message, "meta": meta}
+
+
+def _stub_understand(request: UnderstandRequest) -> dict[str, Any]:
     if request.transcript is not None:
         return _STUB_QUESTION
     if request.answer.option_id == NONE_OPTION_ID:

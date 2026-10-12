@@ -25,18 +25,19 @@ IDs: `S` setup · `W` Winston · `J` Jayanth · `D` Darren · `I` integration ·
 
 - [ ] **W-01** · Sat · Get one real Jev call working from `app/intent/jev.py`. If it fails by Saturday 23:00, record the fallback in D-005 and switch.
   *Done when:* a script call returns a choice with probabilities, or D-005 says "fallback".
-- [ ] **W-02** · Sun · `options.py`: build option lists for action type, payee, biller, account, ticker, side, and the number words in the transcript.
+- [x] **W-02** · Sun · `options.py`: build option lists for action type, payee, biller, account, ticker, side, and the number words in the transcript.
   *Done when:* tests show the right options for "send fifty to John" and "buy 100 Apple".
 - [ ] **W-03** · Sun · `jev.py`: send the full question set for up to 4 actions in one batched call; return probabilities per option.
   *Done when:* the fake-Jev test and one real call both parse correctly.
 - [ ] **W-04** · Sun · `rewriter.py`: K plain rewrites (K from config). The original transcript is always kept as R0.
   *Done when:* the test confirms R0 is unchanged and K + 1 texts come back.
-- [ ] **W-05** · Sun · `gate.py`: average + spread rule; tau rises with the amount (values in config).
+- [x] **W-05** · Sun · `gate.py`: average + spread rule; tau rises with the amount (values in config).
   *Done when:* tests cover proceed, low-average and high-spread cases.
-- [ ] **W-06** · Mon · `session.py` + clarify loop in `router.py`: question → answer → re-run on narrowed options; "none of these" cancels.
+- [x] **W-06** · Mon · `session.py` + clarify loop in `router.py`: question → answer → re-run on narrowed options; "none of these" cancels.
   *Done when:* "send fifty to John" returns a question, and answering `pay_4521` returns a draft.
-- [ ] **W-07** · Mon · `draft.py`: assemble the draft; amounts from number words ("fifty", "a grand", "50k"), relative amounts ("half of it", "whatever is left") computed by code.
+- [x] **W-07** · Mon · `draft.py`: assemble the draft; amounts from number words ("fifty", "a grand", "50k"), relative amounts ("half of it", "whatever is left") computed by code.
   *Done when:* drafts for demo commands 1, 2 and 4 match CONTRACTS exactly.
+  *Note (12 Oct):* number words, digits, "50k" and "a grand" are parsed; relative amounts ("half of it", "whatever is left") are not yet.
 - [ ] **W-08** · Mon · `shield.py`: flag instructions aimed at the system; `/api/understand` returns `blocked`.
   *Done when:* demo command 3 is blocked and command 1 is not.
 - [ ] **W-09** · Mon · `asr.py`: Tencent ASR; decide the audio format with Darren (D-006).
