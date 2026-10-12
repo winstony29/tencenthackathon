@@ -18,7 +18,7 @@ from fastapi import HTTPException
 from app import config
 from app.bank import readonly
 from app.contracts import AccountsResponse
-from app.intent import gate, jev, options, session, shield
+from app.intent import draft, gate, jev, options, session, shield
 from tests.conftest import BANK, QUOTES
 
 COMMANDS = Path(__file__).with_name("commands.jsonl")
@@ -137,6 +137,47 @@ def test_a_us_dollar_transfer_from_an_sgd_account_is_refused(client, fake_jev, b
     }
     reply = _understand(client, "send US$50 to mum").json()
     assert reply["status"] == "unsupported" and "SGD" in reply["message"]
+
+
+def test_the_rest_is_what_is_left_after_the_earlier_action(client, fake_jev, bank) -> None:
+    # Savings …1234 holds 3,200.00 SGD (conftest BANK); the bill comes first in the sentence.
+    text = "pay 1000 off my credit card from savings and send the rest of savings to mum"
+    built = options.build(text, options.UserData(BANK, QUOTES), "u|s1")
+    rest = next(o for o, n in built.said.items() if n.remaining and n.account_id == "acc_1234")
+    fake_jev.script = {
+        "has_transfer": {"yes": SURE, "no": 1 - SURE},
+        "has_bill_payment": {"yes": SURE, "no": 1 - SURE},
+        "recipient": {"pay_0001": SURE, "none": 1 - SURE},
+        "transfer_amount": {rest: SURE, "none": 1 - SURE},
+        "biller": {"bil_0001": SURE, "none": 1 - SURE},
+        "bill_amount": {"n0": SURE, "due": 1 - SURE},
+        "bill_from": {"acc_1234": SURE, "default": 1 - SURE},
+    }
+    reply = _understand(client, text).json()
+    assert reply["status"] == "draft", reply
+    bill, transfer = reply["draft"]["actions"]
+    assert (bill["amount"], transfer["amount"]) == ("1000.00", "2200.00")
+    assert transfer["from_account_id"] == "acc_1234"
+
+
+def test_nothing_left_is_unsupported(client, fake_jev, bank) -> None:
+    text = "send 3200 to mum and the rest of savings to john doe"
+    built = options.build(text, options.UserData(BANK, QUOTES), "u|s1")
+    rest = next(o for o, n in built.said.items() if n.remaining and n.account_id == "acc_1234")
+    # Only one transfer per command, so check the helper directly.
+    with pytest.raises(draft.Unbuildable):
+        draft._sum(rest, built, options.UserData(BANK, QUOTES), {"acc_1234": Decimal("3200")})
+
+
+@pytest.mark.parametrize("word", ["rest", "remaining", "leftover", "left"])
+def test_remaining_words_are_recognised(word: str) -> None:
+    built = options.build(f"send what is {word} to mum", options.UserData(BANK, QUOTES), "u|s1")
+    assert any(n.remaining for n in built.said.values())
+
+
+def test_all_still_means_the_whole_balance() -> None:
+    built = options.build("send all my savings to mum", options.UserData(BANK, QUOTES), "u|s1")
+    assert not any(n.remaining for n in built.said.values())
 
 
 def _shape(text: str) -> str:

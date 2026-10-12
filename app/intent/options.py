@@ -43,8 +43,6 @@ _ALIASES = {
     "tousand": "thousand",
     "hunnid": "hundred",
 }
-# ponytail: "whatever is left" means the whole balance here, not what remains after the other
-# actions in the same command.
 _FRACTIONS = {
     "half": Decimal("0.5"),
     "quarter": Decimal("0.25"),
@@ -52,7 +50,11 @@ _FRACTIONS = {
     "everything": Decimal(1),
     "rest": Decimal(1),
     "left": Decimal(1),
+    "remaining": Decimal(1),
+    "leftover": Decimal(1),
 }
+# These mean what is left after the actions said before them (§10.4); draft.py works it out.
+_REMAINING = {"rest", "left", "remaining", "leftover"}
 _FRACTION = re.compile(r"\b(" + "|".join(_FRACTIONS) + r")\b")
 # Matched on the original text (not text.lower()) so spans index the text mask() rewrites.
 _TOKEN = re.compile(r"(\d[\d,]*(?:\.\d+)?)(k|m)?\b|[a-z]+", re.IGNORECASE)
@@ -272,6 +274,7 @@ def _relative(text: str, accounts: AccountsResponse) -> list[Number]:
                     f"{word} of the {x.label} balance",
                     currency=x.currency,
                     account_id=x.account_id,
+                    remaining=word in _REMAINING,
                 )
             )
     return found
