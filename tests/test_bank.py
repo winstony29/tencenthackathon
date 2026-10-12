@@ -13,8 +13,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
+from app.bank import readonly
 from app.contracts import AccountsResponse, QuoteResponse
+from app.main import app
 
 
 @pytest.fixture
@@ -151,3 +155,132 @@ def test_john_alias_remains_ambiguous(bank_seed: dict[str, Any]) -> None:
         "pay_4521": "John Doe …4521",
         "pay_8892": "John Smith …8892",
     }
+
+
+@pytest.fixture
+def bank_client() -> TestClient:
+    """Use the real app error handlers without calling external services."""
+    return TestClient(app)
+
+
+def test_accounts_endpoint_returns_only_public_seed_fields(
+    bank_client: TestClient, bank_seed: dict[str, Any]
+) -> None:
+    response = bank_client.get("/api/accounts", params={"user_id": "u_demo"})
+    assert response.status_code == 200
+    result = response.json()
+    user = bank_seed["users"]["u_demo"]
+    fields = {
+        "accounts": {"account_id", "label", "type", "currency", "balance"},
+        "payees": {"payee_id", "name", "label"},
+        "billers": {"biller_id", "name", "label", "amount_due"},
+        "holdings": {"ticker", "quantity"},
+    }
+    assert set(result) == set(fields)
+    for group, keys in fields.items():
+        assert result[group] == [{key: record[key] for key in keys} for record in user[group]]
+        assert all(set(record) == keys for record in result[group])
+    assert isinstance(readonly.get_accounts("u_demo").accounts[0].balance, Decimal)
+
+
+@pytest.mark.parametrize("ticker", ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"])
+def test_quote_endpoint_returns_requested_seed_quote(
+    bank_client: TestClient, bank_seed: dict[str, Any], ticker: str
+) -> None:
+    response = bank_client.get("/api/quote", params={"ticker": ticker})
+    assert response.status_code == 200
+    fields = {"ticker", "company_name", "price", "currency", "as_of"}
+    assert response.json() == {key: bank_seed["quotes"][ticker][key] for key in fields}
+    assert re.fullmatch(r"\d+\.\d{2}", response.json()["price"])
+    assert isinstance(readonly.get_quote(ticker).price, Decimal)
+
+
+@pytest.mark.parametrize(
+    ("url", "message"),
+    [
+        ("/api/accounts?user_id=u_missing", "User not found."),
+        ("/api/quote?ticker=UNKNOWN", "Quote not found."),
+    ],
+)
+def test_missing_bank_records_return_not_found(
+    bank_client: TestClient, url: str, message: str
+) -> None:
+    response = bank_client.get(url)
+    assert response.status_code == 404
+    assert response.json() == {"error": {"code": "not_found", "message": message}}
+
+
+@pytest.mark.parametrize("url", ["/api/accounts", "/api/quote"])
+def test_bank_endpoints_require_query_parameters(bank_client: TestClient, url: str) -> None:
+    response = bank_client.get(url)
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "bad_request"
+    assert response.json()["error"]["message"]
+
+
+def test_bank_reads_follow_seed_changes_without_writing(
+    bank_client: TestClient,
+    bank_seed: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_path = tmp_path / "app" / "bank" / "readonly.py"
+    monkeypatch.setattr(readonly, "__file__", str(module_path))
+    seed_path = tmp_path / "data" / "bank.json"
+    seed_path.parent.mkdir()
+    bank_seed["users"]["u_demo"]["accounts"][0]["balance"] = "9876.54"
+    bank_seed["quotes"]["AAPL"]["price"] = "123.45"
+    seed_path.write_text(json.dumps(bank_seed))
+    before = seed_path.read_bytes()
+    accounts = bank_client.get("/api/accounts?user_id=u_demo").json()
+    assert accounts["accounts"][0]["balance"] == "9876.54"
+    assert bank_client.get("/api/quote?ticker=AAPL").json()["price"] == "123.45"
+    accounts["accounts"][0]["balance"] = "0.00"
+    assert readonly.get_accounts("u_demo").accounts[0].balance == Decimal("9876.54")
+    bank_seed["quotes"]["AAPL"]["price"] = "234.56"
+    assert seed_path.read_bytes() == before
+    seed_path.write_text(json.dumps(bank_seed))
+    assert readonly.get_quote("AAPL").price == Decimal("234.56")
+
+
+def test_bank_reads_ignore_working_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    assert readonly.get_accounts("u_demo").accounts[0].account_id == "acc_1234"
+    assert readonly.get_quote("AAPL").ticker == "AAPL"
+
+
+@pytest.mark.parametrize("content", [None, "not JSON", "{}", '{"schema_version":"1.0"}'])
+def test_unavailable_or_invalid_database_never_returns_stub_data(
+    content: str | None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(readonly, "__file__", str(tmp_path / "app" / "bank" / "readonly.py"))
+    if content is not None:
+        path = tmp_path / "data" / "bank.json"
+        path.parent.mkdir()
+        path.write_text(content)
+    for read in (lambda: readonly.get_accounts("u_demo"), lambda: readonly.get_quote("AAPL")):
+        with pytest.raises((OSError, ValueError)):
+            read()
+
+
+@pytest.mark.parametrize("field", ["balance", "price"])
+def test_invalid_financial_seed_values_fail_validation(
+    field: str,
+    bank_seed: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(readonly, "_load_database", lambda: bank_seed)
+    if field == "balance":
+        bank_seed["users"]["u_demo"]["accounts"][0][field] = "invalid"
+    else:
+        bank_seed["quotes"]["AAPL"][field] = "invalid"
+    with pytest.raises(ValidationError):
+        if field == "balance":
+            readonly.get_accounts("u_demo")
+        else:
+            readonly.get_quote("AAPL")
