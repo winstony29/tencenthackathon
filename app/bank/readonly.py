@@ -2,7 +2,7 @@
 
 Owner: Jayanth
 Diagram box: User data
-Contract: docs/CONTRACTS.md §3.3 (GET /api/accounts, GET /api/quote)
+Contract: docs/CONTRACTS.md §3.3 (GET /api/accounts, GET /api/quote, readonly functions)
 """
 
 import json
@@ -14,7 +14,15 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from app.contracts import Account, AccountsResponse, Biller, Holding, Payee, QuoteResponse
+from app.contracts import (
+    Account,
+    AccountsResponse,
+    Biller,
+    FxResponse,
+    Holding,
+    Payee,
+    QuoteResponse,
+)
 
 
 def _load_database() -> dict[str, Any]:
@@ -62,6 +70,28 @@ def get_quote(ticker: str) -> QuoteResponse:
     if quote.ticker != ticker:
         raise ValueError("Banking quote ticker does not match its database key")
     return quote
+
+
+def list_quotes() -> list[QuoteResponse]:
+    """Every tradable ticker's stored quote, for the intent engine's ticker options."""
+    return [get_quote(ticker) for ticker in _load_database()["quotes"]]
+
+
+def get_bill_reference(biller_id: str) -> str:
+    """The stored reference for a biller; an unknown biller raises LookupError."""
+    for user in _load_database()["users"].values():
+        for biller in user["billers"]:
+            if biller["biller_id"] == biller_id:
+                return biller["bill_reference"]
+    raise LookupError(f"Unknown biller {biller_id}")
+
+
+def get_fx_rate(from_currency: str, to_currency: str) -> FxResponse:
+    """The stored mock rate for a currency pair; an unknown pair raises LookupError."""
+    record = _load_database().get("fx_rates", {}).get(f"{from_currency}-{to_currency}")
+    if record is None:
+        raise LookupError(f"No rate for {from_currency} to {to_currency}")
+    return FxResponse.model_validate(record)
 
 
 class ForecastDataError(ValueError):

@@ -205,6 +205,15 @@ def test_quote_endpoint_returns_requested_seed_quote(
     assert isinstance(readonly.get_quote(ticker).price, Decimal)
 
 
+def test_readonly_serves_the_intent_engine(bank_seed: dict[str, Any]) -> None:
+    assert [q.ticker for q in readonly.list_quotes()] == list(bank_seed["quotes"])
+    assert readonly.get_bill_reference("bil_0001") == "4120-XXXX-XXXX-9012"
+    with pytest.raises(LookupError):
+        readonly.get_bill_reference("bil_9999")
+    with pytest.raises(LookupError):
+        readonly.get_fx_rate("SGD", "EUR")
+
+
 @pytest.mark.parametrize(
     ("url", "message"),
     [
