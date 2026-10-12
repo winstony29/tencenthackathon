@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from app import config
-from app.contracts import AccountsResponse, QuoteResponse
+from app.contracts import AccountsResponse, Draft, QuoteResponse
 from app.intent.jev import Question
 
 ACTION_TYPES = ("transfer", "bill_payment", "stock_order")
@@ -234,6 +234,7 @@ def build(transcript: str, data: UserData) -> Options:
             ],
         ),
         "limit_price": ("What price limit is said for the order?", [*amounts, no_number]),
+        "objective": ("What does the user want to do with the task?", OBJECTIVES),
     }
     return Options(
         questions=[
@@ -244,7 +245,90 @@ def build(transcript: str, data: UserData) -> Options:
     )
 
 
+OBJECTIVES = [
+    ("prepare", "Set the task up to be done; the default.", "Set it up"),
+    (
+        "assess_affordability",
+        "Check whether they can afford it, or what balance would remain.",
+        "Check I can afford it",
+    ),
+    (
+        "simulate",
+        "Explore a hypothetical: what if the amount or quantity were different.",
+        "Try another amount",
+    ),
+    ("check_recipient", "Check who the recipient is before sending.", "Check the recipient"),
+    ("review", "Review the task before confirming it.", "Review it"),
+]
+NEW_TASK = (
+    "new_task",
+    "A different banking command, unrelated to the current tasks.",
+    "Start a new request",
+)
+KEEP = ("keep", "The text does not change this.", "Keep as is")
+
+
+def build_followup(text: str, draft: Draft, data: UserData) -> Options:
+    """Build the questions for a follow-up turn about an existing draft.
+
+    Jev picks the objective and, for each current task, a new value or "keep".
+    New values still only come from the user's data and numbers parsed by code.
+    """
+    a = data.accounts
+    said = {f"n{i}": n for i, n in enumerate(parse_numbers(text) + _relative(text, a))}
+    amounts = [
+        (oid, f'The number said as "{n.phrase}" ({n.value})', f"{n.value:,}")
+        for oid, n in said.items()
+    ]
+    accounts = [
+        (x.account_id, f"Use the {x.label} account ({x.type}, {x.currency})", x.label)
+        for x in a.accounts
+    ]
+    spec = {"objective": ("What does the user want to do now?", [*OBJECTIVES, NEW_TASK])}
+    for i, action in enumerate(draft.actions):
+        task = f"For task {i + 1} ({describe(action)})"
+        if action.type == "stock_order":
+            spec[f"a{i}_quantity"] = (
+                f"{task}, what new number of shares is said?",
+                [*amounts, KEEP],
+            )
+            continue
+        due = (
+            [("due", "The full amount due on the bill.", "Full amount due")]
+            if action.type == "bill_payment"
+            else []
+        )
+        spec[f"a{i}_amount"] = (f"{task}, what new amount is said?", [*due, *amounts, KEEP])
+        spec[f"a{i}_from"] = (f"{task}, which account should it now come from?", [*accounts, KEEP])
+        if action.type == "transfer":
+            payees = [(p.payee_id, f"Send to {p.name}", p.label) for p in a.payees]
+            spec[f"a{i}_recipient"] = (f"{task}, who should now receive it?", [*payees, KEEP])
+    return Options(
+        questions=[
+            Question(name, q, {o: c for o, c, _ in opts}) for name, (q, opts) in spec.items()
+        ],
+        labels={name: {o: label for o, _, label in opts} for name, (_, opts) in spec.items()},
+        numbers={oid: n.value for oid, n in said.items()},
+    )
+
+
+def describe(action) -> str:
+    """Say one draft action in a few words, for Jev's context and follow-up questions."""
+    if action.type == "transfer":
+        to = action.to_payee_label
+        return (
+            f"transfer {action.amount} {action.currency} to {to} from {action.from_account_label}"
+        )
+    if action.type == "bill_payment":
+        to = action.biller_label
+        return f"pay {action.amount} {action.currency} to {to} from {action.from_account_label}"
+    return f"{action.side} {action.quantity} {action.ticker} shares"
+
+
 _ASK = {
+    "objective": "What would you like to do?",
+    "amount": "Which amount did you mean?",
+    "from": "Which account did you mean?",
     "has_transfer": "Do you want to send money to someone?",
     "has_bill_payment": "Do you want to pay a bill?",
     "has_stock_order": "Do you want to buy or sell shares?",
@@ -279,7 +363,7 @@ def clarify(
     # When Jev found no real candidates (say, a name not in the list), offer the top ones.
     ranked = (likely if len(likely) >= 2 else ranked)[: config.CLARIFY_MAX_OPTIONS]
     chips = [(o, options.labels[question][o]) for o in ranked]
-    text = _ASK[question]
+    text = _ASK.get(question) or _ASK[question.split("_", 1)[1]]  # a0_amount -> amount
     first_names = {label.split()[0] for _, label in chips[:2]}
     if question == "recipient" and len(chips) > 1 and len(first_names) == 1:
         text = f"Which {first_names.pop()} did you mean?"

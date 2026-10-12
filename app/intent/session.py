@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass, field
 
 from app import config
-from app.contracts import Answer
+from app.contracts import Answer, Draft
 from app.intent.jev import Reply
 from app.intent.options import Options, UserData
 
@@ -25,6 +25,8 @@ class Session:
     asked: int = 0
     pending: tuple[str, str, set[str]] | None = None  # question_id, question, offered options
     touched: float = field(default_factory=time.monotonic)
+    draft: Draft | None = None  # the current draft, kept for follow-up turns
+    followup: str | None = None  # the follow-up turn being worked on, if any
 
     def record(self, answer: Answer) -> None:
         """Store the user's answer to the open question; refuse answers to anything else."""

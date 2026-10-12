@@ -1,7 +1,7 @@
 # Contracts
 
 **Purpose:** the exact data shapes and endpoints every part of the system agrees on. `app/contracts.py` implements this file as Pydantic models. If the two disagree, this file wins.
-**Owner:** Winston (keeper) · **Version:** 0.2 · **Last updated:** 2026-10-10
+**Owner:** Winston (keeper) · **Version:** 0.3 · **Last updated:** 2026-10-12
 
 > Changing anything here needs all three teammates to agree. Then bump the version, update `app/contracts.py` in the same commit, and add a `docs/DECISIONS.md` entry.
 
@@ -16,7 +16,7 @@
 | Currency is an ISO code | `"SGD"`, `"USD"` |
 | Times are ISO 8601 with offset | `"2026-10-12T09:30:00+08:00"` |
 | IDs have a type prefix | `u_` user, `s_` session, `d_` draft, `q_` question, `acc_` account, `pay_` payee, `bil_` biller, `n_` nonce, `vr_` receipt |
-| The UI creates `session_id` (`s_` + random hex) when a new command starts, and reuses it until that command ends (draft, cancelled, blocked or unsupported). Sessions expire after 5 minutes without a call. | `"s_41b9"` |
+| The UI creates `session_id` (`s_` + random hex) when a new conversation starts. A draft does not end it: reuse it for follow-up turns about that draft (§3.1). Cancelled, blocked and unsupported end it. Sessions expire after 5 minutes without a call. A UI that never sends follow-ups may start a new session per command. | `"s_41b9"` |
 | Text sent to the server (`text`, `transcript`) is at most 500 characters | |
 | Labels are what the user reads | `"John Doe …4521"` |
 | All endpoints live under `/api/` and use JSON, except `/api/transcribe` (file upload) | |
@@ -120,7 +120,7 @@ Responses (one of). Each also carries `meta` (above), left out of the examples b
 ```
 `evidence` on a question shows why the gate asked (debug view only).
 ```json
-{"status": "draft", "draft": { /* §2 */ }}
+{"status": "draft", "draft": { /* §2 */ }, "objective": "prepare", "scenario": null}
 ```
 ```json
 {"status": "blocked", "reason": "possible_injection",
@@ -134,6 +134,13 @@ Responses (one of). Each also carries `meta` (above), left out of the examples b
 ```
 `reason` is `user_declined` (the user picked "None of these", `option_id: "none"`) or `too_many_questions` (still unsure after 3 questions; message "I couldn't work out what you meant. Please try again.").
 An answer for an unknown or expired session returns 404 `not_found`; the UI starts a new command.
+
+**`objective`** (every `draft` reply) says what the user wants to do with the draft, so the UI can arrange the screen (Darren's `/v3`): `prepare`, `assess_affordability`, `simulate`, `check_recipient` or `review`. Jev picks it. On a first command an unsure pick becomes `prepare`.
+
+**Follow-up turns.** After a draft, a new `transcript` with the same `session_id` is a follow-up about that draft ("Can I afford that?", "What if I send $700 instead?", "Make it $300 from savings", "Review the transfer"). Jev picks the objective and, for each current action, a new value or "keep"; it may ask a clarifying question first, as above. Then:
+- Changes are applied by code. The reply carries the updated draft with the same `draft_id`, and its `transcript` holds every turn, one per line, later lines amending earlier ones, so validation sees everything the user said. An updated draft must be validated again before signing.
+- For `simulate`, changes go into `scenario` instead and the draft is unchanged. `scenario` maps an action index to hypothetical values: `{"0": {"amount": "700.00"}}` or `{"1": {"quantity": "80"}}`. It is never sent to `/api/validate`, `/api/challenge` or `/api/execute`; the UI only shows it. It is `null` for every other objective.
+- A follow-up that is really a new command (Jev picks `new_task`) starts over: the reply is a fresh draft for the new transcript alone.
 
 ### 3.2 Validation (Jayanth, AI side of the boundary)
 

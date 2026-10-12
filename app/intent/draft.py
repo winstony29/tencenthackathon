@@ -18,6 +18,8 @@ from app.contracts import (
     BillPaymentAction,
     Draft,
     Evidence,
+    Objective,
+    Scenario,
     StockOrderAction,
     TransferAction,
 )
@@ -99,9 +101,7 @@ def _bill(p: dict[str, str], options: Options, data: UserData) -> BillPaymentAct
 def _stock(p: dict[str, str], options: Options, data: UserData) -> StockOrderAction:
     quote = next(q for q in data.quotes if q.ticker == p["ticker"])
     source = _account(data, "default", prefer="invest", currency=quote.currency)
-    quantity = options.numbers[p["quantity"]]
-    if quantity != quantity.to_integral_value() or quantity <= 0:
-        raise Unbuildable("Please say a whole number of shares.")
+    quantity = _whole(options.numbers[p["quantity"]])
     limit = p["order_type"] == "limit"
     return StockOrderAction(
         type="stock_order",
@@ -110,7 +110,7 @@ def _stock(p: dict[str, str], options: Options, data: UserData) -> StockOrderAct
         side=p["side"],
         ticker=quote.ticker,
         company_name=quote.company_name,
-        quantity=int(quantity),
+        quantity=quantity,
         order_type=p["order_type"],
         limit_price=_money(options.numbers[p["limit_price"]]) if limit else None,
         currency=quote.currency,
@@ -149,3 +149,97 @@ def evidence(p: Pick) -> Evidence:
         spread=round(p.spread, 4),
         probabilities={o: round(v, 4) for o, v in p.probabilities.items()},
     )
+
+
+def amend(
+    current: Draft,
+    decision: Decision,
+    objective: Objective,
+    text: str,
+    options: Options,
+    data: UserData,
+) -> tuple[Draft, Scenario | None]:
+    """Apply a follow-up turn's picks to the draft, or to a scenario when simulating.
+
+    For `simulate`, new amounts and quantities go into the scenario and the draft
+    stays exactly as it was. Otherwise changed fields are rebuilt by code and the
+    turn is added to the draft's transcript, so validation sees every word said.
+    """
+    changed: dict[int, dict] = {}
+    for name, p in decision.picks.items():
+        if name == "objective" or p.option == "keep":
+            continue
+        index, field = name[1:].split("_", 1)
+        changed.setdefault(int(index), {})[field] = p.option
+    if objective == "simulate":
+        scenario = {
+            i: {
+                f: _scenario_value(f, o, current.actions[i], options)
+                for f, o in fields.items()
+                if f in ("amount", "quantity")
+            }
+            for i, fields in changed.items()
+        }
+        return current, {i: v for i, v in scenario.items() if v} or None
+    if not changed:
+        return current, None
+    actions = [
+        _amended(a, changed.get(i, {}), options, data) for i, a in enumerate(current.actions)
+    ]
+    turns = f"{current.transcript}\n{text}"
+    updated = Draft.model_validate(
+        {
+            **current.model_dump(),
+            "actions": [a.model_dump() for a in actions],
+            "transcript": turns,
+            "created_at": datetime.now(ZoneInfo(config.TIMEZONE)).replace(microsecond=0),
+            "evidence": [e.model_dump() for e in current.evidence]
+            + [evidence(p).model_dump() for p in decision.picks.values()],
+        }
+    )
+    return updated, None
+
+
+def _amended(action, fields: dict[str, str], options: Options, data: UserData):
+    if not fields:
+        return action
+    update = {}
+    if "amount" in fields:
+        due = next(
+            (
+                b.amount_due
+                for b in data.accounts.billers
+                if getattr(action, "biller_id", None) == b.biller_id
+            ),
+            None,
+        )
+        update["amount"] = _money(
+            due if fields["amount"] == "due" else options.numbers[fields["amount"]]
+        )
+    if "quantity" in fields:
+        update["quantity"] = _whole(options.numbers[fields["quantity"]])
+    if "from" in fields:
+        source = _account(data, fields["from"], prefer="savings")
+        update |= {
+            "from_account_id": source.account_id,
+            "from_account_label": source.label,
+            "currency": source.currency,
+        }
+    if "recipient" in fields:
+        payee = next(x for x in data.accounts.payees if x.payee_id == fields["recipient"])
+        update |= {"to_payee_id": payee.payee_id, "to_payee_label": payee.label}
+    return type(action).model_validate({**action.model_dump(), **update})
+
+
+def _scenario_value(field: str, option: str, action, options: Options) -> str:
+    if field == "quantity":
+        return str(_whole(options.numbers[option]))
+    if option == "due":
+        return str(action.amount)
+    return str(_money(options.numbers[option]))
+
+
+def _whole(value: Decimal) -> int:
+    if value != value.to_integral_value() or value <= 0:
+        raise Unbuildable("Please say a whole number of shares.")
+    return int(value)

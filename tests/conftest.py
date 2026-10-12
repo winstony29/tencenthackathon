@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from app import config
 from app.bank import readonly
 from app.contracts import AccountsResponse, QuoteResponse
-from app.intent import jev
+from app.intent import jev, session
 from app.main import app
 
 
@@ -20,20 +20,30 @@ def client() -> TestClient:
     return TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def _no_leftover_sessions() -> None:
+    # Sessions live in memory for the whole process; each test starts with none.
+    session._SESSIONS.clear()
+
+
 class FakeJev:
     """Stands in for `jev.ask`: tests script the probabilities per question name.
 
     Unscripted questions answer their neutral option ("none", "no", "default",
-    "market") with certainty, so a test only scripts what it is about.
+    "market", "keep", "prepare") with certainty, so a test only scripts what it is about.
     """
 
     def __init__(self) -> None:
         self.script: dict[str, dict[str, float]] = {}
         self.calls: list[tuple[str, list[jev.Question]]] = []
+        self.contexts: list[dict | None] = []
         self.error: Exception | None = None
 
-    async def ask(self, text: str, questions: list[jev.Question]) -> jev.Reply:
+    async def ask(
+        self, text: str, questions: list[jev.Question], context: dict | None = None
+    ) -> jev.Reply:
         self.calls.append((text, questions))
+        self.contexts.append(context)
         if self.error:
             raise self.error
         return jev.Reply("jev-fake", {q.name: self._answer(q) for q in questions})
@@ -46,7 +56,7 @@ class FakeJev:
 
 
 def _neutral(question: jev.Question) -> str:
-    for option in ("none", "no", "default", "market"):
+    for option in ("none", "no", "default", "market", "keep", "prepare"):
         if option in question.criteria:
             return option
     return next(iter(question.criteria))

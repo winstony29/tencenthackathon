@@ -89,3 +89,18 @@ def decide(replies: list[Reply], answers: dict[str, str], amount: Decimal) -> De
             if name == "order_type" and picks[name].option == "limit":
                 slots.append("limit_price")
     return Decision(picks, actions)
+
+
+def decide_each(
+    replies: list[Reply], answers: dict[str, str], amount: Decimal, names: list[str]
+) -> Decision:
+    """Settle the listed questions in order, stopping at the first that needs the user.
+
+    Used for follow-up turns, where every question is about an existing task.
+    """
+    picks: dict[str, Pick] = {}
+    for name in names:
+        picks[name] = pick(replies, name, answers.get(name))
+        if name not in answers and not trusted(picks[name], amount):
+            return Decision(picks, ask=name)
+    return Decision(picks)

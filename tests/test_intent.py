@@ -348,3 +348,141 @@ def test_command_set_is_well_formed() -> None:
         assert row["expect"] in {"draft", "question", "blocked", "unsupported", "mismatch"}, row
         assert all(set(action) <= ACTION_FIELDS for action in row["actions"]), row
         assert row["expect"] != "draft" or row["actions"], row
+
+
+# --- objectives and follow-up turns (W-12, W-13; Darren's /v3 journeys) ---
+
+
+def _transfer_500_to_john(client, fake_jev) -> dict:
+    fake_jev.script = {
+        "has_transfer": {"yes": SURE, "no": 1 - SURE},
+        "recipient": {"pay_4521": SURE, "pay_8892": 1 - SURE},
+        "transfer_amount": {"n0": SURE, "none": 1 - SURE},
+    }
+    reply = _understand(client, "Transfer $500 to John.").json()
+    assert (reply["status"], reply["objective"], reply["scenario"]) == ("draft", "prepare", None)
+    return reply["draft"]
+
+
+def _followup(client, fake_jev, text: str, script: dict) -> dict:
+    fake_jev.script = script
+    return _understand(client, text).json()
+
+
+def test_afford_keeps_the_draft_and_changes_the_objective(client, fake_jev, bank) -> None:
+    first = _transfer_500_to_john(client, fake_jev)
+    reply = _followup(
+        client,
+        fake_jev,
+        "Can I afford that?",
+        {"objective": {"assess_affordability": SURE, "prepare": 1 - SURE}},
+    )
+    assert reply["objective"] == "assess_affordability"
+    assert reply["draft"] == first and reply["scenario"] is None
+    assert fake_jev.contexts[-1] == {
+        "current_tasks": ["transfer 500.00 SGD to John Doe …4521 from Savings …1234"]
+    }
+
+
+def test_what_if_goes_into_the_scenario_never_the_draft(client, fake_jev, bank) -> None:
+    first = _transfer_500_to_john(client, fake_jev)
+    reply = _followup(
+        client,
+        fake_jev,
+        "What if I send $700 instead?",
+        {
+            "objective": {"simulate": SURE, "prepare": 1 - SURE},
+            "a0_amount": {"n0": SURE, "keep": 1 - SURE},
+        },
+    )
+    assert reply["objective"] == "simulate"
+    assert reply["scenario"] == {"0": {"amount": "700.00"}}
+    assert reply["draft"] == first
+
+
+def test_an_amendment_changes_the_draft_and_records_the_turn(client, fake_jev, bank) -> None:
+    first = _transfer_500_to_john(client, fake_jev)
+    reply = _followup(
+        client,
+        fake_jev,
+        "Make it $300 from current.",
+        {
+            "a0_amount": {"n0": SURE, "keep": 1 - SURE},
+            "a0_from": {"acc_5678": SURE, "keep": 1 - SURE},
+        },
+    )
+    amended = reply["draft"]
+    assert reply["objective"] == "prepare"
+    assert amended["draft_id"] == first["draft_id"]
+    assert (amended["actions"][0]["amount"], amended["actions"][0]["from_account_id"]) == (
+        "300.00",
+        "acc_5678",
+    )
+    assert amended["transcript"] == "Transfer $500 to John.\nMake it $300 from current."
+
+
+def test_review_turn_returns_the_same_draft(client, fake_jev, bank) -> None:
+    first = _transfer_500_to_john(client, fake_jev)
+    reply = _followup(
+        client,
+        fake_jev,
+        "Review the transfer.",
+        {"objective": {"review": SURE, "prepare": 1 - SURE}},
+    )
+    assert (reply["objective"], reply["draft"]) == ("review", first)
+
+
+def test_an_unsure_followup_objective_asks(client, fake_jev, bank) -> None:
+    _transfer_500_to_john(client, fake_jev)
+    reply = _followup(
+        client, fake_jev, "hmm 700?", {"objective": {"simulate": 0.5, "prepare": 0.5}}
+    )
+    assert (
+        reply["status"] == "question" and reply["question"]["text"] == "What would you like to do?"
+    )
+    reply = _understand(client, answer=(reply["question"]["question_id"], "simulate")).json()
+    assert reply["objective"] == "simulate"
+
+
+def test_a_new_task_replaces_the_draft(client, fake_jev, bank) -> None:
+    _transfer_500_to_john(client, fake_jev)
+    reply = _followup(
+        client,
+        fake_jev,
+        "buy 10 tesla",
+        {
+            "objective": {"new_task": SURE, "prepare": 1 - SURE},
+            "has_stock_order": {"yes": SURE, "no": 1 - SURE},
+            "ticker": {"TSLA": SURE, "none": 1 - SURE},
+            "quantity": {"n0": SURE, "none": 1 - SURE},
+        },
+    )
+    assert [a["type"] for a in reply["draft"]["actions"]] == ["stock_order"]
+    assert reply["draft"]["transcript"] == "buy 10 tesla"
+
+
+def test_multi_task_what_if_targets_the_stock_order(client, fake_jev, bank) -> None:
+    fake_jev.script = {
+        "has_bill_payment": {"yes": SURE, "no": 1 - SURE},
+        "has_stock_order": {"yes": SURE, "no": 1 - SURE},
+        "biller": {"bil_0001": SURE, "none": 1 - SURE},
+        "bill_amount": {"due": SURE, "n0": 1 - SURE},
+        "ticker": {"AAPL": SURE, "none": 1 - SURE},
+        "side": {"buy": SURE, "sell": 1 - SURE},
+        "quantity": {"n0": SURE, "none": 1 - SURE},
+    }
+    assert (
+        _understand(client, "Pay my credit card bill and buy 100 Apple shares.").json()["status"]
+        == "draft"
+    )
+    reply = _followup(
+        client,
+        fake_jev,
+        "What if I buy 80 shares?",
+        {
+            "objective": {"simulate": SURE, "prepare": 1 - SURE},
+            "a1_quantity": {"n0": SURE, "keep": 1 - SURE},
+        },
+    )
+    assert reply["scenario"] == {"1": {"quantity": "80"}}
+    assert reply["draft"]["actions"][1]["quantity"] == 100

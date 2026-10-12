@@ -36,9 +36,10 @@ class Reply:
     answers: dict[str, Answer]
 
 
-async def ask(text: str, questions: list[Question]) -> Reply:
+async def ask(text: str, questions: list[Question], context: dict[str, Any] | None = None) -> Reply:
     """Ask Jev every question about one text in a single System One call.
 
+    `context` adds facts to Jev's state, such as the tasks a follow-up refers to.
     Raises HTTP 502 when the key is missing, the gateway fails, or the reply
     picks anything that was not offered.
     """
@@ -46,7 +47,7 @@ async def ask(text: str, questions: list[Question]) -> Reply:
         raise HTTPException(502, "Jev is not configured on the server.")
     payload = {
         "model": config.MAKERS_JEV_MODEL,
-        "state": {"text": text},
+        "state": {"text": text, **(context or {})},
         "questions": {
             q.name: {"type": "choice", "instructions": q.instructions, "criteria": q.criteria}
             for q in questions
@@ -65,9 +66,11 @@ async def ask(text: str, questions: list[Question]) -> Reply:
         raise HTTPException(502, "Jev is unavailable right now. Please try again.") from error
 
 
-async def ask_all(texts: list[str], questions: list[Question]) -> list[Reply]:
+async def ask_all(
+    texts: list[str], questions: list[Question], context: dict[str, Any] | None = None
+) -> list[Reply]:
     """Ask the same questions about every phrasing at once; replies keep the order of texts."""
-    return list(await asyncio.gather(*(ask(text, questions) for text in texts)))
+    return list(await asyncio.gather(*(ask(text, questions, context) for text in texts)))
 
 
 def parse(value: Any, questions: list[Question]) -> Reply:

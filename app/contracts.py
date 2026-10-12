@@ -183,9 +183,16 @@ class QuestionResponse(ContractModel):
     meta: Meta
 
 
+Objective = Literal["prepare", "assess_affordability", "simulate", "check_recipient", "review"]
+# Hypothetical values for `simulate`, keyed by action index: never part of the signed draft.
+Scenario = dict[int, dict[Literal["amount", "quantity"], str]]
+
+
 class DraftResponse(ContractModel):
     status: Literal["draft"]
     draft: Draft
+    objective: Objective
+    scenario: Scenario | None
     meta: Meta
 
 

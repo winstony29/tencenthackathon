@@ -99,6 +99,8 @@ _STUB_DRAFT = {
             }
         ],
     },
+    "objective": "prepare",
+    "scenario": None,
     "meta": _STUB_META,
 }
 _STUB_CANCELLED = {
@@ -180,10 +182,10 @@ async def transcribe(audio: UploadFile) -> dict[str, Any]:
 async def understand(request: UnderstandRequest) -> dict[str, Any]:
     """Turn a transcript, or the answer to a question, into the next step.
 
-    A transcript is checked by the input shield first, then starts a session: one
-    batch of Jev questions per phrasing. An answer
+    A transcript is checked by the input shield first. In a session that already
+    holds a draft it is a follow-up turn about that draft; otherwise it starts a new
+    command. Either way Jev answers one batch of questions per phrasing. An answer
     settles the open question from the stored replies without asking Jev again.
-    The gate then asks the next unsure question, or the draft is built.
     """
     if not _live():
         return _stub_understand(request)
@@ -191,19 +193,13 @@ async def understand(request: UnderstandRequest) -> dict[str, Any]:
     if request.transcript is not None:
         blocked, model = await shield.check(request.transcript)
         if blocked:
-            return {
-                "status": "blocked",
-                "reason": "possible_injection",
-                "message": _BLOCKED,
-                "meta": {
-                    "latency_ms": round((time.monotonic() - started) * 1000),
-                    "model": model,
-                    "source": "jev",
-                    "phrasings": 1,
-                    "cached": False,
-                },
-            }
-        current = await _start(request.user_id, request.transcript)
+            session.drop(request.session_id)
+            return _blocked(model, started)
+        current = session.load(request.session_id, request.user_id)
+        if current and current.draft:
+            await _start_followup(current, request.transcript)
+        else:
+            current = await _start(request.user_id, request.transcript)
     else:
         current = session.load(request.session_id, request.user_id)
         if current is None:
@@ -215,7 +211,9 @@ async def understand(request: UnderstandRequest) -> dict[str, Any]:
             current.record(request.answer)
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
-    return _next_step(request, current, _meta(current, started))
+    if current.followup is not None:
+        return await _followup_step(request, current, started)
+    return _command_step(request, current, _meta(current, started))
 
 
 def _live() -> bool:
@@ -235,39 +233,31 @@ async def _start(user_id: str, transcript: str) -> session.Session:
     return session.Session(user_id, transcript, built, data, replies)
 
 
-def _next_step(request: UnderstandRequest, current: session.Session, meta: dict) -> dict[str, Any]:
+async def _start_followup(current: session.Session, text: str) -> None:
+    current.options = options.build_followup(text, current.draft, current.data)
+    context = {"current_tasks": [options.describe(a) for a in current.draft.actions]}
+    current.replies = await jev.ask_all([text], current.options.questions, context)
+    current.followup, current.answers, current.asked, current.pending = text, {}, 0, None
+
+
+def _amount(current: session.Session) -> Decimal:
     # ponytail: the largest number said stands in for the amount when choosing tau; the exact
     # amount needs the picks this decision is still making.
-    amount = max(current.options.numbers.values(), default=Decimal(0))
-    decision = gate.decide(current.replies, current.answers, amount)
+    return max(current.options.numbers.values(), default=Decimal(0))
+
+
+def _command_step(
+    request: UnderstandRequest, current: session.Session, meta: dict
+) -> dict[str, Any]:
+    decision = gate.decide(current.replies, current.answers, _amount(current))
     if decision.ask:
-        p = decision.picks[decision.ask]
-        text, chips = options.clarify(current.options, decision.ask, p.probabilities)
-        if chips and current.asked >= config.MAX_QUESTIONS:
-            session.drop(request.session_id)
-            return _cancelled("too_many_questions", meta)
-        if chips:
-            current.asked += 1
-            question_id = f"q_{current.asked}"
-            current.pending = (question_id, decision.ask, {o for o, _ in chips})
-            session.save(request.session_id, current)
-            return {
-                "status": "question",
-                "question": {
-                    "question_id": question_id,
-                    "text": text,
-                    "options": [{"option_id": o, "label": label} for o, label in chips],
-                    "allow_none": True,
-                },
-                "evidence": [draft.evidence(p)],
-                "meta": meta,
-            }
+        question = _ask(request, current, decision, meta)
+        if question:
+            return question
         decision = gate.Decision(decision.picks, decision.actions, missing=decision.ask)
-    session.drop(request.session_id)
-    if decision.missing:
+    if decision.missing or not decision.actions:
+        session.drop(request.session_id)
         return _unsupported(_MISSING.get(decision.missing, _HELP), meta)
-    if not decision.actions:
-        return _unsupported(_HELP, meta)
     try:
         built = draft.build(
             current.transcript,
@@ -278,8 +268,93 @@ def _next_step(request: UnderstandRequest, current: session.Session, meta: dict)
             current.data,
         )
     except draft.Unbuildable as error:
+        session.drop(request.session_id)
         return _unsupported(str(error), meta)
-    return {"status": "draft", "draft": built, "meta": meta}
+    # The objective only shapes the screen on a first command, so an unsure one means "prepare".
+    p = gate.pick(current.replies, "objective")
+    objective = p.option if gate.trusted(p, _amount(current)) else "prepare"
+    return _keep_draft(request, current, built, objective, None, meta)
+
+
+async def _followup_step(
+    request: UnderstandRequest, current: session.Session, started: float
+) -> dict[str, Any]:
+    meta = _meta(current, started)
+    first = gate.decide_each(current.replies, current.answers, _amount(current), ["objective"])
+    if first.ask:
+        return _ask(request, current, first, meta) or _unsupported(_HELP, meta)
+    objective = first.picks["objective"].option
+    if objective == "new_task":
+        fresh = await _start(current.user_id, current.followup)
+        return _command_step(request, fresh, _meta(fresh, started))
+    names = [q.name for q in current.options.questions if q.name != "objective"]
+    rest = gate.decide_each(current.replies, current.answers, _amount(current), names)
+    if rest.ask:
+        return _ask(request, current, rest, meta) or _unsupported(_HELP, meta)
+    rest.picks["objective"] = first.picks["objective"]
+    try:
+        updated, scenario = draft.amend(
+            current.draft, rest, objective, current.followup, current.options, current.data
+        )
+    except draft.Unbuildable as error:
+        return _unsupported(str(error), meta)
+    return _keep_draft(request, current, updated, objective, scenario, meta)
+
+
+def _ask(
+    request: UnderstandRequest, current: session.Session, decision: gate.Decision, meta: dict
+) -> dict | None:
+    """Return a clarifying question about decision.ask, or None when no chips can be offered."""
+    p = decision.picks[decision.ask]
+    text, chips = options.clarify(current.options, decision.ask, p.probabilities)
+    if not chips:
+        return None
+    if current.asked >= config.MAX_QUESTIONS:
+        session.drop(request.session_id)
+        return _cancelled("too_many_questions", meta)
+    current.asked += 1
+    question_id = f"q_{current.asked}"
+    current.pending = (question_id, decision.ask, {o for o, _ in chips})
+    session.save(request.session_id, current)
+    return {
+        "status": "question",
+        "question": {
+            "question_id": question_id,
+            "text": text,
+            "options": [{"option_id": o, "label": label} for o, label in chips],
+            "allow_none": True,
+        },
+        "evidence": [draft.evidence(p)],
+        "meta": meta,
+    }
+
+
+def _keep_draft(request, current, built, objective, scenario, meta) -> dict[str, Any]:
+    # The session stays open after a draft so follow-up turns can amend it (CONTRACTS §3.1).
+    current.draft, current.followup, current.pending = built, None, None
+    session.save(request.session_id, current)
+    return {
+        "status": "draft",
+        "draft": built,
+        "objective": objective,
+        "scenario": scenario,
+        "meta": meta,
+    }
+
+
+def _blocked(model: str, started: float) -> dict[str, Any]:
+    return {
+        "status": "blocked",
+        "reason": "possible_injection",
+        "message": _BLOCKED,
+        "meta": {
+            "latency_ms": round((time.monotonic() - started) * 1000),
+            "model": model,
+            "source": "jev",
+            "phrasings": 1,
+            "cached": False,
+        },
+    }
 
 
 _HELP = "I can help with transfers, bill payments and stock orders."
