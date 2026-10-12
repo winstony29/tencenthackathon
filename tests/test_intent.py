@@ -94,6 +94,24 @@ def test_numbers_are_parsed_by_code(text: str, values: list[str]) -> None:
     assert [str(n.value) for n in options.parse_numbers(text)] == values
 
 
+@pytest.mark.parametrize(
+    ("text", "masked"),
+    [
+        ("send fifty to john", "send [N0] to john"),
+        ("Send a grand to Mum", "Send [N0] to Mum"),
+        ("send 5 grand", "send [N0]"),
+        ("send 50K to mei ling", "send [N0] to mei ling"),
+        ("pay $1,250.50 now", "pay $[N0] now"),
+        ("transfer one hundred and fifty to john", "transfer [N0] to john"),
+        ("send twenty five to john and 30 to mum", "send [N0] to john and [N1] to mum"),
+        ("send to acc999x", "send to acc[number]x"),
+        ("send a friend some money", "send a friend some money"),
+    ],
+)
+def test_mask_hides_every_number_said(text: str, masked: str) -> None:
+    assert options.mask(text) == masked
+
+
 def test_options_come_only_from_user_data_and_the_transcript() -> None:
     built = options.build("send fifty to john", options.UserData(BANK, QUOTES))
     criteria = {q.name: q.criteria for q in built.questions}

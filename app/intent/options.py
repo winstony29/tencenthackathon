@@ -51,13 +51,16 @@ _FRACTIONS = {
     "left": Decimal(1),
 }
 _FRACTION = re.compile(r"\b(" + "|".join(_FRACTIONS) + r")\b")
-_TOKEN = re.compile(r"(\d[\d,]*(?:\.\d+)?)(k|m)?\b|[a-z]+")
+# Matched on the original text (not text.lower()) so spans index the text mask() rewrites.
+_TOKEN = re.compile(r"(\d[\d,]*(?:\.\d+)?)(k|m)?\b|[a-z]+", re.IGNORECASE)
+_DIGITS = re.compile(r"\d+")
 
 
 @dataclass(frozen=True)
 class Number:
     value: Decimal
     phrase: str
+    span: tuple[int, int] | None = None  # where it was said; None when code computed it
 
 
 @dataclass(frozen=True)
@@ -84,40 +87,60 @@ def parse_numbers(text: str) -> list[Number]:
     scale word, so "send a friend" has no number.
     """
     tokens = [
-        (m.group(1), m.group(2), _ALIASES.get(m.group(0), m.group(0)))
-        for m in _TOKEN.finditer(text.lower())
+        (m.group(1), (m.group(2) or "").lower(), _ALIASES.get(w, w), m.span())
+        for m in _TOKEN.finditer(text)
+        for w in [m.group(0).lower()]
     ]
     found: list[Number] = []
-    words: list[str] = []
+    words: list[tuple[str, tuple[int, int]]] = []
 
     def flush() -> None:
-        while words and words[-1] in ("and", "a", "an"):
+        while words and words[-1][0] in ("and", "a", "an"):
             words.pop()
-        value = _words_value(words)
+        value = _words_value([w for w, _ in words])
         if value:
-            found.append(Number(value, " ".join(words)))
+            span = (words[0][1][0], words[-1][1][1])
+            found.append(Number(value, " ".join(w for w, _ in words), span))
         words.clear()
 
     skip = False
-    for i, (digits, suffix, word) in enumerate(tokens):
+    for i, (digits, suffix, word, span) in enumerate(tokens):
         if skip:
             skip = False
             continue
         following = tokens[i + 1][2] if i + 1 < len(tokens) else ""
         if digits:
             flush()
-            value = Decimal(digits.replace(",", "")) * _SUFFIXES.get(suffix or "", 1)
+            value = Decimal(digits.replace(",", "")) * _SUFFIXES.get(suffix, 1)
             if following in _SCALES:
                 value, word, skip = value * _SCALES[following], f"{word} {following}", True
-            found.append(Number(value, word))
+                span = (span[0], tokens[i + 1][3][1])
+            found.append(Number(value, word, span))
         elif word in _SMALL or word in _TENS or word in _SCALES:
-            words.append(word)
+            words.append((word, span))
         elif (word in ("a", "an") and following in _SCALES) or (word == "and" and words):
-            words.append(word)
+            words.append((word, span))
         else:
             flush()
     flush()
     return found
+
+
+def mask(text: str) -> str:
+    """Replace every number said with a marker, so Jev learns its role but never its value.
+
+    The k-th number parse_numbers finds becomes "[Nk]", matching option "nk". Digits the
+    parser missed become "[number]", so an odd spelling can't slip a value through.
+    """
+    # ponytail: number words parse_numbers doesn't know ("dozen", "couple") pass through
+    # unmasked; add them to _SMALL / _SCALES if they turn up in real transcripts.
+    parts, last = [], 0
+    for i, n in enumerate(parse_numbers(text)):
+        start, end = n.span
+        parts += [_DIGITS.sub("[number]", text[last:start]), f"[N{i}]"]
+        last = end
+    parts.append(_DIGITS.sub("[number]", text[last:]))
+    return "".join(parts)
 
 
 # One yes/no pair per action type. Saying what does NOT count keeps Jev from hesitating
