@@ -41,23 +41,42 @@ export function V3Workspace({ manifest, ...props }: ComponentProps & { manifest:
         className={`v3-composition v3-${manifest.layout} v3-${manifest.density}`}
         data-interaction={manifest.interaction}
       >
-        <AnimatePresence initial={false} mode="popLayout">
-          {ordered.map((node) => {
+        <AnimatePresence mode="popLayout">
+          {ordered.map((node, index) => {
             const Component = renderers[node.component];
             return (
               <motion.section
                 key={node.key}
                 layout={reduced ? false : "position"}
-                layoutId={node.key}
+                layoutId={reduced ? undefined : node.key}
                 className={`v3-module v3-slot-${node.slot} v3-size-${node.size}`}
                 data-component={node.component}
                 data-component-key={node.key}
                 data-slot={node.slot}
-                initial={reduced ? false : { opacity: 0, y: 8 }}
+                initial={reduced ? false : { opacity: 0, y: 14 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: reduced ? 0 : -4 }}
-                transition={{ duration: reduced ? 0 : 0.24, ease: [0.22, 1, 0.36, 1] }}
+                transition={{
+                  duration: reduced ? 0 : 0.24,
+                  ease: [0.22, 1, 0.36, 1],
+                  opacity: {
+                    duration: reduced ? 0 : 0.18,
+                    delay: reduced ? 0 : Math.min(index * 0.035, 0.105),
+                  },
+                  layout: { duration: reduced ? 0 : 0.28 },
+                }}
               >
+                {node.slot === "primary" && (
+                  <motion.span
+                    aria-hidden="true"
+                    className="v3-primary-marker"
+                    layoutId={reduced ? undefined : "primary-marker"}
+                    transition={{
+                      duration: reduced ? 0 : 0.28,
+                      ease: [0.22, 1, 0.36, 1],
+                    }}
+                  />
+                )}
                 <Component {...props} action={node.action} />
               </motion.section>
             );

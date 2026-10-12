@@ -75,7 +75,10 @@ export default function V3() {
     cancel();
     if (!next.task.draft) return;
     const draftId = next.task.draft.draft_id;
-    const ctx = makeContext(next.task.draft, next.objective, v2Accounts, { AAPL: exampleQuote });
+    const ctx = makeContext(next.task.draft, next.objective, v2Accounts, {
+      AAPL: exampleQuote,
+    });
+    ctx.viewport = window.matchMedia("(max-width: 560px)").matches ? "mobile" : "desktop";
     const prior =
       previous.current?.draftId === draftId &&
       previous.current.context.objective === ctx.objective &&
@@ -89,9 +92,11 @@ export default function V3() {
         layout: prior.manifest.layout,
         density: prior.manifest.density,
       };
-    const local = compose(ctx);
+    const local = prior ? compose(ctx, undefined, prior) : compose(ctx);
     setContext(ctx);
-    setComposition(local);
+    setComposition(
+      prior && prior.context.viewport === ctx.viewport ? { ...local, manifest: prior.manifest } : local,
+    );
     setReply(null);
     setBusy(true);
     setCalls((n) => n + 1);
@@ -106,7 +111,10 @@ export default function V3() {
       previous.current = { context: ctx, manifest: result.manifest, draftId };
     } catch {
       if (request !== generation.current) return;
-      setComposition({ ...local, rejected: "Live composition unavailable. Local layout ready." });
+      setComposition({
+        ...local,
+        rejected: "Live composition unavailable. Local layout ready.",
+      });
       previous.current = { context: ctx, manifest: local.manifest, draftId };
     } finally {
       if (request === generation.current) setBusy(false);
@@ -115,7 +123,10 @@ export default function V3() {
   function turn(nextJourney: keyof typeof journeys, index: number) {
     const base = nextJourney === journey && index > 0 ? current.current : initialState;
     if (index === 0 || nextJourney !== journey) previous.current = undefined;
-    const next = reducer(base, { type: "handoff", value: demoHandoff(nextJourney, index, base) });
+    const next = reducer(base, {
+      type: "handoff",
+      value: demoHandoff(nextJourney, index, base),
+    });
     setJourney(nextJourney);
     setStep(index);
     update(next);

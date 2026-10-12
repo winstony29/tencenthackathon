@@ -911,8 +911,68 @@ body:has(.v3-shell) {
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  .v3-module,
+  .v3-primary-marker {
+    transform: none !important;
+  }
   .v3-shell * {
     transition: none !important;
     animation: none !important;
+  }
+}
+
+/* Hierarchy follows the selected component, without remounting editable fields. */
+.v3-module {
+  position: relative;
+}
+.v3-primary-marker {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 36px;
+  height: 3px;
+  background: var(--v3-red);
+  border-radius: 2px;
+}
+.v3-slot-primary {
+  border-top: 1px solid var(--v3-line);
+  margin-top: 20px;
+}
+.v3-slot-support {
+  background: var(--v3-canvas);
+  padding: 18px;
+  border: 1px solid var(--v3-line);
+  border-radius: 6px;
+  margin-block: 12px;
+}
+.v3-slot-support h2 {
+  font-size: 17px;
+}
+.v3-slot-support .v3-section-heading {
+  margin-bottom: 14px;
+}
+.v3-slot-secondary .v3-amount input {
+  font-size: clamp(28px, 3vw, 38px);
+}
+.v3-slot-primary[data-component="balance_projection"] {
+  background: #f3f7f3;
+  border-radius: 6px;
+  padding: 24px;
+}
+.v3-slot-primary[data-component="amount_simulator"] {
+  background: #faf7f2;
+  border-radius: 6px;
+  padding: 24px;
+}
+.v3-composition[data-interaction="edit"] .v3-amount > div {
+  border-bottom-width: 2px;
+}
+.v3-composition[data-interaction="inspect"] .v3-metric {
+  padding-block: 6px;
+}
+@media (max-width: 560px) {
+  .v3-slot-primary[data-component="balance_projection"],
+  .v3-slot-primary[data-component="amount_simulator"] {
+    padding: 18px;
   }
 }

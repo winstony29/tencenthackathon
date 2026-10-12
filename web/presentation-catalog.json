@@ -44,7 +44,7 @@
     "data": ["accounts", "projection"],
     "perAction": false,
     "objectives": ["assess_affordability", "simulate"],
-    "primaryFor": ["assess_affordability"],
+    "primaryFor": ["assess_affordability", "simulate"],
     "requiredFor": ["assess_affordability", "simulate"],
     "interactions": ["inspect", "adjust"],
     "sizes": ["hero", "wide", "compact"],
@@ -57,12 +57,12 @@
     "data": ["accounts", "projection"],
     "perAction": false,
     "objectives": ["assess_affordability", "simulate"],
-    "primaryFor": [],
+    "primaryFor": ["assess_affordability"],
     "requiredFor": [],
     "interactions": ["inspect", "adjust"],
-    "sizes": ["compact"],
-    "slots": ["support"],
-    "userAction": "Inspect starting balance and exact change per account."
+    "sizes": ["hero", "compact"],
+    "slots": ["primary", "support"],
+    "userAction": "Explain starting balance, outflow and remaining balance per account. Useful for multiple tasks; omit if it merely repeats a simple projection."
   },
   "amount_simulator": {
     "title": "Try a different amount",
@@ -75,7 +75,7 @@
     "interactions": ["inspect", "adjust"],
     "sizes": ["hero", "wide"],
     "slots": ["primary", "secondary"],
-    "userAction": "Adjust separate hypothetical amounts or quantities. Apply only by explicit user action."
+    "userAction": "Explore hypothetical amounts or quantities without changing the draft. Include for an explicit what-if objective; omit from a simple affordability check unless adjustment is useful."
   },
   "recipient_check": {
     "title": "Recipient details",
@@ -88,7 +88,7 @@
     "interactions": ["edit", "inspect", "adjust", "review"],
     "sizes": ["hero", "wide", "compact"],
     "slots": ["primary", "secondary", "support"],
-    "userAction": "Check listed identity. Never claim verified ownership."
+    "userAction": "Inspect the listed recipient identity. Omit when the transfer editor already provides sufficient recipient context. Never claim verified ownership."
   },
   "account_comparison": {
     "title": "Funding accounts",
@@ -140,7 +140,7 @@
     "interactions": ["edit", "inspect", "adjust"],
     "sizes": ["hero", "wide", "compact"],
     "slots": ["primary", "secondary", "support"],
-    "userAction": "Inspect all tasks without aggregating unlike currencies."
+    "userAction": "Orient the user across multiple tasks before editing. Omit when visible forms already provide a clear overview. Never aggregate unlike currencies."
   },
   "transaction_review": {
     "title": "One final check",

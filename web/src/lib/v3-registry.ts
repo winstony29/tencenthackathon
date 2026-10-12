@@ -18,7 +18,11 @@ export const bindingSchema = z.strictObject({
   action: z.number().int().min(0).max(3).nullable(),
 });
 export type Binding = z.infer<typeof bindingSchema>;
-export type Candidate = Binding & { key: string; required: boolean; primary: boolean };
+export type Candidate = Binding & {
+  key: string;
+  required: boolean;
+  primary: boolean;
+};
 export const keyOf = (b: Binding) => `${b.component}${b.action === null ? "" : `:${b.action}`}`;
 export const contextSchema = z.strictObject({
   action_types: z
@@ -41,6 +45,7 @@ export const contextSchema = z.strictObject({
       "alternatives",
     ]),
   ),
+  viewport: z.enum(["mobile", "desktop"]).default("desktop"),
   current_ui: z
     .strictObject({
       primary: z.string(),
@@ -76,6 +81,7 @@ export function makeContext(
     objective,
     recipient_status: types.includes("transfer") ? "listed" : "not_applicable",
     available_context: data,
+    viewport: "desktop",
     current_ui: null,
   };
 }

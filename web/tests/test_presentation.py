@@ -88,3 +88,14 @@ def test_inconsistent_data_rejected():
     body["available_context"] = ["accounts"]
     with pytest.raises(ValidationError):
         ComponentContext(**body)
+
+
+def test_viewport_and_component_specific_questions():
+    ctx = context("assess_affordability")
+    ctx.viewport = "mobile"
+    payload = build_request(ctx)
+    assert payload["state"]["viewport"] == "mobile"
+    assert set(payload["questions"]["primary"]["criteria"]) == {"balance_projection", "cash_flow"}
+    assert "starting balance" in payload["questions"]["show_cash_flow"]["instructions"]
+    with pytest.raises(ValidationError):
+        ComponentContext(**(ctx.model_dump() | {"viewport": "arbitrary private text"}))

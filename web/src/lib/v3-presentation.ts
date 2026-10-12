@@ -44,7 +44,12 @@ export type Composition = {
   changes: string[];
 };
 function signature(context: Context) {
-  return JSON.stringify([context.objective, context.action_types, context.available_context]);
+  return JSON.stringify([
+    context.objective,
+    context.action_types,
+    context.available_context,
+    context.viewport,
+  ]);
 }
 export function validateManifest(value: unknown, context: Context): Manifest {
   const m = manifestSchema.parse(value),
@@ -73,6 +78,11 @@ export function validateManifest(value: unknown, context: Context): Manifest {
     if (node.slot === "primary" && (!item.primary || node.size !== "hero"))
       throw Error("Invalid primary component.");
   }
+  if (
+    m.nodes.filter((n) => n.slot !== "primary" && !items.find((c) => c.key === n.key)?.required).length >
+    (context.viewport === "mobile" ? 1 : 2)
+  )
+    throw Error("Too many optional panels.");
   if (items.some((c) => c.required && !keys.includes(c.key))) throw Error("Missing required component.");
   if (keys.includes("amount_simulator") && !keys.includes("balance_projection"))
     throw Error("Simulation needs a projection.");
@@ -117,8 +127,17 @@ export function compose(
     rejected = "Invalid JEV response; using local composition.";
     reply = undefined;
   }
+  const budget = context.viewport === "mobile" ? 1 : 2;
+  const optional = items
+    .filter((c) => !c.required && c.key !== picks.primary && picks[`show_${c.key}`] === "include")
+    .sort(
+      (a, b) =>
+        (reply?.answers[`show_${b.key}`]?.probabilities.include ?? 0) -
+        (reply?.answers[`show_${a.key}`]?.probabilities.include ?? 0),
+    );
+  const selected = new Set(optional.slice(0, budget).map((c) => c.key));
   let keys = items
-    .filter((c) => c.required || c.key === picks.primary || picks[`show_${c.key}`] === "include")
+    .filter((c) => c.required || c.key === picks.primary || selected.has(c.key))
     .map((c) => c.key);
   if (keys.includes("amount_simulator") && !keys.includes("balance_projection"))
     keys.push("balance_projection");
@@ -126,6 +145,13 @@ export function compose(
   if (reply && same) {
     try {
       const prior = validateManifest(previous.manifest, context);
+      for (const field of ["layout", "density"] as const) {
+        const ps = Object.values(reply.answers[field].probabilities).sort((a, b) => b - a);
+        if (ps.length > 1 && ps[0] - ps[1] < 0.15) {
+          picks[field] = prior[field];
+          stability = "Kept presentation where the model preference was weak.";
+        }
+      }
       const probabilities = Object.values(reply.answers.primary.probabilities).sort((a, b) => b - a);
       if (
         picks.continuity === "preserve" ||

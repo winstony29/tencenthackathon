@@ -45,6 +45,7 @@ class ComponentContext(BaseModel):
             "alternatives",
         ]
     ] = Field(max_length=8)
+    viewport: Literal["mobile", "desktop"] = "desktop"
     current_ui: CurrentUI | None = None
 
     @model_validator(mode="after")
@@ -143,7 +144,10 @@ def build_request(context: ComponentContext):
             "rules": (
                 "Winston resolved the objective and ambiguity. Choose presentation only. "
                 "Independent questions; required components are enforced by code. "
-                "No financial values or authorization. Prefer useful context with minimal clutter."
+                "No financial values or authorization. Prefer useful context with minimal clutter. "
+                "Prefer a focused or sequential layout on mobile. Select at most two optional "
+                "supporting panels on desktop and one on mobile. Preserve an eligible current "
+                "composition unless a change clearly improves the supplied objective."
             ),
         },
         "questions": {
@@ -151,7 +155,12 @@ def build_request(context: ComponentContext):
                 "type": "choice",
                 "instructions": (
                     f"Choose {name} for the supplied objective. "
-                    "All questions see the same state independently. Select only an offered option."
+                    + (
+                        descriptions[name.removeprefix("show_")] + " "
+                        if name.startswith("show_")
+                        else ""
+                    )
+                    + "Questions independently see the same state. Select only an offered option."
                 ),
                 "criteria": {option: descriptions[option] for option in choices},
             }
