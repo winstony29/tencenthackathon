@@ -1,0 +1,18 @@
+{
+  "repository": "https://github.com/vercel-labs/json-render",
+  "revision": "fc2a696a50a30cb30c878ab1eb65e102487eea0f",
+  "source": "packages/core/src",
+  "license": "Apache-2.0",
+  "modified": false,
+  "files": [
+    "actions.ts",
+    "directives.ts",
+    "experimental-compose.ts",
+    "experimental-composition-batch.ts",
+    "experimental-composition-tree.ts",
+    "props.ts",
+    "spec-validator.ts",
+    "types.ts",
+    "visibility.ts"
+  ]
+}
