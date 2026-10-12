@@ -6,7 +6,9 @@ Contract: docs/CONTRACTS.md §2 and §3.1
 """
 
 import asyncio
+import json
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -14,6 +16,8 @@ from fastapi import HTTPException
 from app import config
 from app.intent import gate, jev, options, shield
 from tests.conftest import BANK, QUOTES
+
+COMMANDS = Path(__file__).with_name("commands.jsonl")
 
 RECIPIENT = jev.Question("recipient", "Who gets the money?", {"pay_4521": "John Doe", "none": "-"})
 
@@ -309,3 +313,29 @@ def test_shield_lets_demo_command_1_through(client, fake_jev, bank) -> None:
     _send_fifty_to_john(fake_jev)
     assert _understand(client, "send fifty to john").json()["status"] == "question"
     assert fake_jev.calls[0][1] == [shield.QUESTION]  # the shield ran first
+
+
+# --- test set (W-10) ---
+
+ACTION_FIELDS = {
+    "type",
+    "from_account_id",
+    "to_payee_id",
+    "amount",
+    "biller_id",
+    "ticker",
+    "side",
+    "quantity",
+    "order_type",
+    "limit_price",
+}
+
+
+def test_command_set_is_well_formed() -> None:
+    rows = [json.loads(line) for line in COMMANDS.read_text("utf-8").splitlines()]
+    assert len(rows) >= 30
+    assert len({r["id"] for r in rows}) == len(rows)
+    for row in rows:
+        assert row["expect"] in {"draft", "question", "blocked", "unsupported", "mismatch"}, row
+        assert all(set(action) <= ACTION_FIELDS for action in row["actions"]), row
+        assert row["expect"] != "draft" or row["actions"], row
