@@ -310,10 +310,66 @@ def test_a_sum_too_small_for_one_share_is_unsupported(client, fake_jev, bank) ->
     assert reply["status"] == "unsupported" and "share" in reply["message"]
 
 
-def test_an_sgd_sum_for_us_shares_waits_for_conversion(client, fake_jev, bank) -> None:
+def test_an_sgd_sum_for_us_shares_converts_first(client, fake_jev, bank) -> None:
     fake_jev.script = _sum_order_script()
     reply = _understand(client, "invest 2k in apple").json()
-    assert reply["status"] == "unsupported" and "SGD" in reply["message"]
+    assert reply["status"] == "draft", reply
+    fx, order = reply["draft"]["actions"]
+    assert (fx["type"], fx["from_account_id"], fx["to_account_id"]) == (
+        "fx_conversion",
+        "acc_1234",
+        "acc_7788",
+    )
+    assert (fx["sell_amount"], fx["buy_amount"], fx["rate"]) == ("2000.00", "1480.00", "0.740000")
+    assert (order["quantity"], order["from_account_id"]) == (6, "acc_7788")  # 1480 / 227.50
+
+
+def _send_then_invest_the_rest(fake_jev) -> str:
+    text = "send 500 to John Doe and invest the rest of my savings in Apple"
+    built = options.build(text, options.UserData(BANK, QUOTES), "u|s1")
+    rest = next(o for o, n in built.said.items() if n.remaining and n.account_id == "acc_1234")
+    fake_jev.script = {
+        "has_transfer": {"yes": SURE, "no": 1 - SURE},
+        "has_stock_order": {"yes": SURE, "no": 1 - SURE},
+        "recipient": {"pay_4521": SURE, "pay_8892": 1 - SURE},
+        "transfer_amount": {"n0": SURE, "none": 1 - SURE},
+        "ticker": {"AAPL": SURE, "none": 1 - SURE},
+        "side": {"buy": SURE, "sell": 1 - SURE},
+        "quantity": {"m" + rest[1:]: SURE, "none": 1 - SURE},
+    }
+    return text
+
+
+def test_send_then_invest_the_rest_converts_currency(client, fake_jev, bank) -> None:
+    text = _send_then_invest_the_rest(fake_jev)
+    reply = _understand(client, text).json()
+    assert reply["status"] == "draft", reply
+    transfer, fx, order = reply["draft"]["actions"]
+    assert transfer["amount"] == "500.00"
+    assert (fx["sell_amount"], fx["buy_amount"]) == ("2700.00", "1998.00")
+    assert order["quantity"] == 8  # 1998 / 227.50
+
+
+def test_selling_for_an_sgd_sum_adds_no_conversion(client, fake_jev, bank) -> None:
+    fake_jev.script = _sum_order_script(side="sell")
+    reply = _understand(client, "sell 1k worth of apple").json()
+    (order,) = reply["draft"]["actions"]
+    assert order["quantity"] == 3  # 1000 SGD x 0.74 = 740 USD / 227.50
+
+
+def test_a_followup_never_asks_about_a_conversion(client, fake_jev, bank) -> None:
+    fake_jev.script = _sum_order_script()
+    assert _understand(client, "invest 2k in apple").json()["status"] == "draft"
+    _followup(client, fake_jev, "can I afford that?", {})
+    names = {q.name for q in fake_jev.calls[-1][1]}
+    assert not {n for n in names if n.startswith("a0_")}  # action 0 is the conversion
+
+
+def test_changing_what_a_conversion_depends_on_asks_to_start_over(client, fake_jev, bank) -> None:
+    text = _send_then_invest_the_rest(fake_jev)
+    assert _understand(client, text).json()["status"] == "draft"
+    reply = _followup(client, fake_jev, "make the transfer 300", {"a0_amount": {"n0": SURE}})
+    assert reply["status"] == "unsupported" and "whole command" in reply["message"]
 
 
 def test_fx_conversion_is_a_draft_action() -> None:

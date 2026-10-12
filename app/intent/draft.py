@@ -8,7 +8,7 @@ Contract: docs/CONTRACTS.md §2
 import re
 import secrets
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from zoneinfo import ZoneInfo
 
 from app import config
@@ -18,6 +18,8 @@ from app.contracts import (
     BillPaymentAction,
     Draft,
     Evidence,
+    FxConversionAction,
+    FxResponse,
     Objective,
     QuoteResponse,
     Scenario,
@@ -59,7 +61,10 @@ def build(
     ordered = sorted(decision.actions, key=lambda kind: _first_mention(lowered, kind))
     builders = {"transfer": _transfer, "bill_payment": _bill, "stock_order": _stock}
     spent: dict[str, Decimal] = {}  # money earlier actions take, by source account
-    actions = [builders[kind](p, options, data, spent) for kind in ordered]
+    actions = []
+    for kind in ordered:
+        built = builders[kind](p, options, data, spent)
+        actions += built if isinstance(built, list) else [built]  # a conversion precedes its order
     return Draft(
         draft_id=f"d_{secrets.token_hex(3)}",
         user_id=user_id,
@@ -116,14 +121,15 @@ def _bill(
 
 def _stock(
     p: dict[str, str], options: Options, data: UserData, spent: dict[str, Decimal]
-) -> StockOrderAction:
+) -> list[FxConversionAction | StockOrderAction]:
     quote = next(q for q in data.quotes if q.ticker == p["ticker"])
-    quantity, chosen = _shares(p["quantity"], quote, options, data, spent)
+    buying = p["side"] == "buy"
+    quantity, chosen, conversion = _shares(p["quantity"], quote, buying, options, data, spent)
     source = _account(data, chosen, prefer="invest", currency=quote.currency)
     limit = p["order_type"] == "limit"
-    if p["side"] == "buy":  # an estimate at the quote, so a later "rest" of Invest stays sensible
+    if buying:  # an estimate at the quote, so a later "rest" of Invest stays sensible
         _spend(spent, source, quantity * quote.price)
-    return StockOrderAction(
+    order = StockOrderAction(
         type="stock_order",
         from_account_id=source.account_id,
         from_account_label=source.label,
@@ -135,26 +141,71 @@ def _stock(
         limit_price=_money(options.numbers[p["limit_price"]]) if limit else None,
         currency=quote.currency,
     )
+    return [conversion, order] if conversion else [order]
 
 
 def _shares(
-    oid: str, quote: QuoteResponse, options: Options, data: UserData, spent: dict[str, Decimal]
-) -> tuple[int, str]:
-    """The share count and the account a relative sum names ("default" when none)."""
+    oid: str,
+    quote: QuoteResponse,
+    buying: bool,
+    options: Options,
+    data: UserData,
+    spent: dict[str, Decimal],
+) -> tuple[int, str, FxConversionAction | None]:
+    """The share count, the order's account ("default" when none) and any conversion (§10.3)."""
     if not oid.startswith("m"):
-        return _whole(options.numbers[oid]), "default"
+        return _whole(options.numbers[oid]), "default", None
     oid = "n" + oid[1:]
     n = options.said[oid]
     money = _sum(oid, options, data, spent)
-    if n.currency != quote.currency:
-        raise Unbuildable(f"I can't convert {n.currency} to {quote.currency} yet.")
-    quantity = int(money / quote.price)  # whole shares, rounding down (§10.3)
+    rate = None if n.currency == quote.currency else _rate(n.currency, quote.currency)
+    worth = money if rate is None else (money * rate.rate).quantize(CENT, rounding=ROUND_DOWN)
+    quantity = int(worth / quote.price)  # whole shares, rounding down
     if quantity < 1:
         raise Unbuildable(
             f"{n.currency} {money:,} doesn't buy one {quote.company_name} share "
             f"({quote.price} {quote.currency})."
         )
-    return quantity, _from(options, oid, "default")
+    if rate is None:
+        return quantity, _from(options, oid, "default"), None
+    if not buying:  # the proceeds stay in the share's currency, so nothing is converted
+        return quantity, "default", None
+    conversion = _conversion(oid, money, worth, rate, options, data, spent)
+    return quantity, conversion.to_account_id, conversion
+
+
+def _rate(sell: str, buy: str) -> FxResponse:
+    try:
+        return readonly.get_fx_rate(sell, buy)
+    except LookupError:
+        raise Unbuildable(f"I can't convert {sell} to {buy}.") from None
+
+
+def _conversion(
+    oid: str,
+    money: Decimal,
+    worth: Decimal,
+    rate: FxResponse,
+    options: Options,
+    data: UserData,
+    spent: dict[str, Decimal],
+) -> FxConversionAction:
+    source = _account(data, _from(options, oid, "default"), "savings", currency=rate.from_)
+    target = _account(data, "default", prefer="invest", currency=rate.to)
+    _spend(spent, source, money)
+    return FxConversionAction(
+        type="fx_conversion",
+        from_account_id=source.account_id,
+        from_account_label=source.label,
+        to_account_id=target.account_id,
+        to_account_label=target.label,
+        sell_amount=money.quantize(CENT),
+        sell_currency=rate.from_,
+        buy_amount=worth,
+        buy_currency=rate.to,
+        rate=rate.rate,
+        rate_as_of=rate.as_of,
+    )
 
 
 def _account(data: UserData, chosen: str, prefer: str, currency: str | None = None) -> Account:
@@ -251,6 +302,7 @@ def amend(
         return current, {i: v for i, v in scenario.items() if v} or None
     if not changed:
         return current, None
+    _no_stale_conversion(current, changed)
     actions = [
         _amended(a, changed.get(i, {}), options, data) for i, a in enumerate(current.actions)
     ]
@@ -266,6 +318,18 @@ def amend(
         }
     )
     return updated, None
+
+
+def _no_stale_conversion(current: Draft, changed: dict[int, dict]) -> None:
+    # A conversion is derived from the actions before it; amending doesn't recompute it.
+    types = [a.type for a in current.actions]
+    if "fx_conversion" not in types:
+        return
+    last = len(types) - 1 - types[::-1].index("fx_conversion")
+    if any(i < last and ({"amount", "from"} & fields.keys()) for i, fields in changed.items()):
+        raise Unbuildable(
+            "Please say the whole command again to change an amount that a conversion depends on."
+        )
 
 
 def _amended(action, fields: dict[str, str], options: Options, data: UserData):

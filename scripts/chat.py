@@ -8,6 +8,7 @@ Contract: CONTRACTS §3.1 (/api/understand); needs MAKERS_MODELS_KEY; about one 
 import argparse
 import sys
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # so it runs from any folder
@@ -16,10 +17,10 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from app import config  # noqa: E402
 from app.bank import readonly  # noqa: E402
-from app.contracts import NONE_OPTION_ID  # noqa: E402
+from app.contracts import NONE_OPTION_ID, FxResponse  # noqa: E402
 from app.intent import jev  # noqa: E402
 from app.main import app  # noqa: E402
-from tests.conftest import BANK, QUOTES  # noqa: E402
+from tests.conftest import BANK, FX, QUOTES  # noqa: E402
 
 HELP = (
     "Say a banking command. While a question is open, type a chip number (0 = none of these);\n"
@@ -64,6 +65,17 @@ def _use_mock_bank() -> None:
         readonly.get_accounts = lambda user_id: BANK
         readonly.list_quotes = lambda: QUOTES
         readonly.get_bill_reference = lambda biller_id: "4120-XXXX-XXXX-9012"
+        readonly.get_fx_rate = _fx_rate
+
+
+def _fx_rate(from_currency: str, to_currency: str) -> FxResponse:
+    if (from_currency, to_currency) not in FX:
+        raise LookupError(f"no rate for {from_currency} to {to_currency}")
+    rate = FX[from_currency, to_currency]
+    as_of = datetime.now().astimezone().isoformat()
+    return FxResponse.model_validate(
+        {"from": from_currency, "to": to_currency, "rate": rate, "as_of": as_of}
+    )
 
 
 def _show_what_jev_reads() -> None:
@@ -121,6 +133,11 @@ def _say(action: dict) -> str:
     if action["type"] == "transfer":
         money = f"{action['amount']} {action['currency']}"
         return f"transfer {money} to {action['to_payee_label']} from {source}"
+    if action["type"] == "fx_conversion":
+        sold = f"{action['sell_amount']} {action['sell_currency']}"
+        got = f"{action['buy_amount']} {action['buy_currency']}"
+        into, rate = action["to_account_label"], action["rate"]
+        return f"convert {sold} from {source} to {got} into {into} at {rate}"
     if action["type"] == "bill_payment":
         money = f"{action['amount']} {action['currency']}"
         return f"pay {money} to {action['biller_label']} from {source}"

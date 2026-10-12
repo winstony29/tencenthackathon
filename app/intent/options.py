@@ -452,6 +452,8 @@ def build_followup(text: str, draft: Draft, data: UserData, scope: str) -> Optio
     ]
     spec = {"objective": ("What does the user want to do now?", [*OBJECTIVES, NEW_TASK])}
     for i, action in enumerate(draft.actions):
+        if action.type == "fx_conversion":
+            continue  # derived by code from the other actions, so there is nothing to ask
         task = f"For task {i + 1} ({describe(action)})"
         if action.type == "stock_order":
             spec[f"a{i}_quantity"] = (
@@ -488,6 +490,11 @@ def describe(action) -> str:
         return f"transfer to {action.to_payee_label} from {action.from_account_label}"
     if action.type == "bill_payment":
         return f"pay {action.biller_label} from {action.from_account_label}"
+    if action.type == "fx_conversion":
+        return (
+            f"convert {action.sell_currency} from {action.from_account_label} "
+            f"to {action.buy_currency}"
+        )
     return f"{action.side} {action.ticker} shares"
 
 
