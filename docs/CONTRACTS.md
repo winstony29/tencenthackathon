@@ -1,7 +1,7 @@
 # Contracts
 
 **Purpose:** the exact data shapes and endpoints every part of the system agrees on. `app/contracts.py` implements this file as Pydantic models. If the two disagree, this file wins.
-**Owner:** Winston (keeper) · **Version:** 0.5 (0.6 proposed: §3.1 answers) · **Last updated:** 2026-10-14
+**Owner:** Winston (keeper) · **Version:** 0.5 (proposed: 0.6 §3.1 answers, 0.7 own-account moves) · **Last updated:** 2026-10-14
 
 > Changing anything here needs all three teammates to agree. Then bump the version, update `app/contracts.py` in the same commit, and add a `docs/DECISIONS.md` entry.
 
@@ -65,6 +65,15 @@ Actions can include an `fx_conversion`. Code builds it; the user never says it. 
  "amount": "1240.00", "currency": "SGD"}
 ```
 
+**account_transfer** (*v0.7, proposed*): moves money between two of the user's own accounts in one currency ("move 500 from current to savings").
+```json
+{"type": "account_transfer",
+ "from_account_id": "acc_5678", "from_account_label": "Current …5678",
+ "to_account_id": "acc_1234", "to_account_label": "Savings …1234",
+ "amount": "500.00", "currency": "SGD"}
+```
+`to_account_id` differs from `from_account_id`; both accounts are in `currency`. A move between accounts in different currencies ("move 1,000 from savings to invest") is a standalone `fx_conversion` instead (below). At most one `account_transfer` per draft, like the other types. Whether limits and the extra check apply to it is a bank rule (D-007).
+
 **stock_order**
 ```json
 {"type": "stock_order",
@@ -92,7 +101,7 @@ Actions can include an `fx_conversion`. Code builds it; the user never says it. 
  "buy_amount": "1998.00", "buy_currency": "USD",
  "rate": "0.740000", "rate_as_of": "2026-10-13T09:30:00+08:00"}
 ```
-`sell_amount` and `buy_amount` are money strings. `rate` is a decimal string with 6 places: one unit of `sell_currency` buys `rate` units of `buy_currency`. `rate_as_of` is an ISO time. `buy_amount` = `sell_amount` × `rate`, rounded down to 2 places. Code adds it only when the money and the purchase are in different currencies. It never counts against the limit of one transfer, one bill payment and one share order. The rates come from `GET /api/fx` (§3.3).
+`sell_amount` and `buy_amount` are money strings. `rate` is a decimal string with 6 places: one unit of `sell_currency` buys `rate` units of `buy_currency`. `rate_as_of` is an ISO time. `buy_amount` = `sell_amount` × `rate`, rounded down to 2 places. Code adds it when the money and the purchase are in different currencies, and (*v0.7, proposed*) on its own when the user moves money between their own accounts in different currencies or asks to convert ("convert 1,000 SGD to USD"). It never counts against the limit of one transfer, one bill payment and one share order. The rates come from `GET /api/fx` (§3.3).
 
 ## 3. Endpoints
 
@@ -157,19 +166,32 @@ Responses (one of). Each also carries `meta` (above), left out of the examples b
 `reason` is `user_declined` (the user picked "None of these", `option_id: "none"`) or `too_many_questions` (still unsure after 3 questions; message "I couldn't work out what you meant. Please try again.").
 An answer for an unknown or expired session returns 404 `not_found`; the UI starts a new command.
 
-**Answers** (*v0.6, proposed*). A question about the user's own data that moves no money ("What's my balance?", "How much is in savings?") gets an `answer`, not a draft:
+**Answers** (*v0.6, proposed*). A question about the user's own data, or a market figure, that moves no money gets an `answer`, not a draft:
 ```json
 {"status": "answer", "kind": "balance",
  "accounts": [{"account_id": "acc_1234", "label": "Savings …1234", "type": "savings",
                "currency": "SGD", "balance": "3200.00"}],
  "meta": {"latency_ms": 900, "model": "jev-1.13.0", "source": "jev", "phrasings": 1, "cached": false}}
 ```
-- `kind` is `balance` (the only kind in v0.6). `accounts` lists the account the user named, or every account when none is named, in the shape of `GET /api/accounts`.
-- Jev only says that a balance is asked for and which account (or "all"), picking from options code built; it never sees a balance. Code reads the figures through `readonly.get_accounts` (D-026 still holds).
+Each `kind` carries one payload field:
+
+| `kind` | Example question | Jev picks (from options code built) | Payload |
+|---|---|---|---|
+| `balance` | "What's my balance?", "How much is in savings?" | account, or all | `accounts`: as in `GET /api/accounts` |
+| `transactions` | "What did I spend this week?" | account, or all; period: `latest` (5 most recent, the default), `7d`, `30d` | `transactions`: `transaction_id`, `time`, `account_id`, `account_label`, `description`, `direction` (`credit` or `debit`), `amount`, `currency`, newest first |
+| `bills` | "What bills are coming up?", "When's my card bill due?" | nothing | `bills`: `label`, `amount`, `currency`, `due_at`, `account_id`, `account_label`, soonest first; every unpaid expense in the schedule, including the card bill |
+| `holdings` | "What shares do I have?" | nothing | `holdings`: `ticker`, `company_name`, `quantity`, `price`, `currency`, `value` (quantity × price, an estimate), `as_of` |
+| `quote` | "What's Apple trading at?" | ticker | `quotes`: as in `GET /api/quote` |
+| `fx_rate` | "What's the SGD to USD rate?" | currency pair | `rate`: as in `GET /api/fx` |
+| `payees` | "Who can I send money to?" | nothing | `payees`: as in `GET /api/accounts` |
+| `help` | "What can you do?" | nothing | `message`: a fixed list of what the agent can do |
+
+- One Jev question (`info`) says which kind is asked, or none; a second picks the account, period, ticker or pair when the kind needs one. Jev never sees a figure. Code reads every value through `readonly` (D-026 still holds).
 - An `answer` is never validated, signed or executed. It ends the session, like `unsupported`; the next command gets a new `session_id`.
 - If the same command also asks to move money ("what's in savings and send 50 to John"), the reply is the `draft`; the cards already show each account.
-- An unsure account pick asks a normal `question` first ("Which account?", chips for each account and "All accounts").
-- Status `answer` is reserved for other read-only questions later (`kind` grows); a UI shows a `kind` it doesn't know as `unsupported`.
+- An unsure pick asks a normal `question` first ("What would you like to know?", "Which account?").
+- A UI shows a `kind` it doesn't know as `unsupported`, so later kinds don't break older UIs.
+- Jayanth adds `list_transactions(user_id) -> list[dict]` and `list_bills(user_id) -> list[dict]` to `readonly` (§3.3).
 
 **Spoken answers.** While a question is open (the last reply in the session had `status: "question"`), a new `transcript` with the same `session_id` is read as the answer to that question. The request is unchanged: `{"user_id": "u_demo", "session_id": "s_41b9", "transcript": "John Smith"}`. Tapping a chip still sends `answer` with an `option_id`. Jev picks from the offered options, or says the user rejects them all, or says the user is asking for something different. The replies use the existing shapes:
 - A sure pick of an offered option: the same reply as tapping that chip (usually the `draft`, or the next `question`).
@@ -342,6 +364,7 @@ One card per action, in draft order. A **Convert currency** card sits between th
 | Action type | Card title | Fields, in this order |
 |---|---|---|
 | transfer | Transfer | To (`to_payee_label`) · Amount (`amount` + `currency`) · From (`from_account_label`) |
+| account_transfer (*v0.7, proposed*) | Move money | From (`from_account_label`) · To (`to_account_label`) · Amount (`amount` + `currency`) |
 | bill_payment | Pay bill | Biller (`biller_label`) · Reference (`bill_reference`) · Amount · From |
 | fx_conversion | Convert currency | From (`from_account_label`) · Sell (`sell_amount` + `sell_currency`) · Rate ("1 SGD = 0.740000 USD", with `rate_as_of`) · Get (`buy_amount` + `buy_currency`) · Into (`to_account_label`) |
 | stock_order | Buy shares / Sell shares | Stock (`ticker` · `company_name`) · Quantity · Order type (market / limit + `limit_price`) · Price now (from `/api/quote`, marked "estimate") · Estimated total (quantity × price, marked "estimate") · Pay from / Pay into |
@@ -411,5 +434,11 @@ Voice: if the browser's built-in speech recognition gives live text, the UI may 
 ## 12. Changes in v0.6 (proposed)
 
 Needs Darren's and Jayanth's agreement before it is final.
-- **Answers:** a new `/api/understand` reply, `status: "answer"`, for questions that move no money. v0.6 has one kind, `balance` (§3.1). Intent side: built behind the proposal (Winston). UI side: Darren adds the **answer** card (§5). Bank side: nothing new; balances come from `readonly.get_accounts`.
+- **Answers:** a new `/api/understand` reply, `status: "answer"`, for questions that move no money, in eight kinds: `balance`, `transactions`, `bills`, `holdings`, `quote`, `fx_rate`, `payees`, `help` (§3.1). Bank side: `readonly.list_transactions` and `readonly.list_bills`. UI side: one **answer** card (§5).
 - **Audit:** new intent event `answer_given` (§8).
+
+## 13. Changes in v0.7 (proposed)
+
+Needs Darren's and Jayanth's agreement before it is final.
+- **Own-account moves:** new action `account_transfer` (§2.1) and card **Move money** (§5). Between currencies, a standalone `fx_conversion`, which also covers "convert 1,000 SGD to USD".
+- **Bank:** the ledger applies `account_transfer` like a transfer whose payee is the user's own account; D-007 decides limits.

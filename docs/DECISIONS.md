@@ -285,3 +285,10 @@ Verification: 29 frontend unit tests, TypeScript, targeted ESLint, production st
 **Decision:** `/api/understand` gains `status: "answer"` for questions that move no money. The first `kind` is `balance`: Jev says a balance is asked for and which account (or all); code reads the figures from `readonly.get_accounts`. An answer is never validated or signed and ends the session. A command that also moves money gets the draft instead.
 **Why:** "What's my balance?" is the most basic voice-banking request and today gets "unsupported". A separate status keeps read-only replies out of the confirm-and-sign flow, and `kind` leaves room for more read-only questions (transactions, bills, holdings) without another status.
 **Rejected:** A draft with a "balance" action (it would show a Confirm & sign button for something that moves nothing); answering in free LLM text (Jev never writes values, AGENTS §4).
+**Update (2026-10-14):** v0.6 now proposes eight read-only kinds (`balance`, `transactions`, `bills`, `holdings`, `quote`, `fx_rate`, `payees`, `help`), chosen by one Jev question (`info`) instead of a yes/no question per kind. A transactions question with no period returns the latest 5.
+
+## D-036 · Contracts v0.7 (proposed): moving money between your own accounts
+2026-10-14 · Winston · Status: open (Darren and Jayanth to agree)
+**Decision:** New action `account_transfer` for moves between the user's own accounts in one currency, shown as a **Move money** card. A move between currencies is a standalone `fx_conversion`, which also makes "convert 1,000 SGD to USD" work. Limits and the extra check for own-account moves are Jayanth's call under D-007.
+**Why:** Moving money between your own accounts is one of the most common banking requests, and `transfer` only pays payees. `fx_conversion` already describes a move between two own accounts, so reusing it avoids a second shape for the cross-currency case.
+**Rejected:** Treating own accounts as payees (they would need payee IDs, and a payee is someone else); same-currency only (leaves "move 1,000 from savings to invest" unsupported).
