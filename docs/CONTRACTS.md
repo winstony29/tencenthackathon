@@ -1,7 +1,7 @@
 # Contracts
 
 **Purpose:** the exact data shapes and endpoints every part of the system agrees on. `app/contracts.py` implements this file as Pydantic models. If the two disagree, this file wins.
-**Owner:** Winston (keeper) · **Version:** 0.4 · **Last updated:** 2026-10-13
+**Owner:** Winston (keeper) · **Version:** 0.5 · **Last updated:** 2026-10-14
 
 > Changing anything here needs all three teammates to agree. Then bump the version, update `app/contracts.py` in the same commit, and add a `docs/DECISIONS.md` entry.
 
@@ -286,6 +286,34 @@ The intent engine reads user data only through `app/bank/readonly.py` (AGENTS §
 
 Every area writes events through `app/audit.py`: `append(actor: str, event: str, data: dict) -> None`, where `actor` is `intent`, `validation` or `bank`. Event names are in §8.
 
+### 3.4 Presentation (Darren)
+
+Jev arranges the screen: it picks a layout and which supporting panels to show. **It never sees or changes the transaction.** The request carries only categories, never names, amounts, IDs or the transcript (D-021). The server offers Jev only choices it has checked are allowed, and checks every answer again; the UI checks the result once more and falls back to a fixed layout on any error. Card contents always come from the draft (§5). The models live in `web/presentation_v4.py`, not `app/contracts.py`; Darren keeps them.
+
+**`POST /api/presentation-v4/evaluate`** (V4 and V5): one stage of composing a screen. V5 calls it twice per screen: first to choose the layout and panels, then to place and order them.
+Request:
+```json
+{"context": {"objective": "prepare", "action_types": ["transfer"],
+             "financial_context": false, "funding": "sufficient", "commitments": "unknown",
+             "reserve": "unknown", "alternatives": true, "viewport": "desktop"},
+ "selected": [],
+ "questions": {"root": ["Workspace_all_focus", "unavailable"], "select_0": ["omit", "use:…"]}}
+```
+- `objective`: `prepare`, `assess_affordability`, `simulate` or `review`. The UI sends `check_recipient` as `prepare`.
+- `action_types`: 1 to 4 of `transfer`, `bill_payment`, `stock_order`, `fx_conversion`, in draft order.
+- `funding` is `sufficient`, `shortfall` or `unknown`; `commitments` is `present`, `none` or `unknown`; `reserve` is `retained`, `breached` or `unknown`. `alternatives` says whether another account in the same currency exists.
+- `selected` is empty for the first stage. For the second it lists the panel IDs chosen in the first, layout first.
+- `questions` maps each question to the option IDs the UI offers. It must equal the set the server derives from `context` and `selected` from the catalog in `web/v4-catalog.json`, or the request is refused.
+
+Response:
+```json
+{"answers": {"root": {"choice": "Workspace_all_focus", "confidence": 0.93}},
+ "model": "jev-1.13.0", "usage": {"input_tokens": 812, "output_tokens": 40}, "latency_ms": 640}
+```
+Errors: 400 `bad_request` for a context or question set outside the catalog; 503 `upstream_error` when the server has no Jev key; 502 `upstream_error` when Jev fails or answers outside the offered choices. On any error the UI uses its fixed layout.
+
+**Older routes**, kept for V2 and V3, follow the same rules with their own catalogs: `POST /api/presentation-demo` (V2, `web/jev.py`) and `POST /api/presentation-v3` (V3, `web/presentation.py`). Neither accepts `fx_conversion`; V2 and V3 refuse drafts that contain one.
+
 ## 4. Signing
 
 1. On first load, the UI creates an ECDSA P-256 key pair with WebCrypto, `extractable: false`, stores it in IndexedDB, and sends the public key to `/api/device/register`.
@@ -308,7 +336,7 @@ Other states the UI must show: **preview** (empty card of the guessed type while
 
 ## 6. Errors
 
-Malformed requests return HTTP 400 with `{"error": {"code": "bad_request", "message": "…"}}`. Unknown user or session returns 404 with code `not_found`. Upstream failures (Jev, LLM, ASR down) return 502 with code `upstream_error`. Business outcomes such as `rejected` or `mismatch` return HTTP 200 with the status shown above.
+Malformed requests return HTTP 400 with `{"error": {"code": "bad_request", "message": "…"}}`. Unknown user or session returns 404 with code `not_found`. Upstream failures (Jev, LLM, ASR down) return 502 with code `upstream_error`; a missing server key for a model returns 503 with the same code. Business outcomes such as `rejected` or `mismatch` return HTTP 200 with the status shown above.
 
 ## 7. Stubs
 
@@ -345,6 +373,7 @@ Everything is triggered by the user. The only repeating call is the stock price 
 | `/api/validate` → `/api/challenge` → `/api/execute` | A draft arrives; the user taps **Confirm & sign** | In sequence |
 | `/api/quote` | A stock card is on screen | Every 10 s |
 | `/api/audit` | The audit page opens or is refreshed | Once |
+| `/api/presentation-v4/evaluate` | A draft arrives, or the objective changes | Two calls in sequence (§3.4); on error use the fixed layout |
 | **Cancel** | Any time | Abort the call in flight and drop the `session_id`; the next command gets a new one |
 
 Voice: if the browser's built-in speech recognition gives live text, the UI may send it to `/api/preview` while the user speaks. Only the Tencent ASR transcript goes to `/api/understand`.
@@ -358,3 +387,8 @@ Voice: if the browser's built-in speech recognition gives live text, the UI may 
 - **Amounts are SGD by default** unless the user names another currency (§1).
 - **Already live (D-026):** Jev never sees real amounts. Every number the user says is swapped for a stand-in, and balances never appear in Jev's options (§3.1, §8). Share counts and limit prices are only numbers the user said, never a fraction of a balance.
 - **Testing:** `scripts/chat.py` runs a text conversation with `/api/understand` against live Jev, turn by turn (`.venv/bin/python scripts/chat.py -v`).
+
+## 11. Changes in v0.5
+
+- **Presentation endpoints documented (§3.4).** They were already in use by V2 to V5; this records them. `action_types` now includes `fx_conversion` for V4 and V5.
+- **503:** a missing model key returns 503 `upstream_error` (§6).

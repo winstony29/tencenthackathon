@@ -273,3 +273,9 @@ Verification: 29 frontend unit tests, TypeScript, targeted ESLint, production st
 - **Intent (Winston):** follow-up options leave out the current account and payee, and the gate counts "default" and the account it resolves to as one pick. Both fixes come from live runs on the real seed, where Jev split its probability between two options that build the same draft.
 **Why:** The pieces were built against stubs and fixtures; nothing joined them. Integrating on one branch first shows every gap at once.
 **Rejected:** Leaving each area to integrate itself (the gaps sit between areas); building J-05 to J-08 here (Jayanth may be mid-way through them); mock bills on real drafts (mixes mock and real data on one screen).
+
+## D-034 · Contracts v0.5: document the presentation endpoints
+2026-10-14 · Winston · Status: decided (records endpoints already in use; Darren reviews §3.4)
+**Decision:** CONTRACTS §3.4 documents `POST /api/presentation-v4/evaluate` (V4, V5) and lists `/api/presentation-demo` (V2) and `/api/presentation-v3` (V3). Their models stay in `web/` with Darren. A missing model key returns 503 `upstream_error`.
+**Why:** V5 calls Jev twice per screen through these endpoints, on the same key as the intent engine, but only Darren's decision entries (D-019, D-021, D-029) described them. Changes to them should go through the same agreement as every other endpoint.
+**Rejected:** Leaving them undocumented (a change to them needed no one's agreement).
