@@ -1,7 +1,7 @@
 # Contracts
 
 **Purpose:** the exact data shapes and endpoints every part of the system agrees on. `app/contracts.py` implements this file as Pydantic models. If the two disagree, this file wins.
-**Owner:** Winston (keeper) · **Version:** 0.5 · **Last updated:** 2026-10-14
+**Owner:** Winston (keeper) · **Version:** 0.5 (0.6 proposed: §3.1 answers) · **Last updated:** 2026-10-14
 
 > Changing anything here needs all three teammates to agree. Then bump the version, update `app/contracts.py` in the same commit, and add a `docs/DECISIONS.md` entry.
 
@@ -156,6 +156,20 @@ Responses (one of). Each also carries `meta` (above), left out of the examples b
 ```
 `reason` is `user_declined` (the user picked "None of these", `option_id: "none"`) or `too_many_questions` (still unsure after 3 questions; message "I couldn't work out what you meant. Please try again.").
 An answer for an unknown or expired session returns 404 `not_found`; the UI starts a new command.
+
+**Answers** (*v0.6, proposed*). A question about the user's own data that moves no money ("What's my balance?", "How much is in savings?") gets an `answer`, not a draft:
+```json
+{"status": "answer", "kind": "balance",
+ "accounts": [{"account_id": "acc_1234", "label": "Savings …1234", "type": "savings",
+               "currency": "SGD", "balance": "3200.00"}],
+ "meta": {"latency_ms": 900, "model": "jev-1.13.0", "source": "jev", "phrasings": 1, "cached": false}}
+```
+- `kind` is `balance` (the only kind in v0.6). `accounts` lists the account the user named, or every account when none is named, in the shape of `GET /api/accounts`.
+- Jev only says that a balance is asked for and which account (or "all"), picking from options code built; it never sees a balance. Code reads the figures through `readonly.get_accounts` (D-026 still holds).
+- An `answer` is never validated, signed or executed. It ends the session, like `unsupported`; the next command gets a new `session_id`.
+- If the same command also asks to move money ("what's in savings and send 50 to John"), the reply is the `draft`; the cards already show each account.
+- An unsure account pick asks a normal `question` first ("Which account?", chips for each account and "All accounts").
+- Status `answer` is reserved for other read-only questions later (`kind` grows); a UI shows a `kind` it doesn't know as `unsupported`.
 
 **Spoken answers.** While a question is open (the last reply in the session had `status: "question"`), a new `transcript` with the same `session_id` is read as the answer to that question. The request is unchanged: `{"user_id": "u_demo", "session_id": "s_41b9", "transcript": "John Smith"}`. Tapping a chip still sends `answer` with an `option_id`. Jev picks from the offered options, or says the user rejects them all, or says the user is asking for something different. The replies use the existing shapes:
 - A sure pick of an offered option: the same reply as tapping that chip (usually the `draft`, or the next `question`).
@@ -332,7 +346,7 @@ One card per action, in draft order. A **Convert currency** card sits between th
 | fx_conversion | Convert currency | From (`from_account_label`) · Sell (`sell_amount` + `sell_currency`) · Rate ("1 SGD = 0.740000 USD", with `rate_as_of`) · Get (`buy_amount` + `buy_currency`) · Into (`to_account_label`) |
 | stock_order | Buy shares / Sell shares | Stock (`ticker` · `company_name`) · Quantity · Order type (market / limit + `limit_price`) · Price now (from `/api/quote`, marked "estimate") · Estimated total (quantity × price, marked "estimate") · Pay from / Pay into |
 
-Other states the UI must show: **preview** (empty card of the guessed type while typing, from `/api/preview`), **thinking** (waiting for `/api/understand`), **question** (text + one chip per option + "None of these"), **blocked**, **unsupported**, **frozen** (mismatch, listing each field), **needs extra check** (code entry), **executed** (references), **rejected** (plain-English reason).
+Other states the UI must show: **preview** (empty card of the guessed type while typing, from `/api/preview`), **thinking** (waiting for `/api/understand`), **question** (text + one chip per option + "None of these"), **answer** (*v0.6, proposed*: a read-only card listing each account's label and balance, with no confirm button), **blocked**, **unsupported**, **frozen** (mismatch, listing each field), **needs extra check** (code entry), **executed** (references), **rejected** (plain-English reason).
 
 ## 6. Errors
 
@@ -357,6 +371,7 @@ Intent side (`actor: "intent"`). Jayanth adds the validation and bank events her
 | `draft_built` | `session_id`, `draft_id` |
 | `blocked` | `session_id`, `reason` |
 | `cancelled` | `session_id`, `reason` |
+| `answer_given` (*v0.6, proposed*) | `session_id`, `kind`, `account_ids` (never the balances) |
 
 In `jev_answer`, `phrasings[].text` is the stand-in text Jev saw, with numbers swapped for stand-ins (D-026), not the transcript. Jayanth adds `fx_converted` (actor `bank`) with `draft_id`, `sell_amount`, `sell_currency`, `buy_amount`, `buy_currency`, `rate`.
 
@@ -392,3 +407,9 @@ Voice: if the browser's built-in speech recognition gives live text, the UI may 
 
 - **Presentation endpoints documented (§3.4).** They were already in use by V2 to V5; this records them. `action_types` now includes `fx_conversion` for V4 and V5.
 - **503:** a missing model key returns 503 `upstream_error` (§6).
+
+## 12. Changes in v0.6 (proposed)
+
+Needs Darren's and Jayanth's agreement before it is final.
+- **Answers:** a new `/api/understand` reply, `status: "answer"`, for questions that move no money. v0.6 has one kind, `balance` (§3.1). Intent side: built behind the proposal (Winston). UI side: Darren adds the **answer** card (§5). Bank side: nothing new; balances come from `readonly.get_accounts`.
+- **Audit:** new intent event `answer_given` (§8).

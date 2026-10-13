@@ -279,3 +279,9 @@ Verification: 29 frontend unit tests, TypeScript, targeted ESLint, production st
 **Decision:** CONTRACTS §3.4 documents `POST /api/presentation-v4/evaluate` (V4, V5) and lists `/api/presentation-demo` (V2) and `/api/presentation-v3` (V3). Their models stay in `web/` with Darren. A missing model key returns 503 `upstream_error`.
 **Why:** V5 calls Jev twice per screen through these endpoints, on the same key as the intent engine, but only Darren's decision entries (D-019, D-021, D-029) described them. Changes to them should go through the same agreement as every other endpoint.
 **Rejected:** Leaving them undocumented (a change to them needed no one's agreement).
+
+## D-035 · Contracts v0.6 (proposed): read-only answers, starting with balances
+2026-10-14 · Winston · Status: open (Darren and Jayanth to agree)
+**Decision:** `/api/understand` gains `status: "answer"` for questions that move no money. The first `kind` is `balance`: Jev says a balance is asked for and which account (or all); code reads the figures from `readonly.get_accounts`. An answer is never validated or signed and ends the session. A command that also moves money gets the draft instead.
+**Why:** "What's my balance?" is the most basic voice-banking request and today gets "unsupported". A separate status keeps read-only replies out of the confirm-and-sign flow, and `kind` leaves room for more read-only questions (transactions, bills, holdings) without another status.
+**Rejected:** A draft with a "balance" action (it would show a Confirm & sign button for something that moves nothing); answering in free LLM text (Jev never writes values, AGENTS §4).
