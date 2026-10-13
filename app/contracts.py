@@ -265,6 +265,7 @@ class TransactionEntry(ContractModel):
     direction: Literal["credit", "debit"]
     amount: Money
     currency: Currency
+    payee_id: str | None  # null when the other side isn't one of the user's payees
 
 
 class UpcomingBill(ContractModel):
@@ -274,6 +275,7 @@ class UpcomingBill(ContractModel):
     due_at: AwareDatetime
     account_id: str
     account_label: str
+    recurrence: Literal["weekly", "monthly", "yearly"] | None
 
 
 class HoldingValue(ContractModel):
