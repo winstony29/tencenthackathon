@@ -90,7 +90,9 @@ export function TaskReview({
               </Button>
             </div>
           )}
-          {reply && ["blocked", "unsupported", "cancelled"].includes(reply.status) && "message" in reply && (
+          {(reply?.status === "blocked" ||
+            reply?.status === "unsupported" ||
+            reply?.status === "cancelled") && (
             <div className="notice">
               <h2>
                 {reply.status === "blocked"
@@ -100,6 +102,15 @@ export function TaskReview({
                     : "Request cancelled"}
               </h2>
               <p>{reply.message}</p>
+              <Button variant="link" className="text-button" onClick={onCorrect}>
+                Write a new request →
+              </Button>
+            </div>
+          )}
+          {reply?.status === "answer" && (
+            <div className="notice">
+              <h2>Here’s what I found</h2>
+              <p>Answers to questions about your accounts show in the main app at /v5/.</p>
               <Button variant="link" className="text-button" onClick={onCorrect}>
                 Write a new request →
               </Button>

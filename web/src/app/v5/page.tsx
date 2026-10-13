@@ -4,16 +4,23 @@ import Link from "next/link";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { ArrowUpRight, RotateCcw, X } from "lucide-react";
 import { V5Orb } from "@/components/v5-orb";
-import { V5Cards } from "@/components/v5-cards";
+import { V5Answer, V5Cards } from "@/components/v5-cards";
 import { compose, fallback, type Composition } from "@/lib/v4-composition";
 import { contextFor } from "@/lib/v4-catalog";
 import { initialState, reducer, type Handoff, type State } from "@/lib/v4-state";
 import { post, request } from "@/lib/api";
-import { accountsSchema, quoteSchema, understandSchema, type Understand } from "@/lib/contracts";
+import {
+  accountsSchema,
+  answerSchema,
+  quoteSchema,
+  understandSchema,
+  type Answer,
+  type Understand,
+} from "@/lib/contracts";
 import "../v4/v4.css";
 import "./v5.css";
 
-type Phase = "idle" | "choose" | "clarify" | "composing" | "workspace" | "blocked";
+type Phase = "idle" | "choose" | "clarify" | "composing" | "workspace" | "answer" | "blocked";
 type Question = Extract<Understand, { status: "question" }>["question"];
 type DraftReply = Extract<Understand, { status: "draft" }>;
 const USER = "u_demo";
@@ -67,6 +74,7 @@ export default function V5() {
   const [bankLocked, setBankLocked] = useState(false);
   const [text, setText] = useState("");
   const [question, setQuestion] = useState<Question | null>(null);
+  const [found, setFound] = useState<Answer | null>(null);
   const [stopped, setStopped] = useState({ title: "", message: "" });
   const session = useRef("");
   const current = useRef(state);
@@ -155,6 +163,16 @@ export default function V5() {
       if (reply.status === "question") {
         setQuestion(reply.question);
         setPhase("clarify");
+        return;
+      }
+      if (reply.status === "answer") {
+        session.current = "";
+        setQuestion(null);
+        const known = answerSchema.safeParse(reply);
+        // A kind this UI doesn't know yet shows as unsupported (CONTRACTS §3.1 answers).
+        if (!known.success) return stop("Nothing was sent.", "I can't show that answer here yet.");
+        setFound(known.data);
+        setPhase("answer");
         return;
       }
       if (reply.status !== "draft")
@@ -301,7 +319,7 @@ export default function V5() {
             )}
           </AnimatePresence>
 
-          {(phase === "clarify" || phase === "blocked" || phase === "workspace") && (
+          {(phase === "clarify" || phase === "blocked" || phase === "workspace" || phase === "answer") && (
             <motion.div
               layoutId={reduced ? undefined : "v5-surface"}
               transition={transition}
@@ -355,6 +373,7 @@ export default function V5() {
                   )}
                 </>
               )}
+              {phase === "answer" && found && <V5Answer answer={found} onDone={reset} />}
               {phase === "blocked" && (
                 <>
                   <div className="v5-result-icon">

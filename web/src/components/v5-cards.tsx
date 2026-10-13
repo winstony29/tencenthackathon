@@ -5,7 +5,7 @@ import type { Composition } from "@/lib/v4-composition";
 import type { State } from "@/lib/v4-state";
 import { cents, decimal, financialRows } from "@/lib/v4-financial";
 import { displayMoney, estimatedTotal, fromCurrency } from "@/lib/money";
-import { quoteSchema, type Action, type Quote } from "@/lib/contracts";
+import { quoteSchema, type Action, type Answer, type Quote } from "@/lib/contracts";
 import { request } from "@/lib/api";
 import { V5Payment } from "./v5-payment";
 
@@ -317,5 +317,71 @@ export function V5Cards({
         <Check size={12} /> Sandbox bank · no real money
       </p>
     </div>
+  );
+}
+
+const answerTitles: Record<Answer["kind"], string> = {
+  balance: "Your balances",
+  transactions: "Recent transactions",
+  bills: "Upcoming bills",
+  holdings: "Your shares",
+  quote: "Share price",
+  fx_rate: "Exchange rate",
+  payees: "Who you can pay",
+  help: "What I can do",
+};
+const day = (iso: string) => new Date(iso).toLocaleDateString("en-SG", { day: "numeric", month: "short" });
+
+/** A read-only answer (CONTRACTS §3.1 answers): facts only, nothing to confirm or sign. */
+export function V5Answer({ answer: a, onDone }: { answer: Answer; onDone: () => void }) {
+  const rows: [string, string][] =
+    a.kind === "balance"
+      ? a.accounts.map((x) => [label(x.label), money(x.balance, x.currency)])
+      : a.kind === "transactions"
+        ? a.transactions.map((t) => [
+            `${day(t.time)} · ${t.description}`,
+            `${t.direction === "credit" ? "+" : "−"}${money(t.amount, t.currency)}`,
+          ])
+        : a.kind === "bills"
+          ? a.bills.map((b) => [`${label(b.label)} · due ${day(b.due_at)}`, money(b.amount, b.currency)])
+          : a.kind === "holdings"
+            ? a.holdings.map((h) => [
+                `${h.ticker} · ${h.quantity} shares`,
+                `${money(h.value, h.currency)} est.`,
+              ])
+            : a.kind === "quote"
+              ? a.quotes.map((q) => [`${q.ticker} · ${q.company_name}`, money(q.price, q.currency)])
+              : a.kind === "fx_rate"
+                ? [[`1 ${a.rate.from}`, `${a.rate.rate} ${a.rate.to}`]]
+                : a.kind === "payees"
+                  ? a.payees.map((p) => [p.name, label(p.label)])
+                  : [];
+  return (
+    <section className="v5-task" aria-label={answerTitles[a.kind]}>
+      <div className="v5-task-title">
+        <span>{answerTitles[a.kind]}</span>
+        <span>Nothing to sign</span>
+      </div>
+      {a.kind === "help" ? (
+        <p>{a.message}</p>
+      ) : rows.length ? (
+        <dl className="v5-facts">
+          {rows.map(([name, value], i) => (
+            <div key={i}>
+              <dt>{name}</dt>
+              <dd>{value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : (
+        <p>Nothing to show for that.</p>
+      )}
+      {(a.kind === "holdings" || a.kind === "quote") && (
+        <p className="v5-caption">Mock prices · estimates exclude fees.</p>
+      )}
+      <button className="v4-button" onClick={onDone}>
+        New request
+      </button>
+    </section>
   );
 }

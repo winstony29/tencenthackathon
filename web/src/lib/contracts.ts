@@ -104,6 +104,8 @@ export const understandSchema = z.discriminatedUnion("status", [
     message: z.string(),
     meta: metaSchema,
   }),
+  // v0.6 answers (proposed): any kind passes here; answerSchema checks the kinds this UI knows.
+  z.looseObject({ status: z.literal("answer"), kind: z.string(), meta: metaSchema }),
   z.strictObject({ status: z.literal("unsupported"), message: z.string(), meta: metaSchema }),
   z.strictObject({
     status: z.literal("cancelled"),
@@ -162,3 +164,69 @@ export type Understand = z.infer<typeof understandSchema>;
 export type Accounts = z.infer<typeof accountsSchema>;
 export type Quote = z.infer<typeof quoteSchema>;
 export type Validation = z.infer<typeof validationSchema>;
+export type Answer = z.infer<typeof answerSchema>;
+
+const answer = { status: z.literal("answer"), meta: metaSchema };
+const time = z.iso.datetime({ offset: true });
+// CONTRACTS §3.1 answers (v0.6, proposed): read-only replies; nothing here can be signed.
+export const answerSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ ...answer, kind: z.literal("balance"), accounts: accountsSchema.shape.accounts }),
+  z.strictObject({
+    ...answer,
+    kind: z.literal("transactions"),
+    transactions: z.array(
+      z.strictObject({
+        transaction_id: z.string(),
+        time,
+        account_id: z.string(),
+        account_label: z.string(),
+        description: z.string(),
+        direction: z.enum(["credit", "debit"]),
+        amount: money,
+        currency,
+      }),
+    ),
+  }),
+  z.strictObject({
+    ...answer,
+    kind: z.literal("bills"),
+    bills: z.array(
+      z.strictObject({
+        label: z.string(),
+        amount: money,
+        currency,
+        due_at: time,
+        account_id: z.string(),
+        account_label: z.string(),
+      }),
+    ),
+  }),
+  z.strictObject({
+    ...answer,
+    kind: z.literal("holdings"),
+    holdings: z.array(
+      z.strictObject({
+        ticker: z.string(),
+        company_name: z.string(),
+        quantity: z.number().int().nonnegative(),
+        price: money,
+        currency,
+        value: money,
+        as_of: time,
+      }),
+    ),
+  }),
+  z.strictObject({ ...answer, kind: z.literal("quote"), quotes: z.array(quoteSchema) }),
+  z.strictObject({
+    ...answer,
+    kind: z.literal("fx_rate"),
+    rate: z.strictObject({
+      from: currency,
+      to: currency,
+      rate: z.string().regex(/^\d+\.\d{6}$/),
+      as_of: time,
+    }),
+  }),
+  z.strictObject({ ...answer, kind: z.literal("payees"), payees: accountsSchema.shape.payees }),
+  z.strictObject({ ...answer, kind: z.literal("help"), message: z.string() }),
+]);

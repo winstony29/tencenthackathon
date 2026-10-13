@@ -130,6 +130,9 @@ function understand(body, sessions) {
       meta,
     };
   if (said === "Pay my card bill and buy 100 Apple shares") return draftReply([bill, shares], said);
+  if (said === "What's my balance?")
+    return { status: "answer", kind: "balance", accounts: accounts.accounts, meta };
+  if (said === "What's my credit score?") return { status: "answer", kind: "credit_score", score: 1, meta };
   if (/ignore previous instructions/i.test(said))
     return {
       status: "blocked",
@@ -377,6 +380,35 @@ test(
       await page.getByLabel("What would you like to do?").fill("what's the weather");
       await page.getByRole("button", { name: "Send request" }).click();
       await page.getByRole("heading", { name: "Nothing was sent." }).waitFor();
+      assert.deepEqual(calls, []);
+    } finally {
+      await browser.close();
+    }
+  },
+);
+
+test(
+  "V5 shows read-only answers with nothing to sign, and unknown kinds as unsupported",
+  { timeout: 30000 },
+  async () => {
+    const browser = await chromium.launch({ executablePath, headless: true });
+    try {
+      const page = await browser.newPage({ reducedMotion: "reduce" });
+      const calls = await setup(page);
+      for (const [text, expected] of [
+        ["What's my balance?", "Your balances"],
+        ["What's my credit score?", "Nothing was sent."],
+      ]) {
+        await page.getByRole("button", { name: "Start over", exact: true }).first().click();
+        await page.getByRole("button", { name: "Choose a banking request" }).click();
+        await page.getByLabel("What would you like to do?").fill(text);
+        await page.getByRole("button", { name: "Send request" }).click();
+        if (expected === "Your balances") {
+          await page.getByRole("region", { name: expected }).waitFor();
+          await page.getByText("S$3,200.00").waitFor();
+          assert.equal(await page.getByRole("button", { name: /now|Confirm/ }).count(), 0);
+        } else await page.getByRole("heading", { name: expected }).waitFor();
+      }
       assert.deepEqual(calls, []);
     } finally {
       await browser.close();
