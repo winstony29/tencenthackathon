@@ -238,12 +238,95 @@ class CancelledResponse(ContractModel):
     meta: Meta
 
 
-class AnswerResponse(ContractModel):
-    # §3.1 answers (v0.6, proposed): a read-only reply; nothing is validated or signed.
+# §3.1 answers (v0.6, proposed): read-only replies; nothing is validated or signed.
+
+
+class TransactionEntry(ContractModel):
+    transaction_id: str
+    time: AwareDatetime
+    account_id: str
+    account_label: str
+    description: str
+    direction: Literal["credit", "debit"]
+    amount: Money
+    currency: Currency
+
+
+class UpcomingBill(ContractModel):
+    label: str
+    amount: Money
+    currency: Currency
+    due_at: AwareDatetime
+    account_id: str
+    account_label: str
+
+
+class HoldingValue(ContractModel):
+    ticker: str
+    company_name: str
+    quantity: int = Field(ge=0)
+    price: Money
+    currency: Currency
+    value: Money  # quantity × price, an estimate
+    as_of: AwareDatetime
+
+
+class _Answer(ContractModel):
     status: Literal["answer"]
+    meta: Meta
+
+
+class BalanceAnswer(_Answer):
     kind: Literal["balance"]
     accounts: list["Account"]
-    meta: Meta
+
+
+class TransactionsAnswer(_Answer):
+    kind: Literal["transactions"]
+    transactions: list[TransactionEntry]
+
+
+class BillsAnswer(_Answer):
+    kind: Literal["bills"]
+    bills: list[UpcomingBill]
+
+
+class HoldingsAnswer(_Answer):
+    kind: Literal["holdings"]
+    holdings: list[HoldingValue]
+
+
+class QuoteAnswer(_Answer):
+    kind: Literal["quote"]
+    quotes: list["QuoteResponse"]
+
+
+class FxRateAnswer(_Answer):
+    kind: Literal["fx_rate"]
+    rate: "FxResponse"
+
+
+class PayeesAnswer(_Answer):
+    kind: Literal["payees"]
+    payees: list["Payee"]
+
+
+class HelpAnswer(_Answer):
+    kind: Literal["help"]
+    message: str
+
+
+AnswerResponse = Annotated[
+    BalanceAnswer
+    | TransactionsAnswer
+    | BillsAnswer
+    | HoldingsAnswer
+    | QuoteAnswer
+    | FxRateAnswer
+    | PayeesAnswer
+    | HelpAnswer,
+    Field(discriminator="kind"),
+]
 
 
 UnderstandResponse = Annotated[
