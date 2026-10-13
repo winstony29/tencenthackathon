@@ -20,6 +20,7 @@ from app.contracts import (
     Evidence,
     FxConversionAction,
     FxResponse,
+    HoldingValue,
     Objective,
     QuoteResponse,
     Scenario,
@@ -41,6 +42,58 @@ _MENTIONS = {
 
 class Unbuildable(Exception):
     """The picks are trustworthy but can't make a valid action; the message tells the user why."""
+
+
+HELP = (
+    "I can send money to your payees, pay your card bill, buy or sell shares, and convert "
+    "currency for a purchase. I can also tell you your balances, recent transactions, "
+    "upcoming bills, your shares, share prices, exchange rates and who you can pay."
+)
+LATEST = 5  # transactions shown when no period is said (D-035)
+_PERIOD_DAYS = {"7d": 7, "30d": 30}
+
+
+def answer(kind: str, picks: dict[str, str], data: UserData, user_id: str) -> dict:
+    """The payload of a read-only answer (CONTRACTS §3.1 answers); every value read by code."""
+    a = data.accounts
+    if kind == "balance":
+        return {
+            "accounts": [x for x in a.accounts if picks["balance_account"] in ("all", x.account_id)]
+        }
+    if kind == "transactions":
+        which, period = picks["transactions_account"], picks["transactions_period"]
+        entries = [e for e in readonly.list_transactions(user_id) if which in ("all", e.account_id)]
+        if period == "latest":
+            return {"transactions": entries[:LATEST]}
+        since = datetime.now(ZoneInfo(config.TIMEZONE)).timestamp() - _PERIOD_DAYS[period] * 86400
+        return {"transactions": [e for e in entries if e.time.timestamp() >= since]}
+    if kind == "bills":
+        return {"bills": readonly.list_bills(user_id)}
+    if kind == "holdings":
+        quotes = {q.ticker: q for q in data.quotes}
+        return {
+            "holdings": [
+                HoldingValue(
+                    ticker=h.ticker,
+                    company_name=quotes[h.ticker].company_name,
+                    quantity=h.quantity,
+                    price=quotes[h.ticker].price,
+                    currency=quotes[h.ticker].currency,
+                    value=(quotes[h.ticker].price * h.quantity).quantize(CENT),
+                    as_of=quotes[h.ticker].as_of,
+                )
+                for h in a.holdings
+                if h.ticker in quotes
+            ]
+        }
+    if kind == "quote":  # no company named: every price
+        return {"quotes": [q for q in data.quotes if picks["ticker"] in ("none", q.ticker)]}
+    if kind == "fx_rate":
+        sell, buy = picks["fx_pair"].split("-")
+        return {"rate": _rate(sell, buy)}
+    if kind == "payees":
+        return {"payees": a.payees}
+    return {"message": HELP}
 
 
 def build(

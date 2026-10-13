@@ -331,6 +331,8 @@ def build(transcript: str, data: UserData, scope: str) -> Options:
         for x in a.accounts
     ]
     default = ("default", "No account is said.", "My usual account")
+    all_accounts = ("all", "No single account is named; every account.", "All accounts")
+    currencies = sorted({x.currency for x in a.accounts})
 
     spec = {
         "has_transfer": ("Does the text ask to send money to a person?", _ASKS_FOR["transfer"]),
@@ -413,17 +415,19 @@ def build(transcript: str, data: UserData, scope: str) -> Options:
         ),
         "limit_price": ("What price limit is said for the order?", [*said_aloud, no_number]),
         "objective": ("What does the user want to do with the task?", OBJECTIVES),
-        # A read-only question (CONTRACTS §3.1 answers). No option carries a balance (D-026).
-        "has_balance_check": (
-            "Does the text ask how much money is in the user's accounts?",
+        # Read-only questions (CONTRACTS §3.1 answers). No option carries a figure (D-026).
+        "info": ("What does the user want to know, without moving any money?", INFO_KINDS),
+        "balance_account": ("Which account's balance is asked for?", [*accounts, all_accounts]),
+        "transactions_account": ("Whose account activity is asked for?", [*accounts, all_accounts]),
+        "transactions_period": ("Over what time are past transactions asked for?", PERIODS),
+        "fx_pair": (
+            "Which exchange rate is asked for?",
             [
-                ("yes", "It asks for a balance, or how much is in an account.", "Yes"),
-                ("no", "It does not ask for a balance.", "No"),
+                (f"{x}-{y}", f"From {x} to {y}: how much {y} one {x} buys.", f"{x} to {y}")
+                for x in currencies
+                for y in currencies
+                if x != y
             ],
-        ),
-        "balance_account": (
-            "Which account's balance is asked for?",
-            [*accounts, ("all", "No single account is named; every account.", "All accounts")],
         ),
     }
     return Options(
@@ -440,6 +444,24 @@ def build(transcript: str, data: UserData, scope: str) -> Options:
         ),
     )
 
+
+# What a read-only question asks about (CONTRACTS §3.1 answers); "none" means it asks nothing.
+INFO_KINDS = [
+    ("none", "It asks to move money, or asks nothing about banking.", "None of these"),
+    ("balance", "How much money is in an account; a balance.", "My balance"),
+    ("transactions", "Past payments or money received; what was spent.", "Recent transactions"),
+    ("bills", "Bills or payments coming up; when a bill is due or what is owed.", "Upcoming bills"),
+    ("holdings", "Which shares the user owns, or what they are worth.", "My shares"),
+    ("quote", "The current price of a company's shares.", "A share price"),
+    ("fx_rate", "An exchange rate between two currencies.", "An exchange rate"),
+    ("payees", "Who the user can send money to; saved recipients.", "My payees"),
+    ("help", "What the assistant can do, or how to use it.", "What you can do"),
+]
+PERIODS = [
+    ("latest", "No time is said; the most recent ones.", "Latest"),
+    ("7d", "This week, or the last few days.", "Last 7 days"),
+    ("30d", "This month, or the last few weeks.", "Last 30 days"),
+]
 
 OBJECTIVES = [
     ("prepare", "Set the task up to be done; the default.", "Set it up"),
@@ -542,8 +564,11 @@ _ASK = {
     "has_transfer": "Do you want to send money to someone?",
     "has_bill_payment": "Do you want to pay a bill?",
     "has_stock_order": "Do you want to buy or sell shares?",
-    "has_balance_check": "Do you want to check a balance?",
+    "info": "What would you like to know?",
     "balance_account": "Which account?",
+    "transactions_account": "Which account?",
+    "transactions_period": "Over what time?",
+    "fx_pair": "Which exchange rate?",
     "several_transfers": "Is this more than one transfer?",
     "recipient": "Who should get the money?",
     "transfer_amount": "How much should I send?",

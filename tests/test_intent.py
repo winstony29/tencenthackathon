@@ -17,7 +17,7 @@ from fastapi import HTTPException
 
 from app import config
 from app.bank import readonly
-from app.contracts import AccountsResponse, Draft
+from app.contracts import AccountsResponse, Draft, TransactionEntry
 from app.intent import draft, gate, jev, options, session, shield
 from tests.conftest import BANK, QUOTES
 
@@ -1120,12 +1120,16 @@ def test_unknown_api_paths_answer_the_json_404(client) -> None:
 # --- read-only answers (CONTRACTS §3.1 answers, v0.6 proposed) ---
 
 
+def _ask_info(client, fake_jev, text: str, kind: str, **picks: dict[str, float]) -> dict:
+    fake_jev.script = {"info": {kind: SURE, "none": 1 - SURE}, **picks}
+    return _understand(client, text).json()
+
+
 def test_a_balance_question_gets_an_answer_from_the_bank_data(client, fake_jev, bank) -> None:
-    fake_jev.script = {
-        "has_balance_check": {"yes": SURE, "no": 1 - SURE},
-        "balance_account": {"acc_1234": SURE, "all": 1 - SURE},
-    }
-    reply = _understand(client, "how much is in my savings?").json()
+    reply = _ask_info(
+        client, fake_jev, "how much is in my savings?", "balance",
+        balance_account={"acc_1234": SURE, "all": 1 - SURE},
+    )  # fmt: skip
     assert (reply["status"], reply["kind"]) == ("answer", "balance")
     assert reply["accounts"] == [BANK.accounts[0].model_dump(mode="json")]
     # An answer ends the session, so nothing is left to answer or sign.
@@ -1133,37 +1137,87 @@ def test_a_balance_question_gets_an_answer_from_the_bank_data(client, fake_jev, 
 
 
 def test_no_account_named_lists_every_account(client, fake_jev, bank) -> None:
-    fake_jev.script = {
-        "has_balance_check": {"yes": SURE, "no": 1 - SURE},
-        "balance_account": {"all": SURE, "acc_1234": 1 - SURE},
-    }
-    reply = _understand(client, "what's my balance").json()
+    reply = _ask_info(
+        client, fake_jev, "what's my balance", "balance",
+        balance_account={"all": SURE, "acc_1234": 1 - SURE},
+    )  # fmt: skip
     assert [a["account_id"] for a in reply["accounts"]] == ["acc_1234", "acc_5678", "acc_7788"]
 
 
-def test_an_unsure_balance_account_asks_first(client, fake_jev, bank) -> None:
-    fake_jev.script = {
-        "has_balance_check": {"yes": SURE, "no": 1 - SURE},
-        "balance_account": {"acc_1234": 0.5, "acc_5678": 0.4, "all": 0.1},
-    }
-    reply = _understand(client, "how much do I have in my account").json()
+def test_an_unsure_account_asks_first(client, fake_jev, bank) -> None:
+    reply = _ask_info(
+        client, fake_jev, "how much do I have in my account", "balance",
+        balance_account={"acc_1234": 0.5, "acc_5678": 0.4, "all": 0.1},
+    )  # fmt: skip
     assert reply["status"] == "question" and reply["question"]["text"] == "Which account?"
     reply = _understand(client, answer=(reply["question"]["question_id"], "acc_5678")).json()
     assert [a["account_id"] for a in reply["accounts"]] == ["acc_5678"]
 
 
-def test_a_balance_question_with_a_transfer_gets_the_draft(client, fake_jev, bank) -> None:
+def test_an_unsure_kind_asks_what_they_want_to_know(client, fake_jev, bank) -> None:
+    fake_jev.script = {"info": {"balance": 0.5, "transactions": 0.45, "none": 0.05}}
+    reply = _understand(client, "show me my money stuff").json()
+    assert reply["question"]["text"] == "What would you like to know?"
+    assert [o["option_id"] for o in reply["question"]["options"]] == ["balance", "transactions"]
+
+
+def test_a_question_with_a_transfer_gets_the_draft(client, fake_jev, bank) -> None:
     fake_jev.script = {
-        "has_balance_check": {"yes": SURE, "no": 1 - SURE},
-        "balance_account": {"acc_1234": SURE, "all": 1 - SURE},
+        "info": {"balance": SURE, "none": 1 - SURE},
         "has_transfer": {"yes": SURE, "no": 1 - SURE},
         "recipient": {"pay_4521": SURE, "pay_8892": 1 - SURE},
         "transfer_amount": {"n0": SURE, "none": 1 - SURE},
     }
-    reply = _understand(client, "what's in savings, and send 50 to John Doe").json()
-    assert reply["status"] == "draft"
+    assert (
+        _understand(client, "what's in savings, and send 50 to John Doe").json()["status"]
+        == "draft"
+    )
 
 
 def test_a_non_banking_request_is_still_unsupported(client, fake_jev, bank) -> None:
     reply = _understand(client, "what's the weather tomorrow").json()
-    assert reply["status"] == "unsupported" and "balances" in reply["message"]
+    assert reply["status"] == "unsupported" and "accounts" in reply["message"]
+
+
+def test_transactions_default_to_the_latest_five(client, fake_jev, bank, monkeypatch) -> None:
+    entries = [
+        TransactionEntry(
+            transaction_id=f"tx_{i}", time=f"2026-10-{10 - i:02d}T12:00:00+08:00",
+            account_id="acc_1234", account_label="Savings …1234", description=f"Item {i}",
+            direction="debit", amount="10.00", currency="SGD",
+        )
+        for i in range(7)
+    ]  # fmt: skip
+    monkeypatch.setattr(readonly, "list_transactions", lambda user_id: entries, raising=False)
+    reply = _ask_info(
+        client, fake_jev, "what did I spend?", "transactions",
+        transactions_account={"all": SURE, "acc_1234": 1 - SURE},
+        transactions_period={"latest": SURE, "7d": 1 - SURE},
+    )  # fmt: skip
+    assert [t["transaction_id"] for t in reply["transactions"]] == [f"tx_{i}" for i in range(5)]
+
+
+def test_holdings_are_valued_at_the_quote(client, fake_jev, bank) -> None:
+    reply = _ask_info(client, fake_jev, "what shares do I own?", "holdings")
+    assert reply["holdings"] == [
+        {
+            "ticker": "AAPL", "company_name": "Apple Inc.", "quantity": 10, "price": "227.50",
+            "currency": "USD", "value": "2275.00", "as_of": "2026-10-12T09:30:00+08:00",
+        }
+    ]  # fmt: skip
+
+
+def test_quotes_rates_payees_bills_and_help(client, fake_jev, bank, monkeypatch) -> None:
+    reply = _ask_info(
+        client, fake_jev, "what's tesla at?", "quote", ticker={"TSLA": SURE, "none": 1 - SURE}
+    )
+    assert [q["ticker"] for q in reply["quotes"]] == ["TSLA"]
+    reply = _ask_info(
+        client, fake_jev, "sgd to usd rate?", "fx_rate", fx_pair={"SGD-USD": SURE, "USD-SGD": 0.03}
+    )
+    assert reply["rate"]["rate"] == "0.740000" and reply["rate"]["from"] == "SGD"
+    reply = _ask_info(client, fake_jev, "who can I pay?", "payees")
+    assert len(reply["payees"]) == 4
+    monkeypatch.setattr(readonly, "list_bills", lambda user_id: [], raising=False)
+    assert _ask_info(client, fake_jev, "any bills coming?", "bills")["bills"] == []
+    assert "balances" in _ask_info(client, fake_jev, "what can you do?", "help")["message"]

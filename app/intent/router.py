@@ -307,7 +307,7 @@ def _command_step(
 ) -> dict[str, Any]:
     decision = gate.decide(current.replies, current.answers, _amount(current), current.options)
     if not (decision.ask or decision.missing or decision.actions):
-        answered = _balance_step(request, current, meta)
+        answered = _answer_step(request, current, meta)
         if answered:
             return answered
     if decision.ask:
@@ -336,21 +336,38 @@ def _command_step(
     return _keep_draft(request, current, built, objective, None, meta)
 
 
-def _balance_step(request: UnderstandRequest, current: session.Session, meta: dict) -> dict | None:
-    """Answer "what's my balance?" when no money moves (CONTRACTS §3.1 answers, v0.6).
+# The extra picks each read-only kind needs (CONTRACTS §3.1 answers).
+_ANSWER_SLOTS = {
+    "balance": ["balance_account"],
+    "transactions": ["transactions_account", "transactions_period"],
+    "quote": ["ticker"],
+    "fx_rate": ["fx_pair"],
+}
 
-    Jev only says a balance is asked for and which account; the figures come from readonly.
+
+def _answer_step(request: UnderstandRequest, current: session.Session, meta: dict) -> dict | None:
+    """Answer a question that moves no money (CONTRACTS §3.1 answers, v0.6 proposed).
+
+    Jev only says what is asked and which account, period, ticker or pair; code reads values.
     """
-    for name in ("has_balance_check", "balance_account"):
-        step = gate.decide_each(current.replies, current.answers, _amount(current), [name])
-        if step.ask:
-            return _ask(request, current, step, meta)
-        if name == "has_balance_check" and step.picks[name].option != "yes":
+    names = ["info"]
+    step = gate.decide_each(current.replies, current.answers, _amount(current), names)
+    if not step.ask:
+        kind = step.picks["info"].option
+        if kind == "none":
             return None
-    which = step.picks["balance_account"].option
-    accounts = [a for a in current.data.accounts.accounts if which in ("all", a.account_id)]
+        names = _ANSWER_SLOTS.get(kind, [])
+        step = gate.decide_each(current.replies, current.answers, _amount(current), names)
+    if step.ask:
+        return _ask(request, current, step, meta)
+    picks = {name: step.picks[name].option for name in names}
+    try:
+        payload = draft.answer(kind, picks, current.data, current.user_id)
+    except draft.Unbuildable as error:
+        session.drop(request.session_id)
+        return _unsupported(str(error), meta)
     session.drop(request.session_id)
-    return {"status": "answer", "kind": "balance", "accounts": accounts, "meta": meta}
+    return {"status": "answer", "kind": kind, **payload, "meta": meta}
 
 
 async def _followup_step(
@@ -438,7 +455,7 @@ def _blocked(model: str, started: float) -> dict[str, Any]:
     }
 
 
-_HELP = "I can help with transfers, bill payments, stock orders and balances."
+_HELP = "I can help with transfers, bill payments, stock orders and questions about your accounts."
 _BLOCKED = "This request contains instructions I can't act on. Please say it again."
 _MISSING = {
     "transfer_amount": 'Please say how much to send, for example "send fifty to John".',
