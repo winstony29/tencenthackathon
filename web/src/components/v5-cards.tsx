@@ -353,7 +353,10 @@ export function V5Answer({ answer: a, onDone }: { answer: Answer; onDone: () => 
             `${t.direction === "credit" ? "+" : "−"}${money(t.amount, t.currency)}`,
           ])
         : a.kind === "bills"
-          ? a.bills.map((b) => [`${label(b.label)} · due ${day(b.due_at)}`, money(b.amount, b.currency)])
+          ? a.bills.map((b) => [
+              `${label(b.label)} · ${b.recurrence ? `${b.recurrence}, next ` : ""}due ${day(b.due_at)}`,
+              money(b.amount, b.currency),
+            ])
           : a.kind === "holdings"
             ? a.holdings.map((h) => [
                 `${h.ticker} · ${h.quantity} shares`,
