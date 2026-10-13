@@ -7,10 +7,12 @@ Contract: docs/CONTRACTS.md §3 (endpoints) and §6 (errors)
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException
 
 from app.bank.router import router as bank_router
@@ -33,7 +35,19 @@ app.include_router(intent_router)
 app.include_router(validation_router)
 app.include_router(bank_router)
 app.include_router(presentation_router)
-# ponytail: web/ gets mounted here once D-004 picks the stack and its build folder.
+# The UI's static export (`npm run build` in web/, D-004) is served after the API routes, so
+# one server runs the whole app. Without a build, the server is API only.
+_WEB = Path(__file__).resolve().parent.parent / "web" / "out"
+
+
+@app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+async def _unknown_api(path: str) -> None:
+    # Keeps unknown API paths on the JSON 404 of CONTRACTS §6 instead of the UI's 404 page.
+    raise HTTPException(404, "Not found.")
+
+
+if _WEB.is_dir():
+    app.mount("/", StaticFiles(directory=_WEB, html=True), name="web")
 
 _ERROR_CODES = {400: "bad_request", 404: "not_found", 502: "upstream_error"}
 

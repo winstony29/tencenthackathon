@@ -1109,3 +1109,9 @@ def test_default_follows_an_account_the_amount_names(client, fake_jev, bank) -> 
     reply = _understand(client, text).json()
     assert reply["status"] == "question"
     assert "acc_1234" in [o["option_id"] for o in reply["question"]["options"]]
+
+
+def test_unknown_api_paths_answer_the_json_404(client) -> None:
+    # The UI's static export is mounted at "/", so this guards CONTRACTS §6 for /api/.
+    reply = client.get("/api/no-such-endpoint")
+    assert (reply.status_code, reply.json()["error"]["code"]) == (404, "not_found")
