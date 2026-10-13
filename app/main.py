@@ -49,7 +49,7 @@ async def _unknown_api(path: str) -> None:
 if _WEB.is_dir():
     app.mount("/", StaticFiles(directory=_WEB, html=True), name="web")
 
-_ERROR_CODES = {400: "bad_request", 404: "not_found", 502: "upstream_error"}
+_ERROR_CODES = {400: "bad_request", 404: "not_found", 502: "upstream_error", 503: "upstream_error"}
 
 
 def _error(status_code: int, message: str) -> JSONResponse:
