@@ -17,7 +17,7 @@ from app.contracts import AccountsResponse, Draft, QuoteResponse
 from app.intent import shield
 from app.intent.jev import Question
 
-ACTION_TYPES = ("transfer", "bill_payment", "stock_order")
+ACTION_TYPES = ("transfer", "bill_payment", "stock_order", "account_transfer")
 
 _SMALL = {
     w: i
@@ -207,7 +207,8 @@ _ASKS_FOR = {
     "transfer": [
         (
             "yes",
-            "It asks to send or give money to a person. Paying a bill or card is not this.",
+            "It asks to send or give money to a person. Paying a bill or card, or moving "
+            "money between the user's own accounts, is not this.",
             "Yes",
         ),
         (
@@ -219,6 +220,15 @@ _ASKS_FOR = {
     "bill_payment": [
         ("yes", "It asks to pay a bill or a card balance, such as a credit card bill.", "Yes"),
         ("no", "It does not ask to pay a bill or card.", "No"),
+    ],
+    "account_transfer": [
+        (
+            "yes",
+            "It asks to move money between the user's own accounts, or to convert currency "
+            "between them; e.g. 'move some money from current to savings'.",
+            "Yes",
+        ),
+        ("no", "It does not move money between the user's own accounts.", "No"),
     ],
     "stock_order": [
         (
@@ -332,12 +342,27 @@ def build(transcript: str, data: UserData, scope: str) -> Options:
     ]
     default = ("default", "No account is said.", "My usual account")
     all_accounts = ("all", "No single account is named; every account.", "All accounts")
+    no_account = ("none", "No account is said.", "None of these")
     currencies = sorted({x.currency for x in a.accounts})
 
     spec = {
         "has_transfer": ("Does the text ask to send money to a person?", _ASKS_FOR["transfer"]),
         "has_bill_payment": ("Does the text ask to pay a bill or card?", _ASKS_FOR["bill_payment"]),
         "has_stock_order": ("Does the text ask to buy or sell shares?", _ASKS_FOR["stock_order"]),
+        "has_account_transfer": (
+            "Does the text ask to move money between the user's own accounts?",
+            _ASKS_FOR["account_transfer"],
+        ),
+        # Own-account moves (CONTRACTS §2.1, v0.7 proposed): no usual account; unsure asks.
+        "move_from": (
+            "Which of the user's accounts does the money leave?",
+            [*accounts, no_account],
+        ),
+        "move_to": (
+            "Which of the user's accounts does the money go into?",
+            [*accounts, no_account],
+        ),
+        "move_amount": ("How much is moved between the user's accounts?", [*amounts, no_number]),
         "several_transfers": (
             "Does the text ask for two or more separate transfers?",
             [
@@ -523,6 +548,13 @@ def build_followup(text: str, draft: Draft, data: UserData, scope: str) -> Optio
             if x.account_id != action.from_account_id
         ]
         spec[f"a{i}_from"] = (f"{task}, which account should it now come from?", [*accounts, KEEP])
+        if action.type == "account_transfer":
+            into = [
+                (x.account_id, f"Use the {x.label} account ({x.type}, {x.currency})", x.label)
+                for x in a.accounts
+                if x.account_id not in (action.to_account_id, action.from_account_id)
+            ]
+            spec[f"a{i}_to"] = (f"{task}, which account should it now go into?", [*into, KEEP])
         if action.type == "transfer":
             payees = [
                 (p.payee_id, _payee(p.name), p.label)
@@ -549,6 +581,8 @@ def describe(action) -> str:
         return f"transfer to {action.to_payee_label} from {action.from_account_label}"
     if action.type == "bill_payment":
         return f"pay {action.biller_label} from {action.from_account_label}"
+    if action.type == "account_transfer":
+        return f"move from {action.from_account_label} to {action.to_account_label}"
     if action.type == "fx_conversion":
         return (
             f"convert {action.sell_currency} from {action.from_account_label} "
@@ -564,6 +598,11 @@ _ASK = {
     "has_transfer": "Do you want to send money to someone?",
     "has_bill_payment": "Do you want to pay a bill?",
     "has_stock_order": "Do you want to buy or sell shares?",
+    "has_account_transfer": "Do you want to move money between your accounts?",
+    "move_from": "Which account should I move it from?",
+    "move_to": "Which account should it go into?",
+    "move_amount": "How much should I move?",
+    "to": "Which account should it go into?",
     "info": "What would you like to know?",
     "balance_account": "Which account?",
     "transactions_account": "Which account?",

@@ -15,6 +15,7 @@ from app import config
 from app.bank import readonly
 from app.contracts import (
     Account,
+    AccountTransferAction,
     BillPaymentAction,
     Draft,
     Evidence,
@@ -37,6 +38,7 @@ _MENTIONS = {
     "transfer": re.compile(r"\b(send|transfer|give|wire)\b"),
     "bill_payment": re.compile(r"\b(bill|card)\b"),
     "stock_order": re.compile(r"\b(buy|sell|invest|shares?|stocks?)\b"),
+    "account_transfer": re.compile(r"\b(move|shift|top up|convert)\b"),
 }
 
 
@@ -112,7 +114,12 @@ def build(
     p = {name: pick.option for name, pick in decision.picks.items()}
     lowered = transcript.lower()
     ordered = sorted(decision.actions, key=lambda kind: _first_mention(lowered, kind))
-    builders = {"transfer": _transfer, "bill_payment": _bill, "stock_order": _stock}
+    builders = {
+        "transfer": _transfer,
+        "bill_payment": _bill,
+        "stock_order": _stock,
+        "account_transfer": _move,
+    }
     spent: dict[str, Decimal] = {}  # money earlier actions take, by source account
     actions = []
     for kind in ordered:
@@ -145,6 +152,43 @@ def _transfer(
         to_payee_label=payee.label,
         amount=amount,
         currency=source.currency,
+    )
+
+
+def _move(
+    p: dict[str, str], options: Options, data: UserData, spent: dict[str, Decimal]
+) -> AccountTransferAction | FxConversionAction:
+    """Money between the user's own accounts (§2.1, v0.7 proposed).
+
+    One currency is an account_transfer; two currencies are a conversion at the bank's rate.
+    """
+    source = _account(data, p["move_from"], "savings")
+    target = _account(data, p["move_to"], "savings")
+    if source.account_id == target.account_id:
+        raise Unbuildable("Please name two different accounts.")
+    _same_currency(options, p["move_amount"], source)
+    amount = _money(_sum(p["move_amount"], options, data, spent))
+    _spend(spent, source, amount)
+    ends = {
+        "from_account_id": source.account_id,
+        "from_account_label": source.label,
+        "to_account_id": target.account_id,
+        "to_account_label": target.label,
+    }
+    if source.currency == target.currency:
+        return AccountTransferAction(
+            type="account_transfer", **ends, amount=amount, currency=source.currency
+        )
+    rate = _rate(source.currency, target.currency)
+    return FxConversionAction(
+        type="fx_conversion",
+        **ends,
+        sell_amount=amount,
+        sell_currency=rate.from_,
+        buy_amount=(amount * rate.rate).quantize(CENT, rounding=ROUND_DOWN),
+        buy_currency=rate.to,
+        rate=rate.rate,
+        rate_as_of=rate.as_of,
     )
 
 
@@ -418,10 +462,18 @@ def _amended(action, fields: dict[str, str], options: Options, data: UserData):
     if "recipient" in fields:
         payee = next(x for x in data.accounts.payees if x.payee_id == fields["recipient"])
         update |= {"to_payee_id": payee.payee_id, "to_payee_label": payee.label}
+    if "to" in fields:
+        target = _account(data, fields["to"], prefer="savings")
+        update |= {"to_account_id": target.account_id, "to_account_label": target.label}
     if "amount" in fields and fields["amount"] != "due":
         source = _account(data, fields.get("from", action.from_account_id), prefer="savings")
         _same_currency(options, fields["amount"], source)
-    return type(action).model_validate({**action.model_dump(), **update})
+    amended = type(action).model_validate({**action.model_dump(), **update})
+    if amended.type == "account_transfer":
+        target = _account(data, amended.to_account_id, prefer="savings")
+        if target.account_id == amended.from_account_id or target.currency != amended.currency:
+            raise Unbuildable("Please name two different accounts in the same currency.")
+    return amended
 
 
 def _scenario_value(field: str, option: str, action, options: Options) -> str:

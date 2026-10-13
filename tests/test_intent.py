@@ -1221,3 +1221,83 @@ def test_quotes_rates_payees_bills_and_help(client, fake_jev, bank, monkeypatch)
     monkeypatch.setattr(readonly, "list_bills", lambda user_id: [], raising=False)
     assert _ask_info(client, fake_jev, "any bills coming?", "bills")["bills"] == []
     assert "balances" in _ask_info(client, fake_jev, "what can you do?", "help")["message"]
+
+
+# --- own-account moves (CONTRACTS §2.1 account_transfer, v0.7 proposed) ---
+
+
+def _move_script(source: str, target: str, amount: str = "n0") -> dict:
+    return {
+        "has_account_transfer": {"yes": SURE, "no": 1 - SURE},
+        "move_from": {source: SURE, "none": 1 - SURE},
+        "move_to": {target: SURE, "none": 1 - SURE},
+        "move_amount": {amount: SURE, "none": 1 - SURE},
+    }
+
+
+def test_moving_money_between_own_accounts(client, fake_jev, bank) -> None:
+    fake_jev.script = _move_script("acc_5678", "acc_1234")
+    reply = _understand(client, "move 500 from current to savings").json()
+    assert reply["draft"]["actions"] == [
+        {
+            "type": "account_transfer",
+            "from_account_id": "acc_5678", "from_account_label": "Current …5678",
+            "to_account_id": "acc_1234", "to_account_label": "Savings …1234",
+            "amount": "500.00", "currency": "SGD",
+        }
+    ]  # fmt: skip
+
+
+def test_a_move_between_currencies_is_a_conversion(client, fake_jev, bank) -> None:
+    fake_jev.script = _move_script("acc_1234", "acc_7788")
+    (action,) = _understand(client, "move 1000 from savings to invest").json()["draft"]["actions"]
+    assert (action["type"], action["sell_amount"], action["buy_amount"]) == (
+        "fx_conversion", "1000.00", "740.00",
+    )  # fmt: skip
+
+
+def test_a_move_needs_two_different_accounts(client, fake_jev, bank) -> None:
+    fake_jev.script = _move_script("acc_1234", "acc_1234")
+    reply = _understand(client, "move 500 from savings to savings").json()
+    assert (reply["status"], reply["message"]) == (
+        "unsupported",
+        "Please name two different accounts.",
+    )
+
+
+def test_an_unsure_source_account_asks(client, fake_jev, bank) -> None:
+    fake_jev.script = {
+        **_move_script("acc_1234", "acc_1234"),
+        "move_from": {"acc_1234": 0.5, "acc_5678": 0.45, "none": 0.05},
+    }
+    reply = _understand(client, "move 500 into savings").json()
+    assert reply["question"]["text"] == "Which account should I move it from?"
+
+
+def test_the_rest_moves_what_a_transfer_leaves(client, fake_jev, bank) -> None:
+    text = "send 500 to John Doe and move the rest of my savings to current"
+    built = options.build(text, options.UserData(BANK, QUOTES), "u|s")
+    (rest,) = [o for o, n in built.said.items() if n.remaining and n.account_id == "acc_1234"]
+    fake_jev.script = {
+        "has_transfer": {"yes": SURE, "no": 1 - SURE},
+        "recipient": {"pay_4521": SURE, "pay_8892": 1 - SURE},
+        "transfer_amount": {"n0": SURE, "none": 1 - SURE},
+        **_move_script("acc_1234", "acc_5678", rest),
+    }
+    actions = _understand(client, text).json()["draft"]["actions"]
+    assert [(a["type"], a["amount"]) for a in actions] == [
+        ("transfer", "500.00"),
+        ("account_transfer", "2700.00"),
+    ]
+
+
+def test_a_followup_amends_a_move(client, fake_jev, bank) -> None:
+    fake_jev.script = _move_script("acc_5678", "acc_1234")
+    _understand(client, "move 500 from current to savings")
+    reply = _followup(
+        client, fake_jev, "make it 300",
+        {"objective": {"prepare": SURE}, "a0_amount": {"n0": SURE, "keep": 1 - SURE}},
+    )  # fmt: skip
+    assert reply["draft"]["actions"][0]["amount"] == "300.00"
+    questions = {q.name: q.criteria for q in fake_jev.calls[-1][1]}
+    assert set(questions["a0_to"]) == {"acc_7788", "keep"}

@@ -16,11 +16,12 @@ SLOTS = {
     "transfer": ("recipient", "transfer_amount", "transfer_from"),
     "bill_payment": ("biller", "bill_amount", "bill_from"),
     "stock_order": ("ticker", "side", "quantity", "order_type"),
+    "account_transfer": ("move_from", "move_to", "move_amount"),
 }
 # "none" on these means the user named something we can offer as chips.
-_PICK_FROM_LIST = {"recipient", "biller", "ticker"}
+_PICK_FROM_LIST = {"recipient", "biller", "ticker", "move_from", "move_to"}
 # "none" on these means a number was never said; chips can't offer a value nobody said.
-_NEED_NUMBER = {"transfer_amount", "quantity", "limit_price"}
+_NEED_NUMBER = {"transfer_amount", "quantity", "limit_price", "move_amount"}
 # Each account question and the amount it pays. "default" resolves to one account, so
 # picking that account builds the same draft and their probabilities count together.
 _FROM_AMOUNT = {"transfer_from": "transfer_amount", "bill_from": "bill_amount"}
