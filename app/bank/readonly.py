@@ -392,6 +392,7 @@ def list_transactions(user_id: str) -> list[TransactionEntry]:
                     if field in record
                 },
                 "account_label": accounts[record["account_id"]].label,
+                "payee_id": record.get("payee_id"),
             }
         )
         for record in user["transaction_history"]
@@ -419,6 +420,7 @@ def list_bills(user_id: str) -> list[UpcomingBill]:
                 "due_at": r["due_at"],
                 "account_id": r["account_id"],
                 "account_label": accounts[r["account_id"]].label,
+                "recurrence": r.get("recurrence"),
             }
         )
         for r in occurrences
