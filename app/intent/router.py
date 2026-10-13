@@ -306,6 +306,10 @@ def _command_step(
     request: UnderstandRequest, current: session.Session, meta: dict
 ) -> dict[str, Any]:
     decision = gate.decide(current.replies, current.answers, _amount(current), current.options)
+    if not (decision.ask or decision.missing or decision.actions):
+        answered = _balance_step(request, current, meta)
+        if answered:
+            return answered
     if decision.ask:
         question = _ask(request, current, decision, meta)
         if question:
@@ -330,6 +334,23 @@ def _command_step(
     p = gate.pick(current.replies, "objective")
     objective = p.option if gate.trusted(p, _amount(current)) else "prepare"
     return _keep_draft(request, current, built, objective, None, meta)
+
+
+def _balance_step(request: UnderstandRequest, current: session.Session, meta: dict) -> dict | None:
+    """Answer "what's my balance?" when no money moves (CONTRACTS §3.1 answers, v0.6).
+
+    Jev only says a balance is asked for and which account; the figures come from readonly.
+    """
+    for name in ("has_balance_check", "balance_account"):
+        step = gate.decide_each(current.replies, current.answers, _amount(current), [name])
+        if step.ask:
+            return _ask(request, current, step, meta)
+        if name == "has_balance_check" and step.picks[name].option != "yes":
+            return None
+    which = step.picks["balance_account"].option
+    accounts = [a for a in current.data.accounts.accounts if which in ("all", a.account_id)]
+    session.drop(request.session_id)
+    return {"status": "answer", "kind": "balance", "accounts": accounts, "meta": meta}
 
 
 async def _followup_step(
@@ -417,7 +438,7 @@ def _blocked(model: str, started: float) -> dict[str, Any]:
     }
 
 
-_HELP = "I can help with transfers, bill payments and stock orders."
+_HELP = "I can help with transfers, bill payments, stock orders and balances."
 _BLOCKED = "This request contains instructions I can't act on. Please say it again."
 _MISSING = {
     "transfer_amount": 'Please say how much to send, for example "send fifty to John".',

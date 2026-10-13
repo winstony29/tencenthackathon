@@ -413,6 +413,18 @@ def build(transcript: str, data: UserData, scope: str) -> Options:
         ),
         "limit_price": ("What price limit is said for the order?", [*said_aloud, no_number]),
         "objective": ("What does the user want to do with the task?", OBJECTIVES),
+        # A read-only question (CONTRACTS §3.1 answers). No option carries a balance (D-026).
+        "has_balance_check": (
+            "Does the text ask how much money is in the user's accounts?",
+            [
+                ("yes", "It asks for a balance, or how much is in an account.", "Yes"),
+                ("no", "It does not ask for a balance.", "No"),
+            ],
+        ),
+        "balance_account": (
+            "Which account's balance is asked for?",
+            [*accounts, ("all", "No single account is named; every account.", "All accounts")],
+        ),
     }
     return Options(
         text=mask(transcript, scope),
@@ -530,6 +542,8 @@ _ASK = {
     "has_transfer": "Do you want to send money to someone?",
     "has_bill_payment": "Do you want to pay a bill?",
     "has_stock_order": "Do you want to buy or sell shares?",
+    "has_balance_check": "Do you want to check a balance?",
+    "balance_account": "Which account?",
     "several_transfers": "Is this more than one transfer?",
     "recipient": "Who should get the money?",
     "transfer_amount": "How much should I send?",

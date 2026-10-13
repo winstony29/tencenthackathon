@@ -1115,3 +1115,55 @@ def test_unknown_api_paths_answer_the_json_404(client) -> None:
     # The UI's static export is mounted at "/", so this guards CONTRACTS §6 for /api/.
     reply = client.get("/api/no-such-endpoint")
     assert (reply.status_code, reply.json()["error"]["code"]) == (404, "not_found")
+
+
+# --- read-only answers (CONTRACTS §3.1 answers, v0.6 proposed) ---
+
+
+def test_a_balance_question_gets_an_answer_from_the_bank_data(client, fake_jev, bank) -> None:
+    fake_jev.script = {
+        "has_balance_check": {"yes": SURE, "no": 1 - SURE},
+        "balance_account": {"acc_1234": SURE, "all": 1 - SURE},
+    }
+    reply = _understand(client, "how much is in my savings?").json()
+    assert (reply["status"], reply["kind"]) == ("answer", "balance")
+    assert reply["accounts"] == [BANK.accounts[0].model_dump(mode="json")]
+    # An answer ends the session, so nothing is left to answer or sign.
+    assert _understand(client, answer=("q_1", "acc_1234")).status_code == 404
+
+
+def test_no_account_named_lists_every_account(client, fake_jev, bank) -> None:
+    fake_jev.script = {
+        "has_balance_check": {"yes": SURE, "no": 1 - SURE},
+        "balance_account": {"all": SURE, "acc_1234": 1 - SURE},
+    }
+    reply = _understand(client, "what's my balance").json()
+    assert [a["account_id"] for a in reply["accounts"]] == ["acc_1234", "acc_5678", "acc_7788"]
+
+
+def test_an_unsure_balance_account_asks_first(client, fake_jev, bank) -> None:
+    fake_jev.script = {
+        "has_balance_check": {"yes": SURE, "no": 1 - SURE},
+        "balance_account": {"acc_1234": 0.5, "acc_5678": 0.4, "all": 0.1},
+    }
+    reply = _understand(client, "how much do I have in my account").json()
+    assert reply["status"] == "question" and reply["question"]["text"] == "Which account?"
+    reply = _understand(client, answer=(reply["question"]["question_id"], "acc_5678")).json()
+    assert [a["account_id"] for a in reply["accounts"]] == ["acc_5678"]
+
+
+def test_a_balance_question_with_a_transfer_gets_the_draft(client, fake_jev, bank) -> None:
+    fake_jev.script = {
+        "has_balance_check": {"yes": SURE, "no": 1 - SURE},
+        "balance_account": {"acc_1234": SURE, "all": 1 - SURE},
+        "has_transfer": {"yes": SURE, "no": 1 - SURE},
+        "recipient": {"pay_4521": SURE, "pay_8892": 1 - SURE},
+        "transfer_amount": {"n0": SURE, "none": 1 - SURE},
+    }
+    reply = _understand(client, "what's in savings, and send 50 to John Doe").json()
+    assert reply["status"] == "draft"
+
+
+def test_a_non_banking_request_is_still_unsupported(client, fake_jev, bank) -> None:
+    reply = _understand(client, "what's the weather tomorrow").json()
+    assert reply["status"] == "unsupported" and "balances" in reply["message"]
