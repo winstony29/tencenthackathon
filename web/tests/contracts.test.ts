@@ -173,7 +173,7 @@ test("editing stays separate from backend drafts and survives presentation recom
   assert.equal(draft.actions[1].type === "stock_order" && draft.actions[1].quantity, 100);
   composeWorkspace(draft, { mode: "transaction", accounts: exampleAccounts, scheduled: false });
   const editedBill = editedActions(draft, edits, exampleAccounts).actions[0];
-  assert.equal(editedBill.type !== "stock_order" && editedBill.amount, "1500.00");
+  assert.equal(editedBill.type === "bill_payment" && editedBill.amount, "1500.00");
   for (const [field, value] of [
     ["quantity", "1.5"],
     ["quantity", "9007199254740992"],
@@ -291,5 +291,80 @@ test("bundles enforce dependent components and retain weak layouts only for unch
       selection: { ...selection, bundle: "affordability_simulation" },
     }).manifest.source,
     "fallback",
+  );
+});
+
+// CONTRACTS v0.4 §3.1: "send 500 to John Doe and invest the rest in Apple", as /api/understand sends it.
+const restReply = {
+  status: "draft",
+  draft: {
+    draft_id: "d_8f2c1a",
+    user_id: "u_demo",
+    session_id: "s_41b9",
+    transcript: "send 500 to John Doe and invest the rest in Apple",
+    created_at: "2026-10-13T09:30:00+08:00",
+    actions: [
+      {
+        type: "transfer",
+        from_account_id: "acc_1234",
+        from_account_label: "Savings …1234",
+        to_payee_id: "pay_4521",
+        to_payee_label: "John Doe …4521",
+        amount: "500.00",
+        currency: "SGD",
+      },
+      {
+        type: "fx_conversion",
+        from_account_id: "acc_1234",
+        from_account_label: "Savings …1234",
+        to_account_id: "acc_7788",
+        to_account_label: "Invest (USD) …7788",
+        sell_amount: "2700.00",
+        sell_currency: "SGD",
+        buy_amount: "1998.00",
+        buy_currency: "USD",
+        rate: "0.740000",
+        rate_as_of: "2026-10-13T09:30:00+08:00",
+      },
+      {
+        type: "stock_order",
+        from_account_id: "acc_7788",
+        from_account_label: "Invest (USD) …7788",
+        side: "buy",
+        ticker: "AAPL",
+        company_name: "Apple Inc.",
+        quantity: 8,
+        order_type: "market",
+        limit_price: null,
+        currency: "USD",
+      },
+    ],
+    evidence: [],
+  },
+  objective: "prepare",
+  scenario: null,
+  meta: { latency_ms: 840, model: "jev-1.13.0", source: "jev", phrasings: 1, cached: false },
+};
+
+test("v0.4 draft replies with a conversion parse, refuse edits to it, and project both accounts", () => {
+  const reply = understandSchema.parse(restReply);
+  assert.equal(reply.status === "draft" && reply.objective, "prepare");
+  if (reply.status !== "draft") throw Error("expected a draft");
+  assert.match(
+    editedActions(reply.draft, { 1: { sell_amount: "1.00" } }, exampleAccounts).errors[1],
+    /editable/,
+  );
+  const rows = projectedBalances(reply.draft.actions, exampleAccounts, { AAPL: exampleQuote });
+  assert.deepEqual(
+    rows.map((r) => [r.account_id, r.projected]),
+    [
+      ["acc_1234", "0.00"],
+      ["acc_7788", "30178.00"],
+    ],
+  );
+  assert.equal(
+    understandSchema.safeParse({ ...restReply, objective: "invent" }).success ||
+      understandSchema.safeParse({ ...restReply, scenario: { "0": { to_payee_id: "pay_1" } } }).success,
+    false,
   );
 });

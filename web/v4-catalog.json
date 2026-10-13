@@ -1,0 +1,115 @@
+{
+  "prompts": {
+    "prepare": "Compose an editable banking workspace from resolved tasks. Give task editing primary prominence. Keep every task and its editor. Group each task with its own supporting context. Choose only useful support.",
+    "assess_affordability": "Compose an affordability workspace. A DecisionGroup containing BalanceProjection must occupy the primary slot. Keep every task and editor in task groups in the tasks slot. Use separate currency projections. Do not declare approval.",
+    "simulate": "Compose a hypothetical workspace. DecisionGroup must occupy primary and contain AmountSimulator in controls and BalanceProjection in outcome. Keep every actual task and editor in tasks. Simulations do not change the draft.",
+    "review": "Compose a review workspace. TransactionReview must occupy primary and show every actual draft action. Review is a demo confirmation, never execution."
+  },
+  "components": {
+    "Workspace": {
+      "description": "Workspace with primary, tasks and context slots.",
+      "slots": ["primary", "tasks", "context"],
+      "objectives": ["prepare", "assess_affordability", "simulate", "review"],
+      "variants": {
+        "focus": "One focused primary section, followed by tasks.",
+        "split": "Primary section alongside related tasks on desktop.",
+        "stacked": "Full-width ordered sections for several tasks."
+      },
+      "binding": "none"
+    },
+    "TaskGroup": {
+      "description": "Required group for this task. Its editor and any task-specific estimate or recipient context must be children in details. Never contain another task's editor.",
+      "slots": ["details"],
+      "objectives": ["prepare", "assess_affordability", "simulate"],
+      "perAction": true,
+      "variants": {
+        "default": "Keep each task together."
+      },
+      "binding": "draft"
+    },
+    "TaskEditor": {
+      "description": "Required editable task form. Put in its matching TaskGroup details slot. Contains all mandatory task fields.",
+      "objectives": ["prepare", "assess_affordability", "simulate"],
+      "perAction": true,
+      "variants": {
+        "full": "Prominent editor with generous amount control. Best for preparing a task.",
+        "compact": "Complete editor with compact spacing. Best beside an assessment."
+      },
+      "binding": "draft"
+    },
+    "DecisionGroup": {
+      "description": "Required decision section in primary. Contains projection in outcome; simulator, when needed, in controls.",
+      "slots": ["controls", "outcome"],
+      "objectives": ["assess_affordability", "simulate"],
+      "variants": {
+        "paired": "Keep controls and their outcome visually paired."
+      },
+      "binding": "scenario"
+    },
+    "BalanceProjection": {
+      "description": "Required financial impact view. Must be in DecisionGroup outcome. Amounts are calculated locally. Choose one variant only.",
+      "objectives": ["assess_affordability", "simulate"],
+      "variants": {
+        "summary": "Large remaining balances and a simple before/after bar. Good for a single transfer.",
+        "breakdown": "Starting balance, task impact and remaining balance per account. Good for multiple tasks.",
+        "funding-gap": "Emphasize a negative remaining balance and exact shortfall. Prefer when funding is shortfall."
+      },
+      "binding": "scenario"
+    },
+    "AmountSimulator": {
+      "description": "Required hypothetical controls for simulation. Must be in DecisionGroup controls. Actual draft remains separate.",
+      "objectives": ["simulate"],
+      "variants": {
+        "default": "Editable hypothetical amounts or quantities with sliders."
+      },
+      "binding": "scenario"
+    },
+    "RecipientDetails": {
+      "description": "Optional listed recipient context in the matching TaskGroup details. Omit if it repeats enough information already visible in the editor.",
+      "objectives": ["prepare"],
+      "perAction": true,
+      "types": ["transfer"],
+      "variants": {
+        "default": "Concise recipient identity and listed status."
+      },
+      "binding": "banking"
+    },
+    "StockEstimate": {
+      "description": "Optional order cost estimate in the matching TaskGroup details. Useful beside a stock editor; omit if shared projection provides enough detail.",
+      "objectives": ["prepare", "assess_affordability", "simulate"],
+      "perAction": true,
+      "types": ["stock_order"],
+      "variants": {
+        "default": "Quantity, price and estimated order cost."
+      },
+      "binding": "scenario"
+    },
+    "FundingOptions": {
+      "description": "Optional account comparison in workspace context. Show only when same-currency alternatives exist.",
+      "objectives": ["prepare", "assess_affordability"],
+      "alternatives": true,
+      "variants": {
+        "default": "Available funding accounts, currencies kept separate."
+      },
+      "binding": "banking"
+    },
+    "TransactionReview": {
+      "description": "Required review of all actual draft tasks, in workspace primary. Includes per-task acknowledgement and explicit demo confirmation.",
+      "objectives": ["review"],
+      "variants": {
+        "focused": "Concise review with all required details."
+      },
+      "binding": "draft"
+    },
+    "AccountInsights": {
+      "description": "Optional financial context in workspace context. Prefer when commitments are present or reserves breached. Historical spending is context, never a future debit.",
+      "objectives": ["prepare", "assess_affordability", "simulate"],
+      "financial": true,
+      "variants": {
+        "compact": "Upcoming bills and reserve impact, with spending details collapsed.",
+        "expanded": "Upcoming bills, reserve impact and historical spending bars visible."
+      },
+      "binding": "scenario"
+    }
+  }
+}

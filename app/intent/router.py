@@ -5,18 +5,25 @@ Diagram box: Speech to text, Confidence gate, Draft builder (Intent detection co
 Contract: docs/CONTRACTS.md §3.1
 """
 
+import time
+from collections import OrderedDict
+from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, UploadFile
+from fastapi import APIRouter, HTTPException, UploadFile
 
+from app import config
+from app.bank import readonly
 from app.contracts import (
     NONE_OPTION_ID,
+    Answer,
     PreviewRequest,
     PreviewResponse,
     TranscribeResponse,
     UnderstandRequest,
     UnderstandResponse,
 )
+from app.intent import draft, gate, jev, options, session, shield
 
 router = APIRouter(prefix="/api", tags=["intent"])
 
@@ -93,6 +100,8 @@ _STUB_DRAFT = {
             }
         ],
     },
+    "objective": "prepare",
+    "scenario": None,
     "meta": _STUB_META,
 }
 _STUB_CANCELLED = {
@@ -103,10 +112,68 @@ _STUB_CANCELLED = {
 }
 
 
+_PREVIEW_QUESTION = jev.Question(
+    "intent",
+    "Which banking task does the text ask for so far?",
+    {
+        "transfer": "Send money to a person.",
+        "bill_payment": "Pay a bill, such as a credit card bill.",
+        "stock_order": "Buy or sell shares.",
+        "none": "None of these yet, or too little text to tell.",
+    },
+)
+_preview_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
+
+
 @router.post("/preview", response_model=PreviewResponse)
 async def preview(request: PreviewRequest) -> dict[str, Any]:
-    """Guess the action type while the user types; display only. Stub: always a transfer."""
-    return _STUB_PREVIEW
+    """Guess the action type while the user types; display only, never a draft or a value.
+
+    One Jev call on the text with numbers swapped for stand-ins, cached by that normalised
+    text, so retyping costs nothing.
+    """
+    if not config.MAKERS_MODELS_KEY:
+        return _STUB_PREVIEW
+    # ponytail: previews carry no session, so their stand-ins are shared by everyone until restart.
+    masked = options.mask(request.text, "preview")
+    key = " ".join(masked.lower().split())
+    if len(key) < 2:
+        certain = {o: float(o == "none") for o in _PREVIEW_QUESTION.criteria}
+        return {
+            "intent": {"value": "none", "confidence": 1.0, "probabilities": certain},
+            "meta": {
+                "latency_ms": 0,
+                "model": "",
+                "source": "none",
+                "phrasings": 0,
+                "cached": False,
+            },
+        }
+    if key in _preview_cache:
+        _preview_cache.move_to_end(key)
+        hit = _preview_cache[key]
+        return {**hit, "meta": {**hit["meta"], "latency_ms": 0, "cached": True}}
+    started = time.monotonic()
+    reply = await jev.ask(masked, [_PREVIEW_QUESTION])
+    answer = reply.answers["intent"]
+    result = {
+        "intent": {
+            "value": answer.choice,
+            "confidence": answer.confidence,
+            "probabilities": answer.probabilities,
+        },
+        "meta": {
+            "latency_ms": round((time.monotonic() - started) * 1000),
+            "model": reply.model,
+            "source": "jev",
+            "phrasings": 1,
+            "cached": False,
+        },
+    }
+    _preview_cache[key] = result
+    if len(_preview_cache) > config.PREVIEW_CACHE_SIZE:
+        _preview_cache.popitem(last=False)
+    return result
 
 
 @router.post("/transcribe", response_model=TranscribeResponse)
@@ -119,9 +186,273 @@ async def transcribe(audio: UploadFile) -> dict[str, Any]:
 async def understand(request: UnderstandRequest) -> dict[str, Any]:
     """Turn a transcript, or the answer to a question, into the next step.
 
-    Stub: a transcript gets the "Which John?" question, "none of these" cancels,
-    and any other answer gets the example draft.
+    A transcript with a known attack phrase is blocked before any model sees it. In a
+    session that already holds a draft it is a follow-up turn about that draft;
+    otherwise it starts a new command. Either way one Jev batch on the original text
+    (numbers swapped for stand-ins) also carries the input shield's question; if Jev flags
+    an injection, nothing else from that batch is used. An answer settles the open question
+    from the stored replies without asking Jev again. A transcript sent while a question is
+    open answers it instead (CONTRACTS §10.2).
     """
+    if not _live():
+        return _stub_understand(request)
+    started = time.monotonic()
+    if request.transcript is not None:
+        if shield.obvious(request.transcript):
+            session.drop(request.session_id)
+            return _blocked("", started)
+        current = session.load(request.session_id, request.user_id)
+        if current and current.pending:
+            finished = await _spoken_answer(request, current, started)
+            if finished is not None:
+                return finished
+        else:
+            if current and current.draft:
+                await _start_followup(current, request.transcript, request.session_id)
+            else:
+                current = await _start(request.user_id, request.transcript, request.session_id)
+            if shield.flagged(current.replies[0]):
+                session.drop(request.session_id)
+                return _blocked(current.replies[0].model, started)
+    else:
+        current = session.load(request.session_id, request.user_id)
+        if current is None:
+            raise HTTPException(404, "This conversation has expired. Please start again.")
+        if request.answer.option_id == NONE_OPTION_ID:
+            session.drop(request.session_id)
+            return _cancelled("user_declined", _meta(current, started))
+        try:
+            current.record(request.answer)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+    if current.followup is not None:
+        return await _followup_step(request, current, started)
+    return _command_step(request, current, _meta(current, started))
+
+
+async def _spoken_answer(
+    request: UnderstandRequest, current: session.Session, started: float
+) -> dict[str, Any] | None:
+    """Read a spoken or typed reply to the open question (CONTRACTS §10.2).
+
+    Records the pick and returns None so the caller carries on as if a chip was tapped;
+    otherwise returns the finished reply (blocked, cancelled, a re-ask, or a fresh command).
+    """
+    question_id, name, offered = current.pending
+    scope = f"{current.user_id}|{request.session_id}"
+    question = options.spoken_reply_question(current.options, name, offered)
+    reply = await jev.ask(options.mask(request.transcript, scope), [shield.QUESTION, question])
+    meta = {
+        "latency_ms": round((time.monotonic() - started) * 1000),
+        "model": reply.model,
+        "source": "jev",
+        "phrasings": 1,
+        "cached": False,
+    }
+    if shield.flagged(reply):
+        session.drop(request.session_id)
+        return _blocked(reply.model, started)
+    p = gate.pick([reply], question.name)
+    if not gate.trusted(p, _amount(current)):
+        again = gate.Decision({name: gate.pick(current.replies, name)}, ask=name)
+        return _ask(request, current, again, meta) or _unsupported(_HELP, meta)
+    if p.option == options.NEW_REQUEST:
+        fresh = await _start(current.user_id, request.transcript, request.session_id)
+        if shield.flagged(fresh.replies[0]):
+            session.drop(request.session_id)
+            return _blocked(fresh.replies[0].model, started)
+        return _command_step(request, fresh, _meta(fresh, started))
+    if p.option not in offered:  # "none", or a "no" that wasn't one of the chips
+        session.drop(request.session_id)
+        return _cancelled("user_declined", meta)
+    current.record(Answer(question_id=question_id, option_id=p.option))
+    return None
+
+
+def _live() -> bool:
+    # ponytail: stubs answer without a Jev key (CONTRACTS §7); delete them once every
+    # machine that runs the app has one.
+    return bool(config.MAKERS_MODELS_KEY)
+
+
+async def _start(user_id: str, transcript: str, session_id: str) -> session.Session:
+    try:
+        data = options.UserData(readonly.get_accounts(user_id), readonly.list_quotes())
+    except LookupError as error:
+        raise HTTPException(404, "Unknown user.") from error
+    built = options.build(transcript, data, f"{user_id}|{session_id}")
+    # Jev reads the text with stand-in numbers (D-026). W-04 rewrites that text after this
+    # batch clears the shield, and rewrites must keep the stand-in numbers unchanged.
+    phrasings = [built.text]
+    replies = await jev.ask_all(phrasings, built.questions)
+    return session.Session(user_id, transcript, built, data, replies)
+
+
+async def _start_followup(current: session.Session, text: str, session_id: str) -> None:
+    scope = f"{current.user_id}|{session_id}"
+    current.options = options.build_followup(text, current.draft, current.data, scope)
+    context = {"current_tasks": [options.describe(a) for a in current.draft.actions]}
+    current.replies = await jev.ask_all([current.options.text], current.options.questions, context)
+    current.followup, current.answers, current.asked, current.pending = text, {}, 0, None
+
+
+def _amount(current: session.Session) -> Decimal:
+    # ponytail: the largest number said stands in for the amount when choosing tau; the exact
+    # amount needs the picks this decision is still making.
+    return max(current.options.numbers.values(), default=Decimal(0))
+
+
+def _command_step(
+    request: UnderstandRequest, current: session.Session, meta: dict
+) -> dict[str, Any]:
+    decision = gate.decide(current.replies, current.answers, _amount(current), current.options)
+    if decision.ask:
+        question = _ask(request, current, decision, meta)
+        if question:
+            return question
+        decision = gate.Decision(decision.picks, decision.actions, missing=decision.ask)
+    if decision.missing or not decision.actions:
+        session.drop(request.session_id)
+        return _unsupported(_MISSING.get(decision.missing, _HELP), meta)
+    try:
+        built = draft.build(
+            current.transcript,
+            current.user_id,
+            request.session_id,
+            decision,
+            current.options,
+            current.data,
+        )
+    except draft.Unbuildable as error:
+        session.drop(request.session_id)
+        return _unsupported(str(error), meta)
+    # The objective only shapes the screen on a first command, so an unsure one means "prepare".
+    p = gate.pick(current.replies, "objective")
+    objective = p.option if gate.trusted(p, _amount(current)) else "prepare"
+    return _keep_draft(request, current, built, objective, None, meta)
+
+
+async def _followup_step(
+    request: UnderstandRequest, current: session.Session, started: float
+) -> dict[str, Any]:
+    meta = _meta(current, started)
+    first = gate.decide_each(current.replies, current.answers, _amount(current), ["objective"])
+    if first.ask:
+        return _ask(request, current, first, meta) or _unsupported(_HELP, meta)
+    objective = first.picks["objective"].option
+    if objective == "new_task":
+        fresh = await _start(current.user_id, current.followup, request.session_id)
+        return _command_step(request, fresh, _meta(fresh, started))
+    skip = {"objective", shield.QUESTION.name}
+    names = [q.name for q in current.options.questions if q.name not in skip]
+    rest = gate.decide_each(current.replies, current.answers, _amount(current), names)
+    if rest.ask:
+        return _ask(request, current, rest, meta) or _unsupported(_HELP, meta)
+    rest.picks["objective"] = first.picks["objective"]
+    try:
+        updated, scenario = draft.amend(
+            current.draft, rest, objective, current.followup, current.options, current.data
+        )
+    except draft.Unbuildable as error:
+        return _unsupported(str(error), meta)
+    return _keep_draft(request, current, updated, objective, scenario, meta)
+
+
+def _ask(
+    request: UnderstandRequest, current: session.Session, decision: gate.Decision, meta: dict
+) -> dict | None:
+    """Return a clarifying question about decision.ask, or None when no chips can be offered."""
+    p = decision.picks[decision.ask]
+    # Chips come from the unmerged answers, so an account the gate counted as "default" shows.
+    unmerged = gate.pick(current.replies, decision.ask).probabilities
+    text, chips = options.clarify(current.options, decision.ask, unmerged)
+    if not chips:
+        return None
+    if current.asked >= config.MAX_QUESTIONS:
+        session.drop(request.session_id)
+        return _cancelled("too_many_questions", meta)
+    current.asked += 1
+    question_id = f"q_{current.asked}"
+    current.pending = (question_id, decision.ask, {o for o, _ in chips})
+    session.save(request.session_id, current)
+    return {
+        "status": "question",
+        "question": {
+            "question_id": question_id,
+            "text": text,
+            "options": [{"option_id": o, "label": label} for o, label in chips],
+            "allow_none": True,
+        },
+        "evidence": [draft.evidence(p)],
+        "meta": meta,
+    }
+
+
+def _keep_draft(request, current, built, objective, scenario, meta) -> dict[str, Any]:
+    # The session stays open after a draft so follow-up turns can amend it (CONTRACTS §3.1).
+    current.draft, current.followup, current.pending = built, None, None
+    session.save(request.session_id, current)
+    return {
+        "status": "draft",
+        "draft": built,
+        "objective": objective,
+        "scenario": scenario,
+        "meta": meta,
+    }
+
+
+def _blocked(model: str, started: float) -> dict[str, Any]:
+    # No model means the phrase backstop blocked it before any Jev call.
+    return {
+        "status": "blocked",
+        "reason": "possible_injection",
+        "message": _BLOCKED,
+        "meta": {
+            "latency_ms": round((time.monotonic() - started) * 1000),
+            "model": model,
+            "source": "jev" if model else "none",
+            "phrasings": 1 if model else 0,
+            "cached": False,
+        },
+    }
+
+
+_HELP = "I can help with transfers, bill payments and stock orders."
+_BLOCKED = "This request contains instructions I can't act on. Please say it again."
+_MISSING = {
+    "transfer_amount": 'Please say how much to send, for example "send fifty to John".',
+    "quantity": (
+        'Please say how many shares or how much to invest, for example "buy 100 Apple shares" '
+        'or "invest 2k in Apple".'
+    ),
+    "limit_price": "Please say the price for your order.",
+    "several_transfers": "I can do one transfer at a time. Please say them one by one.",
+}
+
+
+def _meta(current: session.Session, started: float) -> dict[str, Any]:
+    return {
+        "latency_ms": round((time.monotonic() - started) * 1000),
+        "model": current.replies[0].model,
+        "source": "jev",
+        "phrasings": len(current.replies),
+        "cached": bool(current.answers) or current.pending is not None,
+    }
+
+
+def _cancelled(reason: str, meta: dict) -> dict[str, Any]:
+    messages = {
+        "user_declined": "Okay, nothing was sent.",
+        "too_many_questions": "I couldn't work out what you meant. Please try again.",
+    }
+    return {"status": "cancelled", "reason": reason, "message": messages[reason], "meta": meta}
+
+
+def _unsupported(message: str, meta: dict) -> dict[str, Any]:
+    return {"status": "unsupported", "message": message, "meta": meta}
+
+
+def _stub_understand(request: UnderstandRequest) -> dict[str, Any]:
     if request.transcript is not None:
         return _STUB_QUESTION
     if request.answer.option_id == NONE_OPTION_ID:
