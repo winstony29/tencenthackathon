@@ -238,8 +238,21 @@ class CancelledResponse(ContractModel):
     meta: Meta
 
 
+class AnswerResponse(ContractModel):
+    # §3.1 answers (v0.6, proposed): a read-only reply; nothing is validated or signed.
+    status: Literal["answer"]
+    kind: Literal["balance"]
+    accounts: list["Account"]
+    meta: Meta
+
+
 UnderstandResponse = Annotated[
-    QuestionResponse | DraftResponse | BlockedResponse | UnsupportedResponse | CancelledResponse,
+    QuestionResponse
+    | DraftResponse
+    | AnswerResponse
+    | BlockedResponse
+    | UnsupportedResponse
+    | CancelledResponse,
     Field(discriminator="status"),
 ]
 
