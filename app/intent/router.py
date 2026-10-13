@@ -369,10 +369,13 @@ def _answer_step(request: UnderstandRequest, current: session.Session, meta: dic
         return _ask(request, current, step, meta)
     picks = {name: step.picks[name].option for name in names}
     try:
-        payload = draft.answer(kind, picks, current.data, current.user_id)
+        payload = draft.answer(kind, picks, current.data, current.user_id, current.transcript)
     except draft.Unbuildable as error:
         session.drop(request.session_id)
         return _unsupported(str(error), meta)
+    except readonly.ForecastDataError:
+        session.drop(request.session_id)
+        return _unsupported("I can't read your upcoming bills right now.", meta)
     session.drop(request.session_id)
     return {"status": "answer", "kind": kind, **payload, "meta": meta}
 

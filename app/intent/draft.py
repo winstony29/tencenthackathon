@@ -29,7 +29,7 @@ from app.contracts import (
     TransferAction,
 )
 from app.intent.gate import Decision, Pick
-from app.intent.options import Options, UserData
+from app.intent.options import Options, UserData, parse_numbers
 
 CENT = Decimal("0.01")
 # ponytail: actions are ordered by where their first keyword appears; ask Jev for the order
@@ -52,20 +52,29 @@ HELP = (
     "upcoming bills, your shares, share prices, exchange rates and who you can pay."
 )
 LATEST = 5  # transactions shown when no period is said (D-035)
-_PERIOD_DAYS = {"7d": 7, "30d": 30}
+_SPAN = re.compile(r"\s*(day|week)s?\b")
 
 
-def _period(period: str, now: datetime) -> tuple[datetime, datetime | None]:
+def _said_days(transcript: str) -> int:
+    """How many days "the last 30 days" or "past 2 weeks" covers; 7 when no number is said."""
+    for n in parse_numbers(transcript):
+        unit = _SPAN.match(transcript.lower(), n.span[1]) if n.span else None
+        if unit and n.value == n.value.to_integral_value() and 0 < n.value <= 366:
+            return int(n.value) * (7 if unit.group(1) == "week" else 1)
+    return 7
+
+
+def _period(period: str, now: datetime, transcript: str) -> tuple[datetime, datetime | None]:
     """When a transactions period begins, and when it ends (None: now)."""
-    if period in _PERIOD_DAYS:
-        return now - timedelta(days=_PERIOD_DAYS[period]), None
+    if period == "days":
+        return now - timedelta(days=_said_days(transcript)), None
     month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     if period == "this_month":
         return month, None
     return (month - timedelta(days=1)).replace(day=1), month  # last_month
 
 
-def answer(kind: str, picks: dict[str, str], data: UserData, user_id: str) -> dict:
+def answer(kind: str, picks: dict[str, str], data: UserData, user_id: str, transcript: str) -> dict:
     """The payload of a read-only answer (CONTRACTS §3.1 answers); every value read by code."""
     a = data.accounts
     if kind == "balance":
@@ -73,7 +82,7 @@ def answer(kind: str, picks: dict[str, str], data: UserData, user_id: str) -> di
             "accounts": [x for x in a.accounts if picks["balance_account"] in ("all", x.account_id)]
         }
     if kind == "transactions":
-        return {"transactions": _transactions(picks, user_id)}
+        return {"transactions": _transactions(picks, user_id, transcript)}
     if kind == "bills":
         recurring = picks["bills_scope"] == "recurring"
         return {"bills": [b for b in readonly.list_bills(user_id) if b.recurrence or not recurring]}
@@ -104,7 +113,7 @@ def answer(kind: str, picks: dict[str, str], data: UserData, user_id: str) -> di
     return {"message": HELP}
 
 
-def _transactions(picks: dict[str, str], user_id: str) -> list:
+def _transactions(picks: dict[str, str], user_id: str, transcript: str) -> list:
     """The user's transactions, filtered and ordered as Jev picked (D-037)."""
     account, period = picks["transactions_account"], picks["transactions_period"]
     payee, direction = picks["transactions_payee"], picks["transactions_direction"]
@@ -116,7 +125,7 @@ def _transactions(picks: dict[str, str], user_id: str) -> list:
         and direction in ("all", "in" if e.direction == "credit" else "out")
     ]
     if period != "latest":
-        start, end = _period(period, datetime.now(ZoneInfo(config.TIMEZONE)))
+        start, end = _period(period, datetime.now(ZoneInfo(config.TIMEZONE)), transcript)
         entries = [e for e in entries if e.time >= start and (end is None or e.time < end)]
     if picks["transactions_order"] == "largest":
         # Rank by SGD value, so US$2,000 outranks S$2,500; the amounts shown stay as recorded.
@@ -152,6 +161,10 @@ def build(
     for kind in ordered:
         built = builders[kind](p, options, data, spent)
         actions += built if isinstance(built, list) else [built]  # a conversion precedes its order
+    if len(actions) > config.MAX_ACTIONS_PER_DRAFT:
+        raise Unbuildable(
+            f"I can do up to {config.MAX_ACTIONS_PER_DRAFT} steps at once. Please split it up."
+        )
     return Draft(
         draft_id=f"d_{secrets.token_hex(3)}",
         user_id=user_id,
@@ -430,6 +443,10 @@ def amend(
         }
         return current, {i: v for i, v in scenario.items() if v} or None
     if not changed:
+        if objective == "prepare" and _asked_conversion(current):
+            raise Unbuildable(
+                "To change a currency conversion, please say the whole command again."
+            )
         return current, None
     _no_stale_conversion(current, changed)
     actions = [
@@ -447,6 +464,18 @@ def amend(
         }
     )
     return updated, None
+
+
+def _asked_conversion(current: Draft) -> bool:
+    """A conversion the user asked for, not one that funds the share order after it."""
+    return any(
+        a.type == "fx_conversion"
+        and not any(
+            b.type == "stock_order" and b.from_account_id == a.to_account_id
+            for b in current.actions[i + 1 :]
+        )
+        for i, a in enumerate(current.actions)
+    )
 
 
 def _no_stale_conversion(current: Draft, changed: dict[int, dict]) -> None:

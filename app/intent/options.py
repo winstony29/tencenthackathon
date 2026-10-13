@@ -492,8 +492,9 @@ INFO_KINDS = [
 ]
 PERIODS = [
     ("latest", "No time is said; the most recent ones.", "Latest"),
-    ("7d", "This week, or the last few days.", "Last 7 days"),
-    ("30d", "The last few weeks, or the past thirty days.", "Last 30 days"),
+    # Numbers reach Jev as stand-ins (D-026), so Jev only says a span of days or weeks is
+    # given; code reads how many from the transcript (draft.answer).
+    ("days", "This week, or a span of days or weeks such as 'the past few days'.", "Recent days"),
     ("this_month", "This calendar month so far.", "This month"),
     ("last_month", "The previous calendar month.", "Last month"),
 ]

@@ -1362,3 +1362,53 @@ def test_a_followup_amends_a_move(client, fake_jev, bank) -> None:
     assert reply["draft"]["actions"][0]["amount"] == "300.00"
     questions = {q.name: q.criteria for q in fake_jev.calls[-1][1]}
     assert set(questions["a0_to"]) == {"acc_7788", "keep"}
+
+
+# --- review fixes ---
+
+
+@pytest.mark.parametrize(
+    ("text", "days"),
+    [
+        ("what did I spend in the last 30 days?", 30),
+        ("anything in the past thirty days", 30),
+        ("show the last 2 weeks", 14),
+        ("what did I spend this week?", 7),
+        ("spending over the past few days", 7),
+    ],
+)
+def test_code_reads_the_number_of_days_jev_cannot_see(text: str, days: int) -> None:
+    assert draft._said_days(text) == days
+
+
+def test_more_steps_than_a_draft_holds_is_refused_politely(client, fake_jev, bank) -> None:
+    fake_jev.script = {
+        "has_transfer": {"yes": SURE, "no": 1 - SURE},
+        "recipient": {"pay_4521": SURE, "pay_8892": 1 - SURE},
+        "transfer_amount": {"n0": SURE, "none": 1 - SURE},
+        "has_bill_payment": {"yes": SURE, "no": 1 - SURE},
+        "biller": {"bil_0001": SURE, "none": 1 - SURE},
+        "bill_amount": {"due": SURE, "n0": 1 - SURE},
+        "has_stock_order": {"yes": SURE, "no": 1 - SURE},
+        "ticker": {"AAPL": SURE, "none": 1 - SURE},
+        "quantity": {"m1": SURE, "none": 1 - SURE},
+        **_move_script("acc_5678", "acc_1234", "n2"),
+    }
+    text = (
+        "send 50 to John Doe, pay my card bill, invest 2000 in Apple "
+        "and move 300 from current to savings"
+    )
+    reply = _understand(client, text).json()
+    assert reply["status"] == "unsupported" and "up to 4 steps" in reply["message"]
+
+
+def test_a_followup_cannot_silently_skip_a_requested_conversion(client, fake_jev, bank) -> None:
+    fake_jev.script = _move_script("acc_1234", "acc_7788")
+    _understand(client, "move 1000 from savings to invest")
+    reply = _followup(client, fake_jev, "make it 2000", {"objective": {"prepare": SURE}})
+    assert reply["status"] == "unsupported" and "whole command" in reply["message"]
+    # Asking about it is still fine.
+    reply = _followup(
+        client, fake_jev, "can I afford that?", {"objective": {"assess_affordability": SURE}}
+    )
+    assert reply["status"] == "draft"
