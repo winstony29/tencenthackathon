@@ -292,3 +292,9 @@ Verification: 29 frontend unit tests, TypeScript, targeted ESLint, production st
 **Decision:** New action `account_transfer` for moves between the user's own accounts in one currency, shown as a **Move money** card. A move between currencies is a standalone `fx_conversion`, which also makes "convert 1,000 SGD to USD" work. Limits and the extra check for own-account moves are Jayanth's call under D-007.
 **Why:** Moving money between your own accounts is one of the most common banking requests, and `transfer` only pays payees. `fx_conversion` already describes a move between two own accounts, so reusing it avoids a second shape for the cross-currency case.
 **Rejected:** Treating own accounts as payees (they would need payee IDs, and a payee is someone else); same-currency only (leaves "move 1,000 from savings to invest" unsupported).
+
+## D-037 · Answers take filters, not more kinds
+2026-10-14 · Winston · Status: open (part of the v0.6 proposal, D-035)
+**Decision:** Read-only kinds take combinable filters that Jev picks from code-built options: transactions by account, period (including calendar months), payee, direction and order; bills by recurring or all. Bills carry `recurrence` and transactions carry `payee_id`.
+**Why:** "What are my recurring bills?" and "What did I pay Mum last month?" failed because each kind was rigid, not because they were out of scope. A few filters cover many phrasings without widening what Jev can do or letting it write any value.
+**Rejected:** One kind per phrasing (the list never ends); letting a model write the query (it could ask for data outside the user's own).

@@ -178,15 +178,15 @@ Each `kind` carries one payload field:
 | `kind` | Example question | Jev picks (from options code built) | Payload |
 |---|---|---|---|
 | `balance` | "What's my balance?", "How much is in savings?" | account, or all | `accounts`: as in `GET /api/accounts` |
-| `transactions` | "What did I spend this week?" | account, or all; period: `latest` (5 most recent, the default), `7d`, `30d` | `transactions`: `transaction_id`, `time`, `account_id`, `account_label`, `description`, `direction` (`credit` or `debit`), `amount`, `currency`, newest first |
-| `bills` | "What bills are coming up?", "When's my card bill due?" | nothing | `bills`: `label`, `amount`, `currency`, `due_at`, `account_id`, `account_label`, soonest first; every unpaid expense in the schedule, including the card bill |
+| `transactions` | "What did I spend this week?", "What did I pay Mum last month?", "Biggest spend this month?" | account, or all; period: `latest` (5 most recent, the default), `7d`, `30d`, `this_month`, `last_month` (calendar months); payee, or any; direction: `all`, `out`, `in`; order: `newest` (default) or `largest` | `transactions`: `transaction_id`, `time`, `account_id`, `account_label`, `description`, `direction` (`credit` or `debit`), `amount`, `currency`, `payee_id` (`null` when not a payee) |
+| `bills` | "What bills are coming up?", "What are my recurring bills?" | scope: `all` or `recurring` | `bills`: `label`, `amount`, `currency`, `due_at`, `account_id`, `account_label`, `recurrence` (`weekly`, `monthly`, `yearly` or `null`), soonest first; every unpaid expense in the schedule, including the card bill |
 | `holdings` | "What shares do I have?" | nothing | `holdings`: `ticker`, `company_name`, `quantity`, `price`, `currency`, `value` (quantity × price, an estimate), `as_of` |
 | `quote` | "What's Apple trading at?" | ticker | `quotes`: as in `GET /api/quote` |
 | `fx_rate` | "What's the SGD to USD rate?" | currency pair | `rate`: as in `GET /api/fx` |
 | `payees` | "Who can I send money to?" | nothing | `payees`: as in `GET /api/accounts` |
 | `help` | "What can you do?" | nothing | `message`: a fixed list of what the agent can do |
 
-- One Jev question (`info`) says which kind is asked, or none; a second picks the account, period, ticker or pair when the kind needs one. Jev never sees a figure. Code reads every value through `readonly` (D-026 still holds).
+- One Jev question (`info`) says which kind is asked, or none; further questions pick the filters that kind takes (table above). Filters combine, so a few of them cover many questions; code runs the query. Jev never sees a figure. Code reads every value through `readonly` (D-026 still holds).
 - An `answer` is never validated, signed or executed. It ends the session, like `unsupported`; the next command gets a new `session_id`.
 - If the same command also asks to move money ("what's in savings and send 50 to John"), the reply is the `draft`; the cards already show each account.
 - An unsure pick asks a normal `question` first ("What would you like to know?", "Which account?").
