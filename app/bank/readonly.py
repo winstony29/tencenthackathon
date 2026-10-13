@@ -22,6 +22,8 @@ from app.contracts import (
     Holding,
     Payee,
     QuoteResponse,
+    TransactionEntry,
+    UpcomingBill,
 )
 
 
@@ -362,3 +364,64 @@ def get_cashflow_forecast(
         horizon_days=horizon_days,
         proposed_amount=proposed_amount,
     )
+
+
+def _user_and_accounts(user_id: str) -> tuple[dict[str, Any], dict[str, Account]]:
+    users = _load_database()["users"]
+    if user_id not in users:
+        raise HTTPException(status_code=404, detail="User not found.")
+    user = users[user_id]
+    accounts = {
+        record["account_id"]: Account.model_validate(
+            {field: record[field] for field in Account.model_fields}
+        )
+        for record in user["accounts"]
+    }
+    return user, accounts
+
+
+def list_transactions(user_id: str) -> list[TransactionEntry]:
+    """The user's recorded transactions, newest first, for read-only answers (CONTRACTS §3.1)."""
+    user, accounts = _user_and_accounts(user_id)
+    entries = [
+        TransactionEntry.model_validate(
+            {
+                **{
+                    field: record[field]
+                    for field in TransactionEntry.model_fields
+                    if field in record
+                },
+                "account_label": accounts[record["account_id"]].label,
+            }
+        )
+        for record in user["transaction_history"]
+    ]
+    return sorted(entries, key=lambda e: e.time, reverse=True)
+
+
+def list_bills(user_id: str) -> list[UpcomingBill]:
+    """Every unpaid expense in the schedule, soonest first, including outstanding bills.
+
+    Reads the same validated schedule as the cashflow forecast; nothing is changed.
+    """
+    user, accounts = _user_and_accounts(user_id)
+    billers = {bill["biller_id"]: bill for bill in user["billers"]}
+    try:
+        occurrences = _cashflow_occurrences(user, accounts)
+    except (KeyError, TypeError):
+        raise ForecastDataError("Scheduled cashflow data is malformed") from None
+    bills = [
+        UpcomingBill.model_validate(
+            {
+                "label": billers[r["biller_id"]]["label"] if "biller_id" in r else r["label"],
+                "amount": r["amount"],
+                "currency": r["currency"],
+                "due_at": r["due_at"],
+                "account_id": r["account_id"],
+                "account_label": accounts[r["account_id"]].label,
+            }
+        )
+        for r in occurrences
+        if r.get("kind") == "expense" and r.get("state") not in ("paid", "cancelled")
+    ]
+    return sorted(bills, key=lambda b: b.due_at)

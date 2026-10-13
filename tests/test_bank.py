@@ -1232,3 +1232,17 @@ def test_cashflow_unknown_bill_payment_state_and_absent_schedule_fail_clearly(
     user.pop("cashflow_schedule")
     with pytest.raises(readonly.ForecastDataError, match="unavailable"):
         _demo_forecast()
+
+
+def test_transactions_and_bills_serve_read_only_answers(bank_seed: dict[str, Any]) -> None:
+    history = bank_seed["users"]["u_demo"]["transaction_history"]
+    entries = readonly.list_transactions("u_demo")
+    assert len(entries) == len(history)
+    assert entries == sorted(entries, key=lambda e: e.time, reverse=True)
+    assert all(e.account_label.endswith(e.account_id[-4:]) for e in entries)
+    bills = readonly.list_bills("u_demo")
+    assert [b.label for b in bills][0] == "DBS Credit Card …9012"
+    assert bills == sorted(bills, key=lambda b: b.due_at)
+    assert all(b.amount > 0 for b in bills)
+    with pytest.raises(HTTPException):
+        readonly.list_transactions("u_nobody")
