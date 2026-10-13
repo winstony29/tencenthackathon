@@ -9,15 +9,17 @@ import asyncio
 import json
 import os
 import re
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi import HTTPException
 
 from app import config
 from app.bank import readonly
-from app.contracts import AccountsResponse, Draft, TransactionEntry
+from app.contracts import AccountsResponse, Draft, TransactionEntry, UpcomingBill
 from app.intent import draft, gate, jev, options, session, shield
 from tests.conftest import BANK, QUOTES
 
@@ -1179,22 +1181,81 @@ def test_a_non_banking_request_is_still_unsupported(client, fake_jev, bank) -> N
     assert reply["status"] == "unsupported" and "accounts" in reply["message"]
 
 
-def test_transactions_default_to_the_latest_five(client, fake_jev, bank, monkeypatch) -> None:
-    entries = [
-        TransactionEntry(
-            transaction_id=f"tx_{i}", time=f"2026-10-{10 - i:02d}T12:00:00+08:00",
-            account_id="acc_1234", account_label="Savings …1234", description=f"Item {i}",
-            direction="debit", amount="10.00", currency="SGD",
-        )
-        for i in range(7)
-    ]  # fmt: skip
-    monkeypatch.setattr(readonly, "list_transactions", lambda user_id: entries, raising=False)
-    reply = _ask_info(
-        client, fake_jev, "what did I spend?", "transactions",
-        transactions_account={"all": SURE, "acc_1234": 1 - SURE},
-        transactions_period={"latest": SURE, "7d": 1 - SURE},
+def _entry(i: int, day: str, amount: str = "10.00", **fields) -> TransactionEntry:
+    return TransactionEntry.model_validate(
+        {
+            "transaction_id": f"tx_{i}", "time": f"{day}T12:00:00+08:00",
+            "account_id": "acc_1234", "account_label": "Savings …1234",
+            "description": f"Item {i}", "direction": "debit", "amount": amount,
+            "currency": "SGD", "payee_id": None, **fields,
+        }
     )  # fmt: skip
-    assert [t["transaction_id"] for t in reply["transactions"]] == [f"tx_{i}" for i in range(5)]
+
+
+def _transactions_reply(client, fake_jev, monkeypatch, entries, **picks) -> list[str]:
+    monkeypatch.setattr(readonly, "list_transactions", lambda user_id: entries, raising=False)
+    script = {
+        "transactions_account": {"all": SURE, "acc_1234": 1 - SURE},
+        **{f"transactions_{k}": {v: SURE} for k, v in picks.items()},
+    }
+    reply = _ask_info(client, fake_jev, "what did I spend?", "transactions", **script)
+    return [t["transaction_id"] for t in reply["transactions"]]
+
+
+def test_transactions_default_to_the_latest_five(client, fake_jev, bank, monkeypatch) -> None:
+    entries = [_entry(i, f"2026-10-{10 - i:02d}") for i in range(7)]
+    assert _transactions_reply(client, fake_jev, monkeypatch, entries) == [
+        f"tx_{i}" for i in range(5)
+    ]
+
+
+def test_transactions_filter_by_payee_direction_and_month(
+    client, fake_jev, bank, monkeypatch
+) -> None:
+    now = datetime.now(ZoneInfo(config.TIMEZONE))
+    last_month = (now.replace(day=1) - timedelta(days=1)).strftime("%Y-%m-15")
+    entries = [
+        _entry(1, last_month, payee_id="pay_0001"),  # Mum, last month
+        _entry(2, last_month, payee_id="pay_4521"),  # John, last month
+        _entry(3, now.strftime("%Y-%m-01"), payee_id="pay_0001"),  # Mum, this month
+        _entry(4, last_month, direction="credit"),  # money in, last month
+    ]
+    paid_mum_last_month = _transactions_reply(
+        client, fake_jev, monkeypatch, entries, period="last_month", payee="pay_0001"
+    )
+    assert paid_mum_last_month == ["tx_1"]
+    money_in = _transactions_reply(
+        client, fake_jev, monkeypatch, entries, period="last_month", direction="in"
+    )
+    assert money_in == ["tx_4"]
+
+
+def test_largest_first_answers_the_biggest_spend(client, fake_jev, bank, monkeypatch) -> None:
+    entries = [
+        _entry(i, "2026-10-05", amount) for i, amount in enumerate(["5.00", "90.00", "40.00"])
+    ]
+    largest = _transactions_reply(client, fake_jev, monkeypatch, entries, order="largest")
+    assert largest == ["tx_1", "tx_2", "tx_0"]
+    # US$80 (S$108 at the test rate) outranks S$90.
+    entries.append(_entry(3, "2026-10-05", "80.00", currency="USD"))
+    largest = _transactions_reply(client, fake_jev, monkeypatch, entries, order="largest")
+    assert largest[:2] == ["tx_3", "tx_1"]
+
+
+def test_recurring_bills_leave_out_one_off_ones(client, fake_jev, bank, monkeypatch) -> None:
+    bills = [
+        UpcomingBill(
+            label=label, amount="10.00", currency="SGD", due_at="2026-11-01T09:00:00+08:00",
+            account_id="acc_1234", account_label="Savings …1234", recurrence=recurrence,
+        )
+        for label, recurrence in [("Card bill", None), ("Rent", "monthly")]
+    ]  # fmt: skip
+    monkeypatch.setattr(readonly, "list_bills", lambda user_id: bills, raising=False)
+    reply = _ask_info(
+        client, fake_jev, "what are my recurring bills?", "bills",
+        bills_scope={"recurring": SURE, "all": 1 - SURE},
+    )  # fmt: skip
+    assert [b["label"] for b in reply["bills"]] == ["Rent"]
 
 
 def test_holdings_are_valued_at_the_quote(client, fake_jev, bank) -> None:

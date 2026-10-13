@@ -339,7 +339,14 @@ def _command_step(
 # The extra picks each read-only kind needs (CONTRACTS §3.1 answers).
 _ANSWER_SLOTS = {
     "balance": ["balance_account"],
-    "transactions": ["transactions_account", "transactions_period"],
+    "transactions": [
+        "transactions_account",
+        "transactions_period",
+        "transactions_payee",
+        "transactions_direction",
+        "transactions_order",
+    ],
+    "bills": ["bills_scope"],
     "quote": ["ticker"],
     "fx_rate": ["fx_pair"],
 }

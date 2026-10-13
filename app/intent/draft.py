@@ -7,7 +7,7 @@ Contract: docs/CONTRACTS.md §2
 
 import re
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from zoneinfo import ZoneInfo
 
@@ -55,6 +55,16 @@ LATEST = 5  # transactions shown when no period is said (D-035)
 _PERIOD_DAYS = {"7d": 7, "30d": 30}
 
 
+def _period(period: str, now: datetime) -> tuple[datetime, datetime | None]:
+    """When a transactions period begins, and when it ends (None: now)."""
+    if period in _PERIOD_DAYS:
+        return now - timedelta(days=_PERIOD_DAYS[period]), None
+    month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if period == "this_month":
+        return month, None
+    return (month - timedelta(days=1)).replace(day=1), month  # last_month
+
+
 def answer(kind: str, picks: dict[str, str], data: UserData, user_id: str) -> dict:
     """The payload of a read-only answer (CONTRACTS §3.1 answers); every value read by code."""
     a = data.accounts
@@ -63,14 +73,10 @@ def answer(kind: str, picks: dict[str, str], data: UserData, user_id: str) -> di
             "accounts": [x for x in a.accounts if picks["balance_account"] in ("all", x.account_id)]
         }
     if kind == "transactions":
-        which, period = picks["transactions_account"], picks["transactions_period"]
-        entries = [e for e in readonly.list_transactions(user_id) if which in ("all", e.account_id)]
-        if period == "latest":
-            return {"transactions": entries[:LATEST]}
-        since = datetime.now(ZoneInfo(config.TIMEZONE)).timestamp() - _PERIOD_DAYS[period] * 86400
-        return {"transactions": [e for e in entries if e.time.timestamp() >= since]}
+        return {"transactions": _transactions(picks, user_id)}
     if kind == "bills":
-        return {"bills": readonly.list_bills(user_id)}
+        recurring = picks["bills_scope"] == "recurring"
+        return {"bills": [b for b in readonly.list_bills(user_id) if b.recurrence or not recurring]}
     if kind == "holdings":
         quotes = {q.ticker: q for q in data.quotes}
         return {
@@ -96,6 +102,27 @@ def answer(kind: str, picks: dict[str, str], data: UserData, user_id: str) -> di
     if kind == "payees":
         return {"payees": a.payees}
     return {"message": HELP}
+
+
+def _transactions(picks: dict[str, str], user_id: str) -> list:
+    """The user's transactions, filtered and ordered as Jev picked (D-037)."""
+    account, period = picks["transactions_account"], picks["transactions_period"]
+    payee, direction = picks["transactions_payee"], picks["transactions_direction"]
+    entries = [
+        e
+        for e in readonly.list_transactions(user_id)
+        if account in ("all", e.account_id)
+        and payee in ("any", e.payee_id)
+        and direction in ("all", "in" if e.direction == "credit" else "out")
+    ]
+    if period != "latest":
+        start, end = _period(period, datetime.now(ZoneInfo(config.TIMEZONE)))
+        entries = [e for e in entries if e.time >= start and (end is None or e.time < end)]
+    if picks["transactions_order"] == "largest":
+        # Rank by SGD value, so US$2,000 outranks S$2,500; the amounts shown stay as recorded.
+        rates = {c: _rate(c, "SGD").rate for c in {e.currency for e in entries} - {"SGD"}}
+        entries.sort(key=lambda e: e.amount * rates.get(e.currency, 1), reverse=True)
+    return entries[:LATEST] if period == "latest" else entries
 
 
 def build(

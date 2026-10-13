@@ -445,6 +445,14 @@ def build(transcript: str, data: UserData, scope: str) -> Options:
         "balance_account": ("Which account's balance is asked for?", [*accounts, all_accounts]),
         "transactions_account": ("Whose account activity is asked for?", [*accounts, all_accounts]),
         "transactions_period": ("Over what time are past transactions asked for?", PERIODS),
+        "transactions_payee": (
+            "Which person's payments are asked about?",
+            [("any", "No particular person is named.", "Anyone")]
+            + [(p.payee_id, _payee(p.name), p.label) for p in a.payees],
+        ),
+        "transactions_direction": ("Is money in or money out asked about?", DIRECTIONS),
+        "transactions_order": ("In what order are transactions wanted?", ORDERS),
+        "bills_scope": ("Which upcoming bills are asked about?", BILL_SCOPES),
         "fx_pair": (
             "Which exchange rate is asked for?",
             [
@@ -485,7 +493,22 @@ INFO_KINDS = [
 PERIODS = [
     ("latest", "No time is said; the most recent ones.", "Latest"),
     ("7d", "This week, or the last few days.", "Last 7 days"),
-    ("30d", "This month, or the last few weeks.", "Last 30 days"),
+    ("30d", "The last few weeks, or the past thirty days.", "Last 30 days"),
+    ("this_month", "This calendar month so far.", "This month"),
+    ("last_month", "The previous calendar month.", "Last month"),
+]
+DIRECTIONS = [
+    ("all", "Money in and out; no direction is said.", "All"),
+    ("out", "Money paid out or spent.", "Money out"),
+    ("in", "Money received, such as salary or interest.", "Money in"),
+]
+ORDERS = [
+    ("newest", "The most recent first; no order is said.", "Newest first"),
+    ("largest", "The biggest amounts first, e.g. the biggest spend.", "Largest first"),
+]
+BILL_SCOPES = [
+    ("all", "Every upcoming bill; no kind is said.", "All bills"),
+    ("recurring", "Only bills that repeat, such as monthly ones.", "Recurring bills"),
 ]
 
 OBJECTIVES = [
@@ -607,6 +630,10 @@ _ASK = {
     "balance_account": "Which account?",
     "transactions_account": "Which account?",
     "transactions_period": "Over what time?",
+    "transactions_payee": "Who did you pay, or get money from?",
+    "transactions_direction": "Money in or money out?",
+    "transactions_order": "Newest or largest first?",
+    "bills_scope": "All bills, or only recurring ones?",
     "fx_pair": "Which exchange rate?",
     "several_transfers": "Is this more than one transfer?",
     "recipient": "Who should get the money?",
