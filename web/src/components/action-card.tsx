@@ -38,13 +38,15 @@ export function ActionCard({
         ? "Pay your bill"
         : action.type === "fx_conversion"
           ? "Convert currency"
-          : `${action.side === "buy" ? "Buy" : "Sell"} shares`;
+          : action.type === "account_transfer"
+            ? "Move money"
+            : `${action.side === "buy" ? "Buy" : "Sell"} shares`;
   const recipient =
     action.type === "transfer"
       ? action.to_payee_label
       : action.type === "bill_payment"
         ? action.biller_label
-        : action.type === "fx_conversion"
+        : action.type === "fx_conversion" || action.type === "account_transfer"
           ? action.to_account_label
           : action.company_name;
   const usableQuote =
@@ -90,7 +92,7 @@ export function ActionCard({
                 <TrendingUp size={20} aria-hidden="true" />
               ) : action.type === "bill_payment" ? (
                 <ReceiptText size={20} aria-hidden="true" />
-              ) : action.type === "fx_conversion" ? (
+              ) : action.type === "fx_conversion" || action.type === "account_transfer" ? (
                 <ArrowLeftRight size={20} aria-hidden="true" />
               ) : (
                 recipient.charAt(0)
@@ -100,7 +102,7 @@ export function ActionCard({
               <span className="field-label">
                 {action.type === "stock_order"
                   ? action.ticker
-                  : action.type === "transfer"
+                  : action.type === "transfer" || action.type === "account_transfer"
                     ? "To"
                     : action.type === "fx_conversion"
                       ? "Into"
@@ -325,7 +327,7 @@ function ValueControls({ action, index, editor }: FieldProps) {
 }
 
 function FundingControl({ action, index, editor }: FieldProps) {
-  if (!editor || action.type === "fx_conversion") return null;
+  if (!editor || action.type === "fx_conversion" || action.type === "account_transfer") return null;
   return (
     <>
       <label>

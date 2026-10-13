@@ -32,7 +32,11 @@ export function V5Payment({
         ? "Transfer now"
         : a.type === "bill_payment"
           ? "Pay now"
-          : "Place order";
+          : a.type === "account_transfer"
+            ? "Move now"
+            : a.type === "fx_conversion"
+              ? "Convert now"
+              : "Place order";
   async function send() {
     if (locked.current || uncertain || result?.status === "executed" || result?.status === "rejected") return;
     locked.current = true;

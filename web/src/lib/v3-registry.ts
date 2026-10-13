@@ -64,7 +64,9 @@ export function makeContext(
   quotes: Record<string, Quote>,
 ): Context {
   // V3 state refuses drafts with a conversion, so none reaches here.
-  const types = draft.actions.flatMap((a) => (a.type === "fx_conversion" ? [] : [a.type]));
+  const types = draft.actions.flatMap((a) =>
+    a.type === "fx_conversion" || a.type === "account_transfer" ? [] : [a.type],
+  );
   const quoted = draft.actions
     .filter((a) => a.type === "stock_order")
     .every((a) => quotes[a.ticker]?.ticker === a.ticker && quotes[a.ticker]?.currency === a.currency);

@@ -368,3 +368,43 @@ test("v0.4 draft replies with a conversion parse, refuse edits to it, and projec
     false,
   );
 });
+
+test("v0.7 own-account moves parse, edit only the amount, and project both accounts", () => {
+  const move = {
+    type: "account_transfer",
+    from_account_id: "acc_7788",
+    from_account_label: "Invest (USD) …7788",
+    to_account_id: "acc_7788",
+    to_account_label: "Invest (USD) …7788",
+    amount: "500.00",
+    currency: "USD",
+  };
+  const draft = draftSchema.parse({ ...restReply.draft, actions: [{ ...move, from_account_id: "acc_x" }] });
+  assert.equal(draft.actions[0].type, "account_transfer");
+  const accounts = {
+    ...exampleAccounts,
+    accounts: [
+      ...exampleAccounts.accounts,
+      {
+        account_id: "acc_9999",
+        label: "Spare (USD) …9999",
+        type: "current",
+        currency: "USD",
+        balance: "0.00",
+      },
+    ],
+  };
+  const real = draftSchema.parse({
+    ...restReply.draft,
+    actions: [{ ...move, to_account_id: "acc_9999", to_account_label: "Spare (USD) …9999" }],
+  });
+  assert.match(editedActions(real, { 0: { from_account_id: "acc_9999" } }, accounts).errors[0], /editable/);
+  assert.deepEqual(editedActions(real, { 0: { amount: "300.00" } }, accounts).errors, {});
+  assert.deepEqual(
+    projectedBalances(real.actions, accounts, {}).map((r) => [r.account_id, r.projected]),
+    [
+      ["acc_7788", "29500.00"],
+      ["acc_9999", "500.00"],
+    ],
+  );
+});

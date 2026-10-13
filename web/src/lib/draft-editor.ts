@@ -20,7 +20,9 @@ export function editedActions(
           ? ["amount", "to_payee_id", "from_account_id"]
           : original.type === "bill_payment"
             ? ["amount", "from_account_id"]
-            : []; // a conversion is derived by code from the other actions
+            : original.type === "account_transfer"
+              ? ["amount"] // both ends are the user's own accounts; change them by request
+              : []; // a conversion is derived by code from the other actions
     if (
       Object.keys(edit).some((field) => !allowed.includes(field)) ||
       (edit.order_type !== undefined && !["market", "limit"].includes(edit.order_type))
@@ -82,7 +84,8 @@ export function projectedBalances(actions: Action[], accounts: Accounts, quotes:
       actions.some(
         (a) =>
           a.from_account_id === account.account_id ||
-          (a.type === "fx_conversion" && a.to_account_id === account.account_id),
+          ((a.type === "fx_conversion" || a.type === "account_transfer") &&
+            a.to_account_id === account.account_id),
       ),
     )
     .map((account) => {
@@ -92,6 +95,10 @@ export function projectedBalances(actions: Action[], accounts: Accounts, quotes:
         if (action.type === "fx_conversion" && action.to_account_id === account.account_id) {
           if (action.buy_currency !== account.currency) complete = false;
           else change += cents(action.buy_amount);
+        }
+        if (action.type === "account_transfer" && action.to_account_id === account.account_id) {
+          if (action.currency !== account.currency) complete = false;
+          else change += cents(action.amount);
         }
         if (action.from_account_id !== account.account_id) continue;
         if (fromCurrency(action) !== account.currency) {

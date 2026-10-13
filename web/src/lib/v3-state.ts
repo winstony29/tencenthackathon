@@ -45,7 +45,8 @@ export function reducer(state: State, event: Event): State {
       !objectiveSchema.safeParse(objective).success ||
       draft.actions.some(
         (a) =>
-          a.type === "fx_conversion" || // V3 has no conversion layout; V5 shows them
+          a.type === "fx_conversion" || // V3 has no layout for these; V5 shows them
+          a.type === "account_transfer" ||
           !v2Accounts.accounts.some((b) => b.account_id === a.from_account_id && b.currency === a.currency) ||
           (a.type === "transfer" && !v2Accounts.payees.some((p) => p.payee_id === a.to_payee_id)),
       )

@@ -42,7 +42,9 @@ function Task({
             ? "Currency conversion"
             : a.type === "transfer"
               ? "Transfer details"
-              : "Bill payment"
+              : a.type === "account_transfer"
+                ? "Move money"
+                : "Bill payment"
       }
     >
       <div className="v5-task-title">
@@ -53,7 +55,9 @@ function Task({
               ? "Convert currency"
               : a.type === "transfer"
                 ? "Transfer"
-                : "Bill payment"}
+                : a.type === "account_transfer"
+                  ? "Move money"
+                  : "Bill payment"}
         </span>
         <span>Not sent</span>
       </div>
@@ -93,11 +97,17 @@ function Task({
           </>
         ) : (
           <div>
-            <dt>{stock ? "Stock" : a.type === "transfer" ? "To" : "Biller"}</dt>
+            <dt>{stock ? "Stock" : a.type === "bill_payment" ? "Biller" : "To"}</dt>
             <dd>
               {a.type === "stock_order"
                 ? `${a.ticker} · ${a.company_name}`
-                : label(a.type === "transfer" ? a.to_payee_label : a.biller_label)}
+                : label(
+                    a.type === "transfer"
+                      ? a.to_payee_label
+                      : a.type === "account_transfer"
+                        ? a.to_account_label
+                        : a.biller_label,
+                  )}
             </dd>
           </div>
         )}

@@ -20,9 +20,9 @@ OPTIONAL = {"RecipientDetails", "StockEstimate", "FundingOptions", "AccountInsig
 class Context(BaseModel):
     model_config = ConfigDict(extra="forbid")
     objective: Literal["prepare", "assess_affordability", "simulate", "review"]
-    action_types: list[Literal["transfer", "bill_payment", "stock_order", "fx_conversion"]] = Field(
-        min_length=1, max_length=4
-    )
+    action_types: list[
+        Literal["transfer", "bill_payment", "stock_order", "account_transfer", "fx_conversion"]
+    ] = Field(min_length=1, max_length=4)
     financial_context: bool = False
     funding: Literal["sufficient", "shortfall", "unknown"] = "unknown"
     commitments: Literal["present", "none", "unknown"] = "unknown"

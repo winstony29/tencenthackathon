@@ -32,6 +32,14 @@ export const actionSchema = z.discriminatedUnion("type", [
       limit_price: money.nullable(),
     })
     .refine((a) => (a.order_type === "limit") === (a.limit_price !== null), "Invalid limit price"),
+  // Money between two of the user's own accounts in one currency (CONTRACTS §2.1, v0.7 proposed).
+  z.strictObject({
+    ...common,
+    type: z.literal("account_transfer"),
+    to_account_id: z.string(),
+    to_account_label: z.string(),
+    amount: money,
+  }),
   // Code adds a conversion before a purchase in another currency; the user never edits it (CONTRACTS §2.1).
   z.strictObject({
     type: z.literal("fx_conversion"),
