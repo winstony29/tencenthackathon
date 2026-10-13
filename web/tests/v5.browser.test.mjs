@@ -130,6 +130,13 @@ function understand(body, sessions) {
       meta,
     };
   if (said === "Pay my card bill and buy 100 Apple shares") return draftReply([bill, shares], said);
+  if (/ignore previous instructions/i.test(said))
+    return {
+      status: "blocked",
+      reason: "possible_injection",
+      message: "This request contains instructions I can't act on. Please say it again.",
+      meta,
+    };
   return {
     status: "unsupported",
     message: "I can help with transfers, bill payments and stock orders.",
@@ -351,3 +358,28 @@ test("V5 keeps both requested actions and confirms the complete draft once", { t
     await browser.close();
   }
 });
+
+test(
+  "V5 shows the engine's blocked and unsupported replies and sends nothing to the bank",
+  { timeout: 30000 },
+  async () => {
+    const browser = await chromium.launch({ executablePath, headless: true });
+    try {
+      const page = await browser.newPage({ reducedMotion: "reduce" });
+      const calls = await setup(page);
+      await page.getByRole("button", { name: "Start over", exact: true }).click();
+      await page.getByRole("button", { name: "Choose a banking request" }).click();
+      await page.getByRole("button", { name: "Try a blocked request", exact: true }).click();
+      await page.getByRole("heading", { name: "Request stopped." }).waitFor();
+      await page.getByText("instructions I can't act on").waitFor();
+      await page.getByRole("button", { name: "Start over", exact: true }).first().click();
+      await page.getByRole("button", { name: "Choose a banking request" }).click();
+      await page.getByLabel("What would you like to do?").fill("what's the weather");
+      await page.getByRole("button", { name: "Send request" }).click();
+      await page.getByRole("heading", { name: "Nothing was sent." }).waitFor();
+      assert.deepEqual(calls, []);
+    } finally {
+      await browser.close();
+    }
+  },
+);
