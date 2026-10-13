@@ -44,9 +44,114 @@ function response(body) {
 }
 import { webcrypto } from "node:crypto";
 
+// Scripted intent engine and read-only bank data, in the CONTRACTS v0.4 shapes.
+const accounts = {
+  accounts: [
+    { account_id: "acc_1234", label: "Savings …1234", type: "savings", currency: "SGD", balance: "3200.00" },
+    {
+      account_id: "acc_7788",
+      label: "Invest (USD) …7788",
+      type: "investment",
+      currency: "USD",
+      balance: "30000.00",
+    },
+  ],
+  payees: [
+    { payee_id: "pay_4521", name: "John Doe", label: "John Doe …4521" },
+    { payee_id: "pay_8892", name: "John Smith", label: "John Smith …8892" },
+  ],
+  billers: [
+    { biller_id: "bil_0001", name: "DBS Credit Card", label: "DBS Credit Card …9012", amount_due: "1240.00" },
+  ],
+  holdings: [{ ticker: "AAPL", quantity: 10 }],
+};
+const meta = { latency_ms: 5, model: "jev-fake", source: "fake", phrasings: 1, cached: false };
+const savings = { from_account_id: "acc_1234", from_account_label: "Savings …1234" };
+const transfer = {
+  type: "transfer",
+  ...savings,
+  to_payee_id: "pay_4521",
+  to_payee_label: "John Doe …4521",
+  amount: "50.00",
+  currency: "SGD",
+};
+const bill = {
+  type: "bill_payment",
+  ...savings,
+  biller_id: "bil_0001",
+  biller_label: "DBS Credit Card …9012",
+  bill_reference: "4120-XXXX-XXXX-9012",
+  amount: "1240.00",
+  currency: "SGD",
+};
+const shares = {
+  type: "stock_order",
+  from_account_id: "acc_7788",
+  from_account_label: "Invest (USD) …7788",
+  side: "buy",
+  ticker: "AAPL",
+  company_name: "Apple Inc.",
+  quantity: 100,
+  order_type: "market",
+  limit_price: null,
+  currency: "USD",
+};
+function understand(body, sessions) {
+  const draftReply = (actions, transcript, objective = "prepare") => ({
+    status: "draft",
+    draft: {
+      draft_id: `d_${body.session_id.slice(2, 8)}`,
+      user_id: "u_demo",
+      session_id: body.session_id,
+      transcript,
+      created_at: "2026-10-13T09:30:00+08:00",
+      actions,
+      evidence: [],
+    },
+    objective,
+    scenario: null,
+    meta,
+  });
+  const said = body.transcript ?? "";
+  if (body.answer?.option_id === "pay_4521")
+    return (sessions[body.session_id] = draftReply([transfer], "Send $50 to John"));
+  if (said === "Can I afford that?" && sessions[body.session_id])
+    return { ...sessions[body.session_id], objective: "assess_affordability" };
+  if (said === "Send $50 to John")
+    return {
+      status: "question",
+      question: {
+        question_id: "q_1",
+        text: "Which John did you mean?",
+        options: accounts.payees.map((p) => ({ option_id: p.payee_id, label: p.label })),
+        allow_none: true,
+      },
+      evidence: [],
+      meta,
+    };
+  if (said === "Pay my card bill and buy 100 Apple shares") return draftReply([bill, shares], said);
+  if (/ignore previous instructions/i.test(said))
+    return {
+      status: "blocked",
+      reason: "possible_injection",
+      message: "This request contains instructions I can't act on. Please say it again.",
+      meta,
+    };
+  return {
+    status: "unsupported",
+    message: "I can help with transfers, bill payments and stock orders.",
+    meta,
+  };
+}
+
 async function setup(page, mode = "otp") {
   const calls = [];
+  const sessions = {};
   let draft, publicKey, payload;
+  await page.route("**/api/understand", (route) =>
+    route.fulfill({ json: understand(route.request().postDataJSON(), sessions) }),
+  );
+  await page.route("**/api/accounts?*", (route) => route.fulfill({ json: accounts }));
   await page.route("**/api/presentation-v4/evaluate", (route) =>
     route.fulfill({ json: response(route.request().postDataJSON()) }),
   );
@@ -253,3 +358,28 @@ test("V5 keeps both requested actions and confirms the complete draft once", { t
     await browser.close();
   }
 });
+
+test(
+  "V5 shows the engine's blocked and unsupported replies and sends nothing to the bank",
+  { timeout: 30000 },
+  async () => {
+    const browser = await chromium.launch({ executablePath, headless: true });
+    try {
+      const page = await browser.newPage({ reducedMotion: "reduce" });
+      const calls = await setup(page);
+      await page.getByRole("button", { name: "Start over", exact: true }).click();
+      await page.getByRole("button", { name: "Choose a banking request" }).click();
+      await page.getByRole("button", { name: "Try a blocked request", exact: true }).click();
+      await page.getByRole("heading", { name: "Request stopped." }).waitFor();
+      await page.getByText("instructions I can't act on").waitFor();
+      await page.getByRole("button", { name: "Start over", exact: true }).first().click();
+      await page.getByRole("button", { name: "Choose a banking request" }).click();
+      await page.getByLabel("What would you like to do?").fill("what's the weather");
+      await page.getByRole("button", { name: "Send request" }).click();
+      await page.getByRole("heading", { name: "Nothing was sent." }).waitFor();
+      assert.deepEqual(calls, []);
+    } finally {
+      await browser.close();
+    }
+  },
+);

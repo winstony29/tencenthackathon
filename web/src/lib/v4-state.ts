@@ -2,6 +2,7 @@ import { financialSchema } from "./v4-financial";
 import { z } from "zod";
 import { accountsSchema, draftSchema, quoteSchema, type Draft } from "./contracts";
 import { editedActions, updateEdit, type DraftEdits } from "./draft-editor";
+import { fromCurrency } from "./money";
 
 export const objectiveSchema = z.enum(["prepare", "assess_affordability", "simulate", "review"]);
 export type Objective = z.infer<typeof objectiveSchema>;
@@ -74,9 +75,16 @@ function validHandoff(h: Handoff) {
         accounts.accounts.some(
           (b) =>
             b.account_id === a.from_account_id &&
-            b.currency === a.currency &&
+            b.currency === fromCurrency(a) &&
             b.label === a.from_account_label,
         ) &&
+        (a.type !== "fx_conversion" ||
+          accounts.accounts.some(
+            (b) =>
+              b.account_id === a.to_account_id &&
+              b.currency === a.buy_currency &&
+              b.label === a.to_account_label,
+          )) &&
         (a.type !== "transfer" ||
           accounts.payees.some((p) => p.payee_id === a.to_payee_id && p.label === a.to_payee_label)) &&
         (a.type !== "bill_payment" ||
@@ -91,7 +99,13 @@ function preserveEdits(state: State, draft: Draft): DraftEdits {
     const old = state.handoff!.draft.actions[i];
     if (!old || old.type !== a.type) return;
     const identity =
-      a.type === "transfer" ? "to_payee_id" : a.type === "stock_order" ? "ticker" : "biller_id";
+      a.type === "transfer"
+        ? "to_payee_id"
+        : a.type === "stock_order"
+          ? "ticker"
+          : a.type === "fx_conversion"
+            ? "to_account_id"
+            : "biller_id";
     const before = old as unknown as Record<string, unknown>,
       after = a as unknown as Record<string, unknown>;
     if (before[identity] !== after[identity]) return;

@@ -79,6 +79,7 @@ dcta/
 │   └── commands.jsonl        ~30 test commands with expected results          Winston
 │
 ├── scripts/
+│   ├── chat.py               text conversation with /api/understand (live Jev)  Winston
 │   └── eval_intent.py        single Jev vs Jev × K comparison report           Winston
 │
 └── var/                      runtime state (ledger, audit, nonces); git-ignored

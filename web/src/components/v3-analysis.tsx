@@ -4,7 +4,7 @@ import { effective, scenarioActions } from "@/lib/v3-state";
 import { projectedBalances } from "@/lib/draft-editor";
 import { v2Accounts } from "@/lib/v2-parser";
 import { exampleQuote } from "@/lib/examples";
-import { displayMoney, estimatedTotal } from "@/lib/money";
+import { displayMoney, estimatedTotal, fromCurrency } from "@/lib/money";
 import { AmountInput, FinancialMetric, SectionHeading, InlineNotice } from "./v3-primitives";
 import { Button } from "./ui/button";
 import type { ComponentProps } from "./v3-editors";
@@ -96,6 +96,7 @@ export function AmountSimulator({ state, dispatch }: ComponentProps) {
         aside={<SlidersHorizontal size={22} aria-hidden="true" />}
       />
       {simulated.actions.map((a, i) => {
+        if (a.type === "fx_conversion") return null; // derived from the other actions; no what-if
         const stock = a.type === "stock_order",
           field = stock ? "quantity" : "amount";
         const raw = state.scenario[i]?.[field] ?? (stock ? String(a.quantity) : a.amount);
@@ -138,7 +139,9 @@ export function AmountSimulator({ state, dispatch }: ComponentProps) {
               Draft:{" "}
               {committed.type === "stock_order"
                 ? `${committed.quantity} shares`
-                : displayMoney(committed.amount, committed.currency)}
+                : committed.type === "fx_conversion"
+                  ? displayMoney(committed.sell_amount, committed.sell_currency)
+                  : displayMoney(committed.amount, committed.currency)}
             </p>
             {simulated.errors[i] && (
               <InlineNotice error>
@@ -178,7 +181,7 @@ export function RecipientCheck({ state }: ComponentProps) {
   );
 }
 export function AccountComparison({ state }: ComponentProps) {
-  const currencies = new Set(effective(state).actions.map((a) => a.currency));
+  const currencies = new Set(effective(state).actions.map(fromCurrency));
   return (
     <>
       <SectionHeading eyebrow="FUNDING" title="Your options" />
@@ -256,9 +259,17 @@ export function MultiSummary({ state }: ComponentProps) {
               ? `${a.side} ${a.quantity} ${a.ticker}`
               : a.type === "transfer"
                 ? a.to_payee_label
-                : a.biller_label}
+                : a.type === "fx_conversion"
+                  ? `Convert to ${a.buy_currency}`
+                  : a.biller_label}
           </strong>
-          <b>{a.type === "stock_order" ? a.currency : displayMoney(a.amount, a.currency)}</b>
+          <b>
+            {a.type === "stock_order"
+              ? a.currency
+              : a.type === "fx_conversion"
+                ? displayMoney(a.sell_amount, a.sell_currency)
+                : displayMoney(a.amount, a.currency)}
+          </b>
         </div>
       ))}
       <InlineNotice>

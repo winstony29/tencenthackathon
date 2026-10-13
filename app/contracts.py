@@ -24,7 +24,7 @@ NONE_OPTION_ID = "none"  # option_id the UI sends when the user picks "None of t
 
 
 def _require_money_string(value: object) -> object:
-    # A float has already lost precision, so money must arrive as a string like "50.00".
+    # A float has already lost precision, so money and rates must arrive as strings like "50.00".
     if not isinstance(value, str | Decimal):
         raise ValueError("money must be a string like '50.00'")
     return value
@@ -35,6 +35,12 @@ Money = Annotated[
     BeforeValidator(_require_money_string),
     Field(ge=0, decimal_places=2),
     PlainSerializer(lambda value: f"{value:.2f}", return_type=str, when_used="json"),
+]
+Rate = Annotated[
+    Decimal,
+    BeforeValidator(_require_money_string),
+    Field(gt=0, decimal_places=6),
+    PlainSerializer(lambda value: f"{value:.6f}", return_type=str, when_used="json"),
 ]
 Currency = Annotated[str, Field(pattern=r"^[A-Z]{3}$")]
 Text = Annotated[str, Field(max_length=MAX_TEXT_CHARS)]
@@ -89,8 +95,24 @@ class StockOrderAction(ContractModel):
         return self
 
 
+class FxConversionAction(ContractModel):
+    # Added by code, never said by the user; see docs/CONTRACTS.md §10.5.
+    type: Literal["fx_conversion"]
+    from_account_id: str
+    from_account_label: str
+    to_account_id: str
+    to_account_label: str
+    sell_amount: Money
+    sell_currency: Currency
+    buy_amount: Money
+    buy_currency: Currency
+    rate: Rate
+    rate_as_of: AwareDatetime
+
+
 Action = Annotated[
-    TransferAction | BillPaymentAction | StockOrderAction, Field(discriminator="type")
+    TransferAction | BillPaymentAction | StockOrderAction | FxConversionAction,
+    Field(discriminator="type"),
 ]
 
 
@@ -183,9 +205,16 @@ class QuestionResponse(ContractModel):
     meta: Meta
 
 
+Objective = Literal["prepare", "assess_affordability", "simulate", "check_recipient", "review"]
+# Hypothetical values for `simulate`, keyed by action index: never part of the signed draft.
+Scenario = dict[int, dict[Literal["amount", "quantity"], str]]
+
+
 class DraftResponse(ContractModel):
     status: Literal["draft"]
     draft: Draft
+    objective: Objective
+    scenario: Scenario | None
     meta: Meta
 
 
@@ -286,6 +315,16 @@ class QuoteResponse(ContractModel):
     as_of: AwareDatetime
 
 
+class FxResponse(ContractModel):
+    # `from` is a Python keyword, so the field is `from_` on the wire as "from" (§10.6).
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    from_: Currency = Field(alias="from")
+    to: Currency
+    rate: Rate
+    as_of: AwareDatetime
+
+
 class DeviceRegisterRequest(ContractModel):
     user_id: str
     public_key_jwk: dict[str, Any]
@@ -338,6 +377,7 @@ RejectReason = Literal[
     "kyc_incomplete",
     "insufficient_funds",
     "bad_otp",
+    "rate_changed",
 ]
 
 

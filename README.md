@@ -7,14 +7,38 @@ Background: `docs/BRIEF.md`. Coding assistants: read `AGENTS.md` first.
 
 ## Run locally
 
+One server runs the whole app: FastAPI serves the API and the built front end.
+
 ```bash
+# once
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env          # then fill in your keys
-uvicorn app.main:app --reload
+cp .env.example .env          # then fill in your keys (MAKERS_MODELS_KEY for live Jev)
+cd web && npm install && cd ..
+
+# after every pull that changes web/
+cd web && npm run build && cd ..
+
+# start
+uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-Open http://localhost:8000/docs for the API. Run the frontend below for the app.
+Open http://127.0.0.1:8000/v5/ for the app (`/` and `/v4/` are earlier versions) and
+http://127.0.0.1:8000/docs for the API.
+
+| `MAKERS_MODELS_KEY` in `.env` | What runs |
+|---|---|
+| set | Live Jev: the real intent engine reads requests and composes the screen |
+| empty | Contract stubs (CONTRACTS §7): every request gets the same example replies |
+
+Accounts, payees and prices come from `data/bank.json`. Validation, challenge and execute
+are still stubs, so "Transfer now" stops at "The bank's confirmation has expired" and no
+money moves. Voice uses the ASR stub; type requests instead. The first "Transfer now"
+pins that browser's device key in `var/devices.json`; delete the file to use another
+browser.
+
+To work on the front end with live reload, run `npm run dev` in `web/` alongside the
+server and open http://127.0.0.1:3000/v5/ instead.
 
 ## Test
 
@@ -27,9 +51,11 @@ ruff check . && ruff format --check .
 
 See D-004 in `docs/DECISIONS.md`.
 
-The first UI slice supports typed requests, browser recording against the ASR stub,
-clarification, draft cards, related data, and validation. Signing is not connected yet.
-Example buttons load labelled UI fixtures; they never execute a transaction.
+`/v5/` is the main interface: it sends typed requests (and its demo shortcuts) to the
+real intent engine, shows its clarifying questions, builds the cards from real bank
+data, and signs with a device key. Validation, challenge and execute are still stubs,
+so signing stops at the stub challenge. `/` supports typed requests, browser recording
+against the ASR stub, clarification, draft cards, related data and validation.
 
 On Windows, keep the backend running in one terminal:
 
@@ -55,9 +81,12 @@ npm.cmd run test:browser
 ```
 
 Browser checks require both servers and Chrome (override `CHROME_PATH` for another
-Chromium executable). Screenshots are written to ignored `graphify-out/`.
-The production build writes `web/out/`; FastAPI mounting remains an integration task.
-The backend currently serves only API routes; its `/` page is not mounted yet.
+Chromium executable). Start the backend without a Jev key (`MAKERS_MODELS_KEY=` set
+empty) so `/api/understand` answers with the contract stubs these checks expect.
+Screenshots are written to ignored `graphify-out/`.
+
+`npm run build` writes `web/out/`, which FastAPI serves: after a build, the backend
+alone runs the whole app at http://127.0.0.1:8000/v5/.
 
 
 The adaptive workspace has three explicit demo scenarios: Send money (focus),

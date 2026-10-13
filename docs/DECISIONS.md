@@ -41,9 +41,10 @@ Rejected: ...
 **Constraints:** FastAPI must be able to serve the built files; no second deployment; build output not committed.
 
 ## D-005 · Fallback if Jev doesn't work
-2026-10-10 · Winston · Status: **open (due Sat 10 Oct, 23:00)**
+2026-10-10 · Winston · Status: decided (12 Oct): no fallback needed
 **Decision:** If no real Jev call works by Saturday 23:00, use an LLM with structured output (forced choice from the same option lists) behind the same `jev.py` interface.
 **Why:** Nobody else should be blocked by Jev's early-access status.
+**Outcome (12 Oct):** Jev works through the EdgeOne Makers gateway (native System One API, model `@makers/jev`, key `MAKERS_MODELS_KEY`); Darren's live calls returned `jev-1.13.0` (D-019, D-022). `app/intent/jev.py` uses the same gateway settings in `app/config.py`. `TYPESAFE_API_KEY` stays unused unless the gateway fails.
 
 ## D-006 · Audio format for speech to text
 2026-10-10 · Winston + Darren · Status: **open (due Mon 12 Oct)**
@@ -178,7 +179,48 @@ Use existing Motion for staggered entry, exit, position changes and a shared pri
 
 **Verification:** TypeScript, ESLint, Prettier, 19 frontend unit tests, all 12 browser tests and 12 Python presentation tests pass. The three V3 browser tests were rerun after fixing reduced-motion overlap, including input identity, mobile panel separation and viewport context. Ruff and production build pass. Desktop/mobile screenshots inspected. Browser replies are mocked; no new live JEV evaluation was performed for this revision. Default root pytest discovery contains no runnable tests; presentation tests were invoked explicitly.
 
-## D-024: Isolated V4 with the upstream batch composer (Darren, 12 October 2026)
+## D-024 · Contracts v0.3: objectives and follow-up turns
+2026-10-12 · Winston · Status: decided (Darren adapts the front end)
+**Decision:** Every `draft` reply carries `objective` (`prepare`, `assess_affordability`, `simulate`, `check_recipient`, `review`) and `scenario`. A draft no longer ends the session: a new transcript in the same session is a follow-up turn. Jev picks the objective and, per current action, a new value or "keep", from options code built (`build_followup` in `app/intent/options.py`). Code applies the changes and appends the turn to the draft's transcript; the `draft_id` stays. `simulate` puts new amounts and quantities into `scenario` and never changes the draft. `new_task` starts over.
+**Why:** Darren's `/v3` (D-021, D-022) expects Winston to resolve the objective and amendments; his mock handoff `{draft, objective, scenario}` maps one to one onto this reply. Keeping every turn in the transcript lets the validation agent check an amended draft against everything the user said.
+**Gate:** An unsure objective on a first command becomes `prepare` (it only changes the layout). In a follow-up it is asked, because it decides whether values change. Amendment picks pass the same gate as first commands.
+**Front end impact:** Darren's response schemas are strict, so `objective` and `scenario` must be added to his draft-reply schema when this reaches `main`. V1 keeps working by starting a new session per command.
+**Limits:** Follow-ups can change amounts, quantities, funding accounts and recipients. They cannot add or remove actions (say the new command instead). One action per type per command still applies.
+
+## D-025 · The input shield rides in the main Jev call
+2026-10-12 · Winston · Status: decided
+**Decision:** The shield's injection question is asked inside the one Jev batch on the original transcript, not in a call of its own. If Jev flags an injection, nothing else from that batch is used. Known attack phrases ("ignore previous instructions", "you are now", …) are blocked before any Jev call. When the rewriter arrives (W-04), the K rewrites are asked only after that first batch clears the shield, so injected text still never reaches an LLM.
+**Why:** The EdgeOne gateway returned HTTP 429 after a few dozen quick calls, and the key is shared with Darren's presentation demo. One call per command instead of two halves the load and cut live latency from about 2 s to 0.8–1.4 s.
+**Rejected:** A separate shield call first (doubles calls and latency for the same answer).
+
+## D-026 · Jev never sees real amounts
+2026-10-12 · Winston · Status: decided
+**Decision:** Every number the user says is swapped for a stand-in before any text reaches Jev (`options.mask`). The stand-in is an HMAC-SHA256 of the value and the scope (user and session) under `MASK_KEY`, shown as two digits then zeros with the real value's digit count (50,000 → e.g. 72,000). Number options read 'The number said as "72000"'; relative amounts name the fraction ("half of the Savings …1234 balance") without the value; follow-up context leaves out amounts and quantities. Jev still answers with option IDs, and code keeps the real values in `Options.numbers`, so nothing is ever decrypted.
+**Why:** Amounts are sensitive, and Jev only needs each number's role (amount, quantity, limit price), not its value. It also closes a leak where "all" or "half" sent every account balance to Jev. The hash is keyed so nobody can work a value back by hashing every amount, and scoped so a number keeps its stand-in for a conversation but differs across conversations.
+**Rejected:** Markers such as `[N0]` and random 3-digit stand-ins: live, demo commands 1, 2 and 4 dropped below tau ("send [N0] to John" read less like a payment; "send 437" or "send 48213" read less like a large transfer than "send 72000"). Format-preserving encryption: nothing needs decrypting, and it would add a dependency.
+**Limits:** Jev learns each amount's order of magnitude. Payee, biller and company names still reach Jev, because it needs them to match; swapping name words the same way is a possible next step. Tencent ASR still hears the audio, and the validation agent still reads the raw transcript, because it checks the draft against the words said. Number words `parse_numbers` doesn't know (such as "dozen") pass through. Previews have no session, so their stand-ins are shared until restart. The rewriter (W-04) must rewrite the masked text and keep its stand-ins unchanged.
+
+## D-027 · Contracts v0.4 (proposed): spoken answers, orders by sum, "the rest", currency conversion
+2026-10-13 · Winston · Status: decided (Darren and Jayanth agreed 13 Oct; intent side built, bank side pending)
+**Decision:** Four changes, written out in `docs/CONTRACTS.md` §10.
+1. A transcript sent while a clarify question is open answers it. Jev picks an offered option, "none of these", or "something different".
+2. "Invest $2,000 in Apple" becomes a `stock_order`. Code converts the sum to whole shares at the quote price, rounding down, so the shape is unchanged.
+3. "The rest" means what is left after the earlier actions in the same command.
+4. A new `fx_conversion` action and `GET /api/fx` (mock rates), so "send 500 to John and invest the rest in Apple" can fund USD shares from SGD savings. The gateway rejects a stale rate with `rate_changed`.
+**Why:** In the CLI, a spoken reply to "Which John?" ("John Smith") restarted the conversation, which is wrong for a voice-first app. "Send X and invest the rest" is a natural compound command, but today "the rest" means the whole balance, share orders only take counts, and nothing converts SGD to USD.
+**Rejected:** A `budget` field on `stock_order`. Code converts the sum to a quantity, so the card and the signed shape stay as they are. Refusing cross-currency "rest" instead of converting would have broken the headline example.
+**Currency of a sum (decided 13 Oct):** any amount said is in SGD unless the user names another currency ("2k" and "$2,000" are SGD; "US$2,000" is USD). An SGD sum for a USD share adds an `fx_conversion`.
+**Open:** Validation must re-derive amounts that are computed rather than said (§10.7).
+
+## D-028 · Stage 1 device public-key registration
+2026-10-12 · Jayanth · Status: decided (shared documentation for team review)
+**Decision:** Store only validated EC/P-256 public coordinates in `var/devices.json`. Pin the first key per known demo user; identical repeats succeed and different keys are refused. Thread/process locks, atomic replacement and disk synchronization protect local persistent storage. No dependencies or public contracts change.
+**Limitation:** The client supplies `user_id` without authenticated customer identity or proof of private-key possession. An attacker registering first can take over that user's key slot. This is controlled demo enrollment only, not production authentication; do not expose it as a public banking enrollment feature. Use a supervised private instance for the demo.
+**Later:** Authenticated sessions, step-up verification, proof of possession and secure replacement/recovery need a separate design and team approval after the core pipeline works. No automatic reset or key replacement is provided now.
+**Errors:** Invalid keys and replacement attempts use HTTP 400 `bad_request`; unknown users use HTTP 404 `not_found`. Corrupt or unavailable registry storage fails with a sanitized server error and is never silently reset.
+**Why:** J-06 needs a persistent public key while advanced customer enrollment remains out of scope for J-04. Pinning prevents silent replacement but does not secure the initial enrollment.
+
+## D-029: Isolated V4 with the upstream batch composer (Darren, 12 October 2026)
 
 Preserve V3 and the unfinished-work stash. Add `/v4` with a complete typed handoff from Winston, external draft/scenario state, and the actual json-render experimental composer. Vendor its nine-file core dependency closure unchanged at `fc2a696a50a30cb30c878ab1eb65e102487eea0f` under Apache-2.0, with license and provenance. No package dependencies added. Sequential editing is deferred because the prior live experiment changed a root variant without supplying the required affordability content.
 
@@ -193,7 +235,7 @@ Verification: 25 frontend unit tests, 16 Python protocol tests, 14 Chrome browse
 Limits: prototype endpoint without production authentication or quotas; real Winston transport and banking signing remain team integration work. State survives recomposition but not reload. Layout caching is categorical and per session. Financial estimates exclude fees, taxes, FX and other commitments. The Figma file is a design reference rather than a full interactive prototype.
 
 
-## D-025 ? Optional V4 financial context and data-bound diagrams (2026-10-12)
+## D-030 · Optional V4 financial context and data-bound diagrams (2026-10-12)
 
 Add optional `data.financial` to the V4 handoff, without changing shared banking contracts. Each account entry inherits currency from its referenced bank account. It contains a dated commitments window, optional user-confirmed reserve and historical spending categories with an explicit period. Missing fields mean unknown; empty supplied bill lists mean no bills in that window. Calculations use exact cents. An explicitly linked draft bill reduces that obligation's unpaid remainder; historical spending is never subtracted. Providers must supply outstanding commitments not already deducted from the input balance and establish reliable draft links.
 
@@ -201,7 +243,7 @@ JEV receives categorical funding, commitments, reserve and context-availability 
 
 Direct edits recalculate figures and notices locally. The next objective change or explicit Recompose computes fresh context and uses its categorical cache key. Edits do not request a new layout on every keystroke. Fixtures add synthetic October bills, a reserve and September spending. Winston still owns resolution/routing; bank integration remains separate. Use data-bound diagrams instead of decorative raster images to keep the task concise.
 
-## D-026 — V5 orb entry and adaptive task surface (2026-10-13)
+## D-031 — V5 orb entry and adaptive task surface (2026-10-13)
 
 Darren approved V5 as a separate route, preserving V4. Port the supplied Orb.dc.html visual direction into native React: dark shell, red orb, white task surfaces, concise typography and purposeful motion. Orb activation reveals explicit demo request buttons. No microphone is recorded. Clarification and shield results are labelled mock Winston responses and never delegated to JEV. Resolved handoffs pass the existing runtime validator before V4 selection/placement composition; no banking contracts or backend routes change.
 
@@ -211,12 +253,29 @@ Adaptive layout uses a conversation column on desktop and stacked content on mob
 
 V5 verification: production static build, TypeScript, targeted ESLint, 28 frontend unit tests, 17 Python protocol tests, Ruff and two V5 Chrome tests passed. Browser tests cover both motion preferences, all four demo choices, two-stage composition using deterministic replies, edits, simulation, explicit review, malformed replies, reset cancellation and 320/390/768/1440px overflow. Desktop workspace and mobile choice screenshots were visually inspected. Live gateway quality and real Winston transport were not tested in this change.
 
-## D-027 - V5 concise confirmation cards and bank API action (2026-10-13)
+## D-032 - V5 concise confirmation cards and bank API action (2026-10-13)
 
 Darren requested replacing developer-oriented V4 forms in V5 with the compact reference design. V5 now renders read-only confirmation facts from the resolved draft, with a prominent amount and concise recipient/biller, account and stock details required by CONTRACTS section 5. Optional account context is collapsed. Affordability adds a small data-bound chart without unrelated tasks. No review objective, acknowledgement checkboxes, composition inspector or recompose button is exposed in V5. V4 remains unchanged.
 
 The explicit Transfer now / Pay now / Place order button confirms the displayed draft once, then calls validate, device/register, challenge and execute. Device keys are non-extractable P-256 private keys persisted in IndexedDB; registration is serialized across tabs. Only the exact server signing_payload is signed, after checking its draft and nonce match and its expiry. An OTP field appears only on needs_extra_check and reuses the nonce/signature. Mismatch, rejection and network uncertainty have explicit user outcomes; unknown execution outcomes disable retries. No transaction runs on page load, during composition, or while inspecting affordability.
 
-This supersedes V5's local-only completion in D-026 at Darren's explicit request to connect the bank API. Prototype request buttons still produce mock resolved handoffs; their transcript and date match the displayed request. There is no local edit-and-sign path: corrections must come through Winston's future handoff. No shared banking contract or bank implementation changed. Current bank routes are stubs, including an expired placeholder challenge, so they cannot complete this checked signing path. Do not claim end-to-end real execution until Jayanth supplies valid responses and Winston supplies resolved drafts.
+This supersedes V5's local-only completion in D-031 at Darren's explicit request to connect the bank API. Prototype request buttons still produce mock resolved handoffs; their transcript and date match the displayed request. There is no local edit-and-sign path: corrections must come through Winston's future handoff. No shared banking contract or bank implementation changed. Current bank routes are stubs, including an expired placeholder challenge, so they cannot complete this checked signing path. Do not claim end-to-end real execution until Jayanth supplies valid responses and Winston supplies resolved drafts.
 
 Verification: 29 frontend unit tests, TypeScript, targeted ESLint, production static build and four Chrome tests passed. Browser checks cover compact card layout at 320/390/768/1440px, absence of review tasks, exact WebCrypto signature verification, OTP reuse, mismatch/expiry stops, bank rejection, uncertain execution, multi-action completeness and duplicate-click protection. API replies were controlled test responses; no real money was moved. Mobile transfer and desktop/affordability screenshots were inspected. Signing cannot be fully exercised against the current placeholder bank challenge.
+
+## D-033 · First integration pass: V5 on the real engine and bank data
+2026-10-13 · Winston · Status: decided (Winston's choices; Darren and Jayanth review their areas)
+**Decision:** Integrate the three branches on `winston` before any further PR. Each choice below was made by Winston; the code in others' areas was written by his session, committed under their area prefixes for review.
+- **Bank (Jayanth):** `readonly.py` gains `list_quotes`, `get_bill_reference` and `get_fx_rate` (CONTRACTS §3.3). `data/bank.json` gains `fx_rates` (SGD→USD 0.740000, USD→SGD 1.351351, the contract's example values) and `GET /api/fx` serves them. Validation, challenge, execute, rules and ledger stay stubs until J-05 to J-08.
+- **UI contracts (Darren):** `web/src/lib/contracts.ts` moves to v0.4: draft replies carry `objective` and `scenario`; `fx_conversion` joins the action union. `/`, V4 and V5 show it as a read-only Convert currency card (CONTRACTS §5 order); balance projections credit the account it pays into. V2 and V3 refuse drafts with a conversion.
+- **V5 (Darren):** typed requests and the demo shortcuts go to `/api/understand`; questions, blocked, unsupported and cancelled replies are the engine's own. The handoff is the draft plus `/api/accounts` and `/api/quote` (`source: "supplied"`). "Can I afford it?" is a follow-up turn in the same session. `check_recipient` maps to `prepare`, which carries RecipientDetails in the V4 catalog. Real drafts carry no financial context: bars show real balances and "unlisted bills" until a cashflow endpoint exists.
+- **Serving:** FastAPI mounts `web/out/` after the API routes; unknown `/api/` paths keep the JSON 404.
+- **Intent (Winston):** follow-up options leave out the current account and payee, and the gate counts "default" and the account it resolves to as one pick. Both fixes come from live runs on the real seed, where Jev split its probability between two options that build the same draft.
+**Why:** The pieces were built against stubs and fixtures; nothing joined them. Integrating on one branch first shows every gap at once.
+**Rejected:** Leaving each area to integrate itself (the gaps sit between areas); building J-05 to J-08 here (Jayanth may be mid-way through them); mock bills on real drafts (mixes mock and real data on one screen).
+
+## D-034 · Contracts v0.5: document the presentation endpoints
+2026-10-14 · Winston · Status: decided (records endpoints already in use; Darren reviews §3.4)
+**Decision:** CONTRACTS §3.4 documents `POST /api/presentation-v4/evaluate` (V4, V5) and lists `/api/presentation-demo` (V2) and `/api/presentation-v3` (V3). Their models stay in `web/` with Darren. A missing model key returns 503 `upstream_error`.
+**Why:** V5 calls Jev twice per screen through these endpoints, on the same key as the intent engine, but only Darren's decision entries (D-019, D-021, D-029) described them. Changes to them should go through the same agreement as every other endpoint.
+**Rejected:** Leaving them undocumented (a change to them needed no one's agreement).

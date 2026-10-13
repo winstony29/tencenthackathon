@@ -7,11 +7,12 @@ import type {
 } from "../../vendor/json-render/experimental-compose";
 import type { State } from "./v4-state";
 import { objectiveSchema } from "./v4-state";
+import { fromCurrency } from "./money";
 
 export const contextSchema = z.strictObject({
   objective: objectiveSchema,
   action_types: z
-    .array(z.enum(["transfer", "bill_payment", "stock_order"]))
+    .array(z.enum(["transfer", "bill_payment", "stock_order", "fx_conversion"]))
     .min(1)
     .max(4),
   alternatives: z.boolean(),
@@ -68,7 +69,7 @@ export function contextFor(state: State, viewport: Context["viewport"]): Context
     action_types: h.draft.actions.map((a) => a.type),
     viewport,
     alternatives: h.draft.actions.some(
-      (a) => h.data.accounts.accounts.filter((b) => b.currency === a.currency).length > 1,
+      (a) => h.data.accounts.accounts.filter((b) => b.currency === fromCurrency(a)).length > 1,
     ),
   };
 }

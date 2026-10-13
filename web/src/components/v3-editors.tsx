@@ -11,7 +11,7 @@ export function TaskEditor({ state, dispatch, action: index = 0 }: ComponentProp
   if (index === null) return null;
   const result = effective(state),
     action = result.actions[index];
-  if (!action) return null;
+  if (!action || action.type === "fx_conversion") return null; // V3 state refuses conversions
   const edits = state.task.edits[index] ?? {};
   const stock = action.type === "stock_order";
   const orderType = edits.order_type ?? (stock ? action.order_type : "market");
@@ -119,54 +119,60 @@ export function TransactionReview({ state, dispatch }: ComponentProps) {
   return (
     <>
       <SectionHeading eyebrow="REVIEW" title="One final check" aside={<span className="v3-tag">Demo</span>} />
-      {actions.map((a, i) => (
-        <section className="v3-review-task" key={i}>
-          <h3>
-            {a.type === "transfer"
-              ? a.to_payee_label
-              : a.type === "bill_payment"
-                ? a.biller_label
-                : `${a.side === "buy" ? "Buy" : "Sell"} ${a.ticker}`}
-          </h3>
-          <dl>
-            <div>
-              <dt>{a.type === "stock_order" ? "Shares" : "Amount"}</dt>
-              <dd>
-                {a.type === "stock_order"
-                  ? `${a.quantity} · ${a.currency}`
-                  : displayMoney(a.amount, a.currency)}
-              </dd>
-            </div>
-            <div>
-              <dt>{a.type === "stock_order" && a.side === "sell" ? "Into" : "From"}</dt>
-              <dd>{a.from_account_label}</dd>
-            </div>
-            {a.type === "bill_payment" && (
+      {actions.map((a, i) =>
+        a.type === "fx_conversion" ? null : ( // V3 state refuses conversions
+          <section className="v3-review-task" key={i}>
+            <h3>
+              {a.type === "transfer"
+                ? a.to_payee_label
+                : a.type === "bill_payment"
+                  ? a.biller_label
+                  : `${a.side === "buy" ? "Buy" : "Sell"} ${a.ticker}`}
+            </h3>
+            <dl>
               <div>
-                <dt>Reference</dt>
-                <dd>{a.bill_reference}</dd>
-              </div>
-            )}
-            {a.type === "stock_order" && (
-              <div>
-                <dt>Order</dt>
+                <dt>{a.type === "stock_order" ? "Shares" : "Amount"}</dt>
                 <dd>
-                  {a.order_type === "limit" ? `Limit ${displayMoney(a.limit_price!, a.currency)}` : "Market"}
+                  {a.type === "stock_order"
+                    ? `${a.quantity} · ${a.currency}`
+                    : displayMoney(a.amount, a.currency)}
                 </dd>
               </div>
+              <div>
+                <dt>{a.type === "stock_order" && a.side === "sell" ? "Into" : "From"}</dt>
+                <dd>{a.from_account_label}</dd>
+              </div>
+              {a.type === "bill_payment" && (
+                <div>
+                  <dt>Reference</dt>
+                  <dd>{a.bill_reference}</dd>
+                </div>
+              )}
+              {a.type === "stock_order" && (
+                <div>
+                  <dt>Order</dt>
+                  <dd>
+                    {a.order_type === "limit"
+                      ? `Limit ${displayMoney(a.limit_price!, a.currency)}`
+                      : "Market"}
+                  </dd>
+                </div>
+              )}
+            </dl>
+            {a.type === "transfer" && (
+              <InlineNotice>Listed recipient. Bank verification pending.</InlineNotice>
             )}
-          </dl>
-          {a.type === "transfer" && <InlineNotice>Listed recipient. Bank verification pending.</InlineNotice>}
-          <label className="v3-approval">
-            <input
-              type="checkbox"
-              checked={!!state.task.approved[i]}
-              onChange={() => dispatch({ type: "approve", index: i })}
-            />
-            I reviewed task {i + 1}
-          </label>
-        </section>
-      ))}
+            <label className="v3-approval">
+              <input
+                type="checkbox"
+                checked={!!state.task.approved[i]}
+                onChange={() => dispatch({ type: "approve", index: i })}
+              />
+              I reviewed task {i + 1}
+            </label>
+          </section>
+        ),
+      )}
       <InlineNotice>Fees unavailable. Demo only — no money will move.</InlineNotice>
       <div className="v3-review-actions">
         <Button variant="ghost" onClick={() => dispatch({ type: "back" })}>

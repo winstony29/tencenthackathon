@@ -4,7 +4,7 @@ import { ArrowUpRight, Check, ChevronDown } from "lucide-react";
 import type { Composition } from "@/lib/v4-composition";
 import type { State } from "@/lib/v4-state";
 import { cents, decimal, financialRows } from "@/lib/v4-financial";
-import { displayMoney, estimatedTotal } from "@/lib/money";
+import { displayMoney, estimatedTotal, fromCurrency } from "@/lib/money";
 import { quoteSchema, type Action, type Quote } from "@/lib/contracts";
 import { request } from "@/lib/api";
 import { V5Payment } from "./v5-payment";
@@ -24,6 +24,7 @@ function Task({
   compact: boolean;
 }) {
   const stock = a.type === "stock_order";
+  const fx = a.type === "fx_conversion";
   const price = stock
     ? a.order_type === "limit"
       ? a.limit_price
@@ -34,15 +35,25 @@ function Task({
   return (
     <section
       className={`v5-task ${compact ? "is-compact" : ""}`}
-      aria-label={stock ? "Stock order" : a.type === "transfer" ? "Transfer details" : "Bill payment"}
+      aria-label={
+        stock
+          ? "Stock order"
+          : fx
+            ? "Currency conversion"
+            : a.type === "transfer"
+              ? "Transfer details"
+              : "Bill payment"
+      }
     >
       <div className="v5-task-title">
         <span>
           {stock
             ? `${a.side === "buy" ? "Buy" : "Sell"} shares`
-            : a.type === "transfer"
-              ? "Transfer"
-              : "Bill payment"}
+            : fx
+              ? "Convert currency"
+              : a.type === "transfer"
+                ? "Transfer"
+                : "Bill payment"}
         </span>
         <span>Not sent</span>
       </div>
@@ -52,29 +63,56 @@ function Task({
             {a.quantity}
             <small> shares</small>
           </>
+        ) : a.type === "fx_conversion" ? (
+          money(a.sell_amount, a.sell_currency)
         ) : (
           money(a.amount, a.currency)
         )}
       </h2>
       <dl className="v5-facts">
-        <div>
-          <dt>{stock ? "Stock" : a.type === "transfer" ? "To" : "Biller"}</dt>
-          <dd>
-            {stock
-              ? `${a.ticker} · ${a.company_name}`
-              : label(a.type === "transfer" ? a.to_payee_label : a.biller_label)}
-          </dd>
-        </div>
+        {a.type === "fx_conversion" ? (
+          <>
+            <div>
+              <dt>From</dt>
+              <dd>{label(a.from_account_label)}</dd>
+            </div>
+            <div>
+              <dt>Rate</dt>
+              <dd>
+                1 {a.sell_currency} = {a.rate} {a.buy_currency}
+              </dd>
+            </div>
+            <div>
+              <dt>Get</dt>
+              <dd>{money(a.buy_amount, a.buy_currency)}</dd>
+            </div>
+            <div>
+              <dt>Into</dt>
+              <dd>{label(a.to_account_label)}</dd>
+            </div>
+          </>
+        ) : (
+          <div>
+            <dt>{stock ? "Stock" : a.type === "transfer" ? "To" : "Biller"}</dt>
+            <dd>
+              {a.type === "stock_order"
+                ? `${a.ticker} · ${a.company_name}`
+                : label(a.type === "transfer" ? a.to_payee_label : a.biller_label)}
+            </dd>
+          </div>
+        )}
         {a.type === "bill_payment" && (
           <div>
             <dt>Reference</dt>
             <dd>{a.bill_reference}</dd>
           </div>
         )}
-        <div>
-          <dt>{stock && a.side === "sell" ? "Into" : "From"}</dt>
-          <dd>{label(a.from_account_label)}</dd>
-        </div>
+        {!fx && (
+          <div>
+            <dt>{stock && a.side === "sell" ? "Into" : "From"}</dt>
+            <dd>{label(a.from_account_label)}</dd>
+          </div>
+        )}
         {stock && (
           <>
             <div>
@@ -94,7 +132,7 @@ function Task({
         {!compact && after !== undefined && (
           <div className="v5-balance-row">
             <dt>Balance after{stock ? " · est." : ""}</dt>
-            <dd>{after === null ? "Unavailable" : money(after, a.currency)}</dd>
+            <dd>{after === null ? "Unavailable" : money(after, fromCurrency(a))}</dd>
           </div>
         )}
       </dl>

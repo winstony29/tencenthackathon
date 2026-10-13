@@ -2,7 +2,7 @@
 import { ArrowRight, SlidersHorizontal } from "lucide-react";
 import { effective } from "@/lib/v4-state";
 import { projectedBalances } from "@/lib/draft-editor";
-import { displayMoney, estimatedTotal } from "@/lib/money";
+import { displayMoney, estimatedTotal, fromCurrency } from "@/lib/money";
 import { Amount, Heading, Metric, Notice } from "./v4-primitives";
 import type { ComponentProps } from "./v4-editors";
 
@@ -103,6 +103,7 @@ export function AmountSimulator({ state, dispatch }: ComponentProps) {
         aside={<SlidersHorizontal size={21} aria-hidden="true" />}
       />
       {values.actions.map((a, i) => {
+        if (a.type === "fx_conversion") return null; // derived from the other actions; no what-if
         const stock = a.type === "stock_order",
           field = stock ? "quantity" : "amount";
         const raw = state.scenario[i]?.[field] ?? (stock ? String(a.quantity) : a.amount);
@@ -143,7 +144,9 @@ export function AmountSimulator({ state, dispatch }: ComponentProps) {
               Draft:{" "}
               {committed.type === "stock_order"
                 ? `${committed.quantity} ${committed.ticker} shares`
-                : displayMoney(committed.amount, committed.currency)}
+                : committed.type === "fx_conversion"
+                  ? displayMoney(committed.sell_amount, committed.sell_currency)
+                  : displayMoney(committed.amount, committed.currency)}
             </p>
           </div>
         );
@@ -192,7 +195,7 @@ export function RecipientDetails({ state, action: index }: ComponentProps) {
 }
 export function FundingOptions({ state }: ComponentProps) {
   if (!state.handoff) return null;
-  const currencies = new Set(effective(state).actions.map((a) => a.currency));
+  const currencies = new Set(effective(state).actions.map(fromCurrency));
   const accounts = state.handoff.data.accounts.accounts;
   return (
     <>
