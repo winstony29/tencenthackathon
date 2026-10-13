@@ -95,6 +95,17 @@ class StockOrderAction(ContractModel):
         return self
 
 
+class AccountTransferAction(ContractModel):
+    # Money between two of the user's own accounts in one currency (§2.1, v0.7 proposed).
+    type: Literal["account_transfer"]
+    from_account_id: str
+    from_account_label: str
+    to_account_id: str
+    to_account_label: str
+    amount: Money
+    currency: Currency
+
+
 class FxConversionAction(ContractModel):
     # Added by code, never said by the user; see docs/CONTRACTS.md §10.5.
     type: Literal["fx_conversion"]
@@ -111,7 +122,11 @@ class FxConversionAction(ContractModel):
 
 
 Action = Annotated[
-    TransferAction | BillPaymentAction | StockOrderAction | FxConversionAction,
+    TransferAction
+    | BillPaymentAction
+    | StockOrderAction
+    | AccountTransferAction
+    | FxConversionAction,
     Field(discriminator="type"),
 ]
 
