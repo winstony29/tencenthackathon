@@ -144,3 +144,12 @@ def bank(monkeypatch: pytest.MonkeyPatch) -> None:
         readonly, "get_bill_reference", lambda biller_id: "4120-XXXX-XXXX-9012", raising=False
     )
     monkeypatch.setattr(readonly, "get_fx_rate", _fx_rate, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_evidence(tmp_path, monkeypatch):
+    from cryptography.fernet import Fernet
+
+    monkeypatch.setattr(config, "AUDIT_EVIDENCE_PATH", str(tmp_path / "evidence.sqlite3"))
+    monkeypatch.setattr(config, "AUDIT_EVIDENCE_KEY", Fernet.generate_key().decode())
+    monkeypatch.setattr(config, "AUDIT_ADMIN_TOKEN", "test-audit-admin")

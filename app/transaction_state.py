@@ -14,7 +14,7 @@ import time
 from contextvars import ContextVar
 from dataclasses import dataclass
 
-from app import config
+from app import config, evidence
 from app.contracts import Draft
 
 
@@ -74,7 +74,16 @@ def clear():
 
 def revoke(user_id: str, session_id: str):
     with _lock:
-        _records.pop((user_id, session_id), None)
+        old = _records.pop((user_id, session_id), None)
+        if old:
+            evidence.record(
+                "draft_revoked",
+                {},
+                session_id=session_id,
+                draft_id=old.draft.draft_id,
+                revision=old.revision,
+                draft_digest=old.digest,
+            )
 
 
 def register(draft: Draft, history: list[dict], facts: dict):
@@ -87,7 +96,7 @@ def register(draft: Draft, history: list[dict], facts: dict):
             del _records[key]
         if len(_records) >= 1000 and (draft.user_id, draft.session_id) not in _records:
             raise InvalidDraft("Too many pending requests. Try again later.")
-        _records[(draft.user_id, draft.session_id)] = Record(
+        record = Record(
             draft.model_copy(deep=True),
             digest(draft),
             secrets.token_hex(16),
@@ -95,6 +104,19 @@ def register(draft: Draft, history: list[dict], facts: dict):
             copy.deepcopy(history),
             copy.deepcopy(facts),
         )
+        evidence.record(
+            "draft_registered",
+            {
+                "draft": draft.model_dump(mode="json"),
+                "history": history,
+                "bank_snapshot": facts,
+            },
+            session_id=draft.session_id,
+            draft_id=draft.draft_id,
+            revision=record.revision,
+            draft_digest=record.digest,
+        )
+        _records[(draft.user_id, draft.session_id)] = record
 
 
 def _current(draft: Draft) -> Record:
@@ -127,11 +149,27 @@ def finish(r: Record, result: dict) -> dict:
     with _lock:
         current = _records.get((r.draft.user_id, r.draft.session_id))
         if current is not r or r.expires <= time.monotonic():
+            evidence.record(
+                "validation_discarded",
+                {"reason": "stale", "result": result},
+                session_id=r.draft.session_id,
+                draft_id=r.draft.draft_id,
+                revision=r.revision,
+                draft_digest=r.digest,
+            )
             return {"status": "stale", "message": "This draft changed or expired."}
         r.checking = False
         result = copy.deepcopy(result)
         if result["status"] == "match":
             result["receipt"] = _receipt(r)
+        evidence.record(
+            "validation_applied",
+            {"result": result},
+            session_id=r.draft.session_id,
+            draft_id=r.draft.draft_id,
+            revision=r.revision,
+            draft_digest=r.digest,
+        )
         r.result = result
         return copy.deepcopy(result)
 

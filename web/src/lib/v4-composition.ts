@@ -251,6 +251,7 @@ export async function compose(
   context: Context,
   signal: AbortSignal,
   onCall?: () => void,
+  auditSession?: string,
 ): Promise<Composition> {
   const calls: Evaluation[] = [],
     offered = recipes(context),
@@ -264,6 +265,7 @@ export async function compose(
         evaluationSchema,
         { context, selected: [], questions: selectionQuestions(context) },
         signal,
+        auditSession,
       );
       calls.push(result);
       final = selectedTree(context, result);
@@ -305,6 +307,7 @@ export async function compose(
             ),
           },
           signal,
+          auditSession,
         );
         calls.push(result);
         return {

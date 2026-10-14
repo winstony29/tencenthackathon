@@ -135,3 +135,36 @@ The key is read by `app/config.py` and is never sent to the browser. A deployed
 static frontend needs FastAPI under the same origin; do not put the key in a
 `NEXT_PUBLIC_` variable. The presentation route remains a local demo, not a
 public authenticated production endpoint.
+
+
+### Audit evidence
+
+Install the updated requirements. Set persistent `AUDIT_EVIDENCE_KEY` (a Fernet key) and
+`AUDIT_ADMIN_TOKEN` (an independent random token) in `.env`. Generate them once locally;
+never commit them or regenerate on every startup. For a fresh setup:
+
+```python
+from cryptography.fernet import Fernet
+from dotenv import find_dotenv, set_key
+import secrets
+path = find_dotenv(usecwd=True)
+# Only run for a NEW installation; replacing the key loses access to previous evidence.
+set_key(path, "AUDIT_EVIDENCE_KEY", Fernet.generate_key().decode())
+set_key(path, "AUDIT_ADMIN_TOKEN", secrets.token_urlsafe(32))
+```
+
+Inspect the latest protected timeline from the repository directory (Windows or macOS):
+
+```python
+import httpx, json
+from app import config
+response = httpx.get("http://127.0.0.1:8001/api/audit/timeline",
+    params={"limit": 100, "include_evidence": "true"},
+    headers={"Authorization": "Bearer " + config.AUDIT_ADMIN_TOKEN})
+response.raise_for_status()
+print(json.dumps(response.json(), indent=2))
+```
+
+Add `session_id` to filter a conversation. The output contains sensitive banking context;
+do not paste it publicly. Records survive server/session restarts in ignored
+`var/evidence.sqlite3`. Retention, trust boundaries and limitations are in CONTRACTS v0.8.

@@ -13,7 +13,7 @@ from typing import Any
 import httpx
 from fastapi import HTTPException
 
-from app import config
+from app import config, evidence
 
 
 @dataclass(frozen=True)
@@ -84,12 +84,16 @@ async def ask(text: str, questions: list[Question], context: dict[str, Any] | No
             for q in questions
         },
     }
+    evidence.record("intent_model_input", {"input": payload})
     try:
         if _client is not None:
             response = await _post(_client, payload)
         else:  # tests and scripts that skip the app's startup
             async with httpx.AsyncClient(timeout=config.MAKERS_JEV_TIMEOUT_SECONDS) as client:
                 response = await _post(client, payload)
+        evidence.record(
+            "intent_model_output", {"http_status": response.status_code, "output": response.json()}
+        )
         response.raise_for_status()
         return parse(response.json(), questions)
     except (httpx.HTTPError, ValueError, TypeError) as error:

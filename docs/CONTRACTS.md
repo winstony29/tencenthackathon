@@ -1,7 +1,7 @@
 # Contracts
 
 **Purpose:** the exact data shapes and endpoints every part of the system agrees on. `app/contracts.py` implements this file as Pydantic models. If the two disagree, this file wins.
-**Owner:** Winston (keeper) · **Version:** 0.5 (proposed: 0.6 §3.1 answers, 0.7 own-account moves) · **Last updated:** 2026-10-14
+**Owner:** Winston (keeper) · **Version:** 0.8 (audit evidence extension; prior 0.6/0.7 integration included) · **Last updated:** 2026-10-14
 
 > Changing anything here needs all three teammates to agree. Then bump the version, update `app/contracts.py` in the same commit, and add a `docs/DECISIONS.md` entry.
 
@@ -509,3 +509,58 @@ Alternatively set `VALIDATOR_PROVIDER=compatible-api`, `LLM_BASE_URL` (including
 Malformed/missing model output, missing config, audit-log failure and timeouts never
 produce approval. Raw audit context goes to the chosen model provider; performance
 logs contain only draft ID, verdict and elapsed milliseconds (count field).
+
+
+## Persistent audit evidence (v0.8)
+
+The existing `/api/audit` and `var/audit.jsonl` remain compatible legacy event summaries.
+The detailed request timeline is stored atomically with encrypted evidence in ignored
+`var/evidence.sqlite3`. This is a separate hash chain; historical JSONL records are not
+backfilled and have no recoverable detailed evidence. Logging never authorizes a transaction.
+
+Each HTTP operation has a server-generated `req_` ID, returned as `X-Audit-Request-ID`.
+Client session IDs and `X-Audit-Session` are correlation claims, not authentication.
+Server draft events additionally bind a server revision and canonical draft SHA-256 digest.
+Metadata contains event/time/IDs, evidence digest, expiry and previous hash.
+Timeline time/expiry use Unix seconds (the legacy audit retains ISO timestamps). Evidence includes
+original inputs, clarification responses, bank snapshots, model requests/responses, validator
+policy digest, and request outcomes. Model identities are recorded where provided; Local
+Codex's unset model is explicitly `cli_default`, not an invented resolved model version.
+No chain-of-thought is requested or stored.
+
+`GET /api/audit/timeline?session_id=s_...&limit=100&include_evidence=true` requires
+`Authorization: Bearer <AUDIT_ADMIN_TOKEN>`. Limit is 1?500, session filter optional;
+metadata-only by default. Responses have `Cache-Control: no-store`. Returns
+`{chain_valid:true, entries:[{position,event_id,event,time,expires_at,request_id?,session_id?,
+draft_id?,revision?,draft_digest?,evidence_digest,previous_hash,hash,evidence_state,
+evidence?}]}`. Corruption returns 503, never fabricated empty history. Expired evidence
+has `evidence_state:expired` and no evidence body. A valid chain does not prove the model
+was correct or that an event writer was honest; full rewrite/tail deletion needs independent
+checkpoints to detect, which are not implemented.
+
+`POST /api/audit/presentation` accepts
+`{session_id, draft_id?, manifest:object, source:jev|fallback}` and returns
+`{status:recorded}`. V5 submits the final component spec before enabling confirmation;
+read-only answers report initial fallback and selected presentation on a best-effort basis.
+These are explicitly `presentation_client_reported`, not proof of rendered pixels, user
+consent, or server-validated component choices. The server's JEV exchange is separate evidence.
+
+Encryption uses Fernet (cryptography 46.0.3). Required persistent `AUDIT_EVIDENCE_KEY` and
+independent `AUDIT_ADMIN_TOKEN` belong in local `.env` or deployment secret storage, never
+frontend/source control. Losing the encryption key loses evidence access; keep it across
+restarts. Encryption protects the database alone, not a machine compromised alongside its
+key. Default evidence retention is seven days (`AUDIT_RETENTION_DAYS`), removed on writes,
+admin reads, startup and hourly maintenance while running. Metadata remains. Backups and
+cloud-synced historical copies need their own retention policy. No automatic key rotation.
+
+Structured secret fields (OTP, authorization, cookies, credentials, receipts, private-key
+material) and configured secret values are redacted before encryption. Raw HTTP headers,
+raw audio and malformed unparsed bodies are not stored. Free text remains sensitive;
+redaction is not a guarantee of discovering every arbitrary secret a user may type.
+Transcription is currently a labelled stub event. Evidence size is capped at 2 MB per item.
+Missing encryption or storage failure stops audited requests; expired/cancelled/stale drafts
+cannot regain approval through audit replay. Confirmation attempts and unavailable bank
+execution are recorded, but no signature verification or ledger execution is implied.
+SQLite is local storage with serialized writes; this remains a demo architecture, not a
+production distributed audit service. Windows was exercised; macOS uses the same SQLite/
+Fernet code but has not been runtime-tested here.

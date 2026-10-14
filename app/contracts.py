@@ -548,3 +548,10 @@ class ErrorResponse(ContractModel):
 class EnquiryPresentationRequest(ContractModel):
     user_id: str = Field(min_length=1, max_length=128)
     topic: Literal["balances", "bills", "transactions", "spending", "overview"]
+
+
+class PresentationEvidenceRequest(ContractModel):
+    session_id: str = Field(pattern=r"^s_[A-Za-z0-9_-]{1,100}$")
+    draft_id: str | None = Field(default=None, max_length=100)
+    manifest: dict[str, Any]
+    source: Literal["jev", "fallback"]

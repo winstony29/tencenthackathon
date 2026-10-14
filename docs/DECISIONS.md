@@ -360,3 +360,25 @@ The independent audit now receives the existing SGD currency convention and dete
 source-account fallback rules as trusted application policy. It must still prefer explicit
 user instructions and recipient clarifications. This fixes false uncertainty for "$50 to John"
 after the recipient is selected; it does not establish a real customer account preference.
+
+
+### Persistent audit evidence (14 October 2026)
+
+Use an encrypted SQLite evidence timeline beside the existing JSONL summaries. SQLite
+transactions bind each payload digest to chain metadata; cryptography's Fernet provides
+standard authenticated encryption instead of custom crypto. The user's audit implementation
+request authorizes the shared/backend changes and dependency. The admin token is separate
+from the encryption key and never reaches the frontend. Seven-day payload retention keeps
+metadata intact. Browser manifests are claims, while request processing and draft revisions
+are server events. Preserve fail-closed confirmation and record failures without keys/OTPs.
+No new money execution, production authentication, immutable external checkpoints, or model
+reasoning capture is introduced. Official encryption reference:
+https://cryptography.io/en/latest/fernet/
+
+The live audit test exposed a provenance gap: history held a question's internal slot but
+not its displayed wording/options. Store those when Winston asks so later checks can scope
+?No? to ?move between your accounts? without cancelling a separate payee transfer.
+
+Validation: 342 backend tests passed (6 skipped), 33 frontend tests and 9 browser scenarios
+passed; production build and lint passed. Live checks confirmed persisted evidence across
+restart with unchanged chain hash, protected access, and V5 balance presentation reports.

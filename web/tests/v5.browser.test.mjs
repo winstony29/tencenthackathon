@@ -167,6 +167,7 @@ async function setup(page, mode = "otp", beforeComposition = async () => {}) {
     await beforeComposition();
     return route.fulfill({ json: response(route.request().postDataJSON()) });
   });
+  await page.route("**/api/audit/presentation", route => route.fulfill({json:{status:"recorded"}}));
   await page.route("**/api/validation/cancel", route => route.fulfill({json: {status:"cancelled"}}));
   await page.route("**/api/validate", async (route) => {
     calls.push("validate");

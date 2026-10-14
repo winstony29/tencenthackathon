@@ -5,8 +5,10 @@ Diagram box: none; wiring only
 Contract: docs/CONTRACTS.md §3 (endpoints) and §6 (errors)
 """
 
+import asyncio
+import logging
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -15,6 +17,10 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException
 
+from app import evidence
+from app.audit import AuditError
+from app.audit_http import AuditMiddleware
+from app.audit_http import router as audit_router
 from app.bank.router import router as bank_router
 from app.intent import jev
 from app.intent.router import router as intent_router
@@ -28,14 +34,29 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Keep one warm connection to the Jev gateway for the server's life (app/intent/jev.py).
     await jev.open_connection()
     await presentation_v4.open_connection()
+
+    async def retention():
+        while True:
+            try:
+                await asyncio.to_thread(evidence.purge_expired)
+            except AuditError:
+                logging.getLogger(__name__).error("Audit retention maintenance failed")
+            await asyncio.sleep(3600)
+
+    maintenance = asyncio.create_task(retention())
     try:
         yield
     finally:
+        maintenance.cancel()
+        with suppress(asyncio.CancelledError):
+            await maintenance
         await presentation_v4.close_connection()
         await jev.close_connection()
 
 
 app = FastAPI(title="DCTA voice banking agent", lifespan=_lifespan)
+app.add_middleware(AuditMiddleware)
+app.include_router(audit_router)
 app.include_router(intent_router)
 app.include_router(validation_router)
 app.include_router(bank_router)
@@ -72,3 +93,8 @@ async def _malformed_request(request: Request, exc: RequestValidationError) -> J
 @app.exception_handler(HTTPException)
 async def _http_error(request: Request, exc: HTTPException) -> JSONResponse:
     return _error(exc.status_code, str(exc.detail))
+
+
+@app.exception_handler(AuditError)
+async def _audit_error(request: Request, exc: AuditError) -> JSONResponse:
+    return _error(503, "Audit storage unavailable. Request stopped.")

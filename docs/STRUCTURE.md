@@ -215,3 +215,8 @@ V4 financial-context additions (Darren):
 - `web/src/components/v5-enquiry.tsx`: validated read-only composition tree and account, bill, history and spending blocks.
 
 - `app/transaction_state.py`: shared single-process draft provenance, revision, audit state and HMAC receipt checks (no bank/model imports).
+
+- `app/evidence.py`: encrypted persistent request evidence and verified timeline.
+- `app/audit_http.py`: bounded HTTP audit capture and protected evidence routes.
+- `tests/test_evidence.py`: persistence, redaction, retention and request timeline tests.
+- `var/evidence.sqlite3`: ignored encrypted runtime evidence and metadata chain.

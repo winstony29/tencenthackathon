@@ -12,7 +12,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, UploadFile
 
-from app import config, transaction_state
+from app import config, evidence, transaction_state
 from app.bank import readonly
 from app.contracts import (
     NONE_OPTION_ID,
@@ -179,6 +179,7 @@ async def preview(request: PreviewRequest) -> dict[str, Any]:
 @router.post("/transcribe", response_model=TranscribeResponse)
 async def transcribe(audio: UploadFile) -> dict[str, Any]:
     """Turn recorded speech into text. Stub: always returns the CONTRACTS example."""
+    evidence.record("transcription_stub", {"output": _STUB_TRANSCRIPT, "audio_saved": False})
     return _STUB_TRANSCRIPT
 
 
@@ -286,6 +287,16 @@ async def _start(user_id: str, transcript: str, session_id: str) -> session.Sess
     except LookupError as error:
         raise HTTPException(404, "Unknown user.") from error
     built = options.build(transcript, data, f"{user_id}|{session_id}")
+    evidence.record(
+        "intent_context",
+        {
+            "accounts": data.accounts.model_dump(mode="json"),
+            "quotes": [q.model_dump(mode="json") for q in data.quotes],
+            "option_numbers": {k: str(v) for k, v in built.numbers.items()},
+            "option_labels": built.labels,
+        },
+        session_id=session_id,
+    )
     # Jev reads the text with stand-in numbers (D-026). W-04 rewrites that text after this
     # batch clears the shield, and rewrites must keep the stand-in numbers unchanged.
     phrasings = [built.text]
@@ -435,6 +446,15 @@ def _ask(
         return _cancelled("too_many_questions", meta)
     current.asked += 1
     question_id = f"q_{current.asked}"
+    current.history.append(
+        {
+            "kind": "question",
+            "question_id": question_id,
+            "question": decision.ask,
+            "text": text,
+            "options": [{"option_id": o, "label": label} for o, label in chips],
+        }
+    )
     current.pending = (question_id, decision.ask, {o for o, _ in chips})
     session.save(request.session_id, current)
     return {

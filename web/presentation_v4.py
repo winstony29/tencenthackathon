@@ -10,7 +10,7 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from app import config
+from app import config, evidence
 from app.bank.readonly import get_account_insights
 from app.contracts import EnquiryPresentationRequest
 
@@ -260,6 +260,7 @@ def parse_response(result: dict, request: dict) -> dict[str, Any]:
 async def evaluate(body: EvaluationRequest) -> dict[str, Any]:
     try:
         request = build_request(body)
+        evidence.record("presentation_model_input", {"input": request})
     except (ValueError, KeyError, TypeError) as error:
         raise HTTPException(400, "Invalid V4 composition request") from error
     if not config.MAKERS_MODELS_KEY:
@@ -279,6 +280,10 @@ async def evaluate(body: EvaluationRequest) -> dict[str, Any]:
         else:
             async with httpx.AsyncClient(timeout=config.MAKERS_JEV_TIMEOUT_SECONDS) as client:
                 response = await send(client)
+        evidence.record(
+            "presentation_model_output",
+            {"http_status": response.status_code, "output": response.json()},
+        )
         response.raise_for_status()
         result = parse_response(response.json(), request)
     except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as error:
@@ -359,10 +364,15 @@ async def enquiry(body: EnquiryPresentationRequest) -> dict[str, Any]:
                 },
                 "questions": questions,
             }
+            evidence.record("presentation_model_input", {"input": request})
             response = await _client.post(
                 config.MAKERS_JEV_ENDPOINT,
                 headers={"Authorization": f"Bearer {config.MAKERS_MODELS_KEY}"},
                 json=request,
+            )
+            evidence.record(
+                "presentation_model_output",
+                {"http_status": response.status_code, "output": response.json()},
             )
             response.raise_for_status()
             checked = parse_response(response.json(), request)
@@ -458,10 +468,15 @@ async def answer_presentation(body: AnswerPresentationRequest) -> dict[str, Any]
                 "state": body.model_dump(),
                 "questions": questions,
             }
+            evidence.record("presentation_model_input", {"input": request})
             response = await _client.post(
                 config.MAKERS_JEV_ENDPOINT,
                 headers={"Authorization": f"Bearer {config.MAKERS_MODELS_KEY}"},
                 json=request,
+            )
+            evidence.record(
+                "presentation_model_output",
+                {"http_status": response.status_code, "output": response.json()},
             )
             response.raise_for_status()
             answers = parse_response(response.json(), request)["answers"]

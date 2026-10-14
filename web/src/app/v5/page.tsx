@@ -9,7 +9,7 @@ import { V5Answer, V5Cards } from "@/components/v5-cards";
 import { compose, fallback, type Composition } from "@/lib/v4-composition";
 import { contextFor } from "@/lib/v4-catalog";
 import { initialState, reducer, type Handoff, type State } from "@/lib/v4-state";
-import { post, request } from "@/lib/api";
+import { post, request, reportPresentation } from "@/lib/api";
 import {
   accountsSchema,
   answerSchema,
@@ -142,9 +142,17 @@ export default function V5() {
     try {
       result = await compose(ctx, abort.signal, () => {
         if (version === generation.current) setStage((n) => n + 1);
-      });
+      }, next.handoff.draft.session_id);
     } catch {
       result = fallback(ctx);
+    }
+    if (version !== generation.current) return;
+    try {
+      await reportPresentation(next.handoff.draft.session_id, next.handoff.draft.draft_id,
+        {spec: result.spec, source: result.source, reason: result.reason}, result.source);
+    } catch {
+      if (version === generation.current) stop("Unable to save this request.", "Please try again.");
+      return;
     }
     if (version !== generation.current) return;
     setComposing(false);
@@ -182,6 +190,7 @@ export default function V5() {
         return;
       }
       if (reply.status === "answer") {
+        const answerSession = session.current;
         session.current = "";
         setQuestion(null);
         const known = answerSchema.safeParse(reply);
@@ -190,6 +199,8 @@ export default function V5() {
         setFound(known.data);
         setAnswerView(fallbackAnswerPresentation);
         setPhase("answer");
+        void reportPresentation(answerSession, undefined,
+          {answer: known.data, view: fallbackAnswerPresentation}, "fallback").catch(() => {});
         // Structural metadata only; preserve Winston's exact filtered records.
         const a = known.data;
         const count = a.kind === "balance" ? a.accounts.length
@@ -201,8 +212,12 @@ export default function V5() {
         void post("/presentation-v5/answer", answerPresentationSchema, {
           kind: a.kind, count,
           timeline_requested: "transcript" in turn && /\btimeline\b/i.test(turn.transcript),
-        }, abort.signal).then((view) => {
-          if (version === generation.current) setAnswerView(view);
+        }, abort.signal, answerSession).then((view) => {
+          if (version === generation.current) {
+            setAnswerView(view);
+            void reportPresentation(answerSession, undefined, {answer: a, view}, view.source)
+              .catch(() => {});
+          }
         }).catch(() => { /* The complete fallback answer remains usable. */ });
         return;
       }
