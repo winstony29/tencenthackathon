@@ -5,11 +5,11 @@ Diagram box: Mock gateway, User data, Audit log
 Contract: docs/CONTRACTS.md §3.3
 """
 
-from typing import Any
-
 from fastapi import APIRouter, HTTPException, Query
+from starlette.concurrency import run_in_threadpool
 
 from app.audit import read_events
+from app.bank import gateway
 from app.bank.devices import register_public_key
 from app.bank.readonly import get_accounts, get_fx_rate, get_quote
 from app.config import AUDIT_DEFAULT_LIMIT
@@ -24,17 +24,10 @@ from app.contracts import (
     ExecuteResponse,
     FxResponse,
     QuoteResponse,
+    RejectedResponse,
 )
 
 router = APIRouter(prefix="/api", tags=["bank"])
-
-# Stub responses copied from CONTRACTS §3.3 (CONTRACTS §7); J-02 to J-08 replace them.
-_STUB_CHALLENGE = {
-    "nonce": "n_7d21…",
-    "signing_payload": "<canonical draft JSON>.n_7d21…",
-    "expires_at": "2026-10-12T09:35:00+08:00",
-}
-_STUB_EXECUTED = {"status": "executed", "results": [{"action_index": 0, "reference": "TX-000123"}]}
 
 
 @router.get("/accounts", response_model=AccountsResponse)
@@ -65,15 +58,35 @@ async def register_device(request: DeviceRegisterRequest) -> DeviceRegisterRespo
 
 
 @router.post("/challenge", response_model=ChallengeResponse)
-async def challenge(request: ChallengeRequest) -> dict[str, Any]:
-    """Issue a one-time nonce for a validated draft. Stub: does not check the receipt."""
-    return _STUB_CHALLENGE
+async def challenge(request: ChallengeRequest) -> ChallengeResponse:
+    """Issue a nonce only after receipt and current trusted-context checks pass."""
+    try:
+        return await run_in_threadpool(gateway.issue_challenge, request)
+    except gateway.GatewayRejected:
+        raise HTTPException(400, "Invalid or unavailable transaction approval.") from None
+    except gateway.GatewayUnavailable:
+        raise HTTPException(
+            503, "Transaction approval unavailable; operator review required."
+        ) from None
 
 
 @router.post("/execute", response_model=ExecuteResponse)
-async def execute(request: ExecuteRequest) -> dict[str, Any]:
-    """Move money for a signed draft. Stub: always executed, and nothing moves."""
-    return _STUB_EXECUTED
+async def execute(request: ExecuteRequest) -> ExecuteResponse:
+    """Execute a verified approval or recover its actual previously committed result."""
+    try:
+        return await run_in_threadpool(gateway.execute, request)
+    except gateway.GatewayRejected as error:
+        if str(error) in {"bad_signature", "unknown_nonce", "nonce_used", "nonce_expired"}:
+            return RejectedResponse(
+                status="rejected",
+                reason=str(error),
+                message="This transaction approval was rejected.",
+            )
+        raise HTTPException(400, "Invalid or unavailable transaction approval.") from None
+    except gateway.GatewayUnavailable:
+        raise HTTPException(
+            503, "Transaction outcome unavailable; operator review required."
+        ) from None
 
 
 @router.get("/audit", response_model=AuditResponse)

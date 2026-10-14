@@ -9,13 +9,16 @@ import ast
 import base64
 import copy
 import hashlib
+import hmac
 import importlib
 import json
 import re
+import secrets
 import socket
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from decimal import Decimal, localcontext
 from pathlib import Path
@@ -24,16 +27,20 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec, utils
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from app import audit
-from app.bank import devices, ledger, readonly, rules
+from app import audit, config
+from app.bank import devices, gateway, ledger, readonly, rules
 from app.contracts import (
     Account,
     AccountsResponse,
+    ChallengeRequest,
     Draft,
+    ExecuteRequest,
     QuoteResponse,
 )
 from app.main import app
@@ -4702,3 +4709,1387 @@ def test_enforcement_no_optional_otp_or_client_policy_can_enter_execution(
                 _risk_draft("8000.00"), "ex_no_override", **arguments, **risk_execution_store
             )
     assert _financial_state(risk_execution_store) == before
+
+
+@pytest.fixture
+def gateway_limits() -> gateway.GatewayPolicy:
+    """Explicit prototype resource-policy fixtures, never live defaults."""
+    return gateway.GatewayPolicy(
+        nonce_lifetime_seconds=300,
+        receipt_lifetime_seconds=600,
+        max_receipt_bytes=4096,
+        max_draft_bytes=32768,
+        max_store_bytes=8 * 1024 * 1024,
+        max_challenges=32,
+        max_challenges_per_user=8,
+        max_events=256,
+        max_attempts=5,
+    )
+
+
+def _test_jwk(key: ec.EllipticCurvePrivateKey) -> dict[str, str]:
+    numbers = key.public_key().public_numbers()
+    return {
+        "kty": "EC",
+        "crv": "P-256",
+        "x": gateway._b64(numbers.x.to_bytes(32, "big")),
+        "y": gateway._b64(numbers.y.to_bytes(32, "big")),
+    }
+
+
+@pytest.fixture
+def gateway_environment(
+    risk_execution_store: dict[str, Path],
+    gateway_limits: gateway.GatewayPolicy,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> SimpleNamespace:
+    """Real J-04/J-07/J-08 and cryptography; only missing trusted providers are fixtures."""
+    monkeypatch.setattr(gateway, "gateway_policy", lambda: gateway_limits)
+    monkeypatch.setattr(config, "VALIDATION_RECEIPT_KEY", gateway._b64(secrets.token_bytes(32)))
+    monkeypatch.setattr(
+        readonly, "_ledger_path", lambda path: path or risk_execution_store["storage_path"]
+    )
+    monkeypatch.setattr(devices, "__file__", str(tmp_path / "app" / "bank" / "devices.py"))
+    nonce_path = tmp_path / "nonces.json"
+    monkeypatch.setattr(gateway, "_path", lambda path: path or nonce_path)
+    audit_lock = audit._locked_file
+
+    @contextmanager
+    def isolated_audit(path: Path | None) -> Any:
+        with audit_lock(path or risk_execution_store["audit_path"]) as stream:
+            yield stream
+
+    monkeypatch.setattr(audit, "_locked_file", isolated_audit)
+    private = ec.generate_private_key(ec.SECP256R1())
+    devices.register_public_key("u_demo", _test_jwk(private))
+    contexts: dict[str, gateway.TrustedContext] = {}
+    context_lock = ledger.threading.RLock()
+
+    @contextmanager
+    def lease(draft: Draft) -> Any:
+        with context_lock:
+            context = contexts.get(draft.draft_id)
+            if context is None:
+                raise gateway.GatewayUnavailable("trusted_context_unavailable")
+            yield context
+
+    monkeypatch.setattr(gateway, "trusted_context", lease)
+
+    def approve(
+        draft: Draft, logical_id: str | None = None, revision: str = "r_1"
+    ) -> gateway.TrustedContext:
+        with context_lock:
+            context = gateway.TrustedContext(
+                user_id=draft.user_id,
+                session_id=draft.session_id,
+                draft_id=draft.draft_id,
+                context_id="ctx_" + secrets.token_hex(16),
+                revision=revision,
+                logical_id=logical_id or "logical_" + secrets.token_hex(16),
+                draft_hash=hashlib.sha256(
+                    json.dumps(
+                        draft.model_dump(mode="json"),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                        allow_nan=False,
+                    ).encode()
+                ).hexdigest(),
+                expires_at=gateway._now() + timedelta(seconds=600),
+            )
+            contexts[draft.draft_id] = context
+            return context
+
+    return SimpleNamespace(
+        paths={
+            "storage_path": nonce_path,
+            "ledger_path": risk_execution_store["storage_path"],
+            "audit_path": risk_execution_store["audit_path"],
+        },
+        ledger_paths=risk_execution_store,
+        private=private,
+        approve=approve,
+        contexts=contexts,
+        context_lock=context_lock,
+        limits=gateway_limits,
+        device_root=tmp_path,
+    )
+
+
+def _synthetic_receipt(draft: Draft, context: gateway.TrustedContext, **changes: Any) -> str:
+    """Independent synthetic issuer in TEST CODE ONLY. No HTTP route or production issuer."""
+    fields = {
+        "version": 1,
+        "audience": "dcta.transaction.validation",
+        **context.model_dump(mode="json"),
+        "issued_at": gateway._now().isoformat(),
+        **changes,
+    }
+    claims = gateway.ReceiptClaims.model_validate(fields)
+    payload = json.dumps(
+        claims.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode()
+    key = base64.urlsafe_b64decode(
+        config.VALIDATION_RECEIPT_KEY + "=" * (-len(config.VALIDATION_RECEIPT_KEY) % 4)
+    )
+    mac = hmac.digest(key, b"DCTA-VALIDATION-RECEIPT\0v1\0" + payload, "sha256")
+    return "vr_1." + gateway._b64(payload) + "." + gateway._b64(mac)
+
+
+def _sign_payment(private: ec.EllipticCurvePrivateKey, challenge: Any) -> ExecuteRequest:
+    encoded = private.sign(challenge.signing_payload.encode(), ec.ECDSA(hashes.SHA256()))
+    r, s = utils.decode_dss_signature(encoded)
+    return ExecuteRequest(
+        nonce=challenge.nonce, signature=gateway._b64(r.to_bytes(32, "big") + s.to_bytes(32, "big"))
+    )
+
+
+def _gateway_challenge(
+    env: SimpleNamespace, draft: Draft | None = None, logical_id: str | None = None
+) -> tuple[Draft, Any, ExecuteRequest]:
+    draft = draft or _risk_draft("500.00")
+    context = env.approve(draft, logical_id)
+    challenge = gateway.issue_challenge(
+        ChallengeRequest(draft=draft, receipt=_synthetic_receipt(draft, context)), **env.paths
+    )
+    return draft, challenge, _sign_payment(env.private, challenge)
+
+
+def _gateway_state(env: SimpleNamespace) -> dict[str, Any]:
+    return gateway._read(env.paths["storage_path"], True, env.limits)
+
+
+def test_gateway_valid_receipt_signature_and_actual_signed_500_transfer(
+    gateway_environment: SimpleNamespace,
+) -> None:
+    env = gateway_environment
+    draft, challenge, request = _gateway_challenge(env)
+    assert json.loads(challenge.signing_payload.rsplit(".", 1)[0]) == draft.model_dump(mode="json")
+    assert challenge.signing_payload == gateway.canonical_draft(draft) + "." + challenge.nonce
+    assert len(gateway._decode(request.signature)) == 64
+    result = gateway.execute(request, **env.paths)
+    assert result.status == "executed"
+    assert _ledger_balance(env.ledger_paths, "acc_5678") == "64500.00"
+    assert gateway.execute(request, **env.paths) == result
+    assert len(_ledger_state(env.ledger_paths)["transactions"]) == 1
+    assert _gateway_state(env)["challenges"][challenge.nonce]["status"] == "committed"
+    assert env.paths["storage_path"].stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "amount",
+        "payee",
+        "currency",
+        "user",
+        "account",
+        "transcript",
+        "session",
+        "draft_id",
+        "actions",
+        "created_at",
+    ],
+)
+def test_gateway_receipt_binds_all_draft_fields(
+    gateway_environment: SimpleNamespace,
+    mutation: str,
+) -> None:
+    env = gateway_environment
+    draft = _risk_draft("500.00")
+    receipt = _synthetic_receipt(draft, env.approve(draft))
+    data = draft.model_dump(mode="json")
+    if mutation == "amount":
+        data["actions"][0]["amount"] = "5000.00"
+    elif mutation == "payee":
+        data["actions"][0]["to_payee_id"] = "pay_8892"
+    elif mutation == "currency":
+        data["actions"][0]["currency"] = "USD"
+    elif mutation == "account":
+        data["actions"][0]["from_account_id"] = "acc_1234"
+    elif mutation == "user":
+        data["user_id"] = "u_other"
+    elif mutation == "actions":
+        data["actions"].append(_ledger_action("bill_payment"))
+    elif mutation == "created_at":
+        data["created_at"] = "2026-10-14T01:00:00Z"
+    else:
+        data["session_id" if mutation == "session" else mutation] = (
+            "changed"
+            if mutation == "transcript"
+            else "d_changed"
+            if mutation == "draft_id"
+            else "s_changed"
+        )
+    before = _financial_state(env.ledger_paths)
+    with pytest.raises(gateway.GatewayRejected, match="invalid_receipt"):
+        gateway.issue_challenge(
+            ChallengeRequest(draft=Draft.model_validate(data), receipt=receipt), **env.paths
+        )
+    assert _financial_state(env.ledger_paths) == before
+    assert not env.paths["storage_path"].exists()
+
+
+@pytest.mark.parametrize(
+    "receipt",
+    [
+        "",
+        "vr_stub",
+        "vr_1.a.b",
+        "vr2.a.b",
+        "vr_1.YQ==.Yg==",
+        "vr_1.**.**",
+        "vr_1.a.b.extra",
+        "x" * 4097,
+    ],
+)
+def test_gateway_malformed_or_oversized_receipts_fail_closed(
+    gateway_environment: SimpleNamespace,
+    receipt: str,
+) -> None:
+    env = gateway_environment
+    draft = _risk_draft()
+    env.approve(draft)
+    with pytest.raises(gateway.GatewayRejected, match="invalid_receipt"):
+        gateway.issue_challenge(ChallengeRequest(draft=draft, receipt=receipt), **env.paths)
+    assert _ledger_state(env.ledger_paths)["transactions"] == []
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("revision", "r_superseded"),
+        ("context_id", "ctx_other"),
+        ("logical_id", "logical_other"),
+        ("draft_hash", "f" * 64),
+        ("user_id", "u_other"),
+    ],
+)
+def test_gateway_authenticated_but_mismatched_receipt_context_is_rejected(
+    gateway_environment: SimpleNamespace,
+    field: str,
+    value: str,
+) -> None:
+    env = gateway_environment
+    draft = _risk_draft()
+    context = env.approve(draft)
+    receipt = _synthetic_receipt(draft, context, **{field: value})
+    with pytest.raises(gateway.GatewayRejected, match="receipt_superseded|invalid_receipt"):
+        gateway.issue_challenge(ChallengeRequest(draft=draft, receipt=receipt), **env.paths)
+    assert _ledger_state(env.ledger_paths)["transactions"] == []
+
+
+@pytest.mark.parametrize("clock", ["expired", "future", "too_long"])
+def test_gateway_receipt_times_are_enforced_by_server(
+    gateway_environment: SimpleNamespace,
+    clock: str,
+) -> None:
+    env = gateway_environment
+    draft = _risk_draft()
+    context = env.approve(draft)
+    now = gateway._now()
+    changes = (
+        {"issued_at": now - timedelta(seconds=60), "expires_at": now - timedelta(seconds=1)}
+        if clock == "expired"
+        else {"issued_at": now + timedelta(seconds=1)}
+        if clock == "future"
+        else {"issued_at": now - timedelta(seconds=1000)}
+    )
+    with pytest.raises(gateway.GatewayRejected, match="receipt_expired|invalid_receipt"):
+        gateway.issue_challenge(
+            ChallengeRequest(draft=draft, receipt=_synthetic_receipt(draft, context, **changes)),
+            **env.paths,
+        )
+
+
+@pytest.mark.parametrize("key", ["", "short", "not-a-key!", "YQ=="])
+def test_gateway_missing_or_invalid_secret_never_generates_fallback(
+    gateway_environment: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    key: str,
+) -> None:
+    env = gateway_environment
+    draft = _risk_draft()
+    receipt = _synthetic_receipt(draft, env.approve(draft))
+    monkeypatch.setattr(config, "VALIDATION_RECEIPT_KEY", key)
+    with pytest.raises(gateway.GatewayUnavailable, match="receipt_key_unavailable"):
+        gateway.issue_challenge(ChallengeRequest(draft=draft, receipt=receipt), **env.paths)
+    assert not env.paths["storage_path"].exists()
+
+
+def test_gateway_forged_mac_and_cross_domain_mac_are_rejected(
+    gateway_environment: SimpleNamespace,
+) -> None:
+    env = gateway_environment
+    draft = _risk_draft()
+    receipt = _synthetic_receipt(draft, env.approve(draft))
+    prefix, body, mac = receipt.split(".")
+    for changed in (
+        gateway._b64(secrets.token_bytes(32)),
+        gateway._b64(
+            hmac.digest(
+                gateway._secret(), b"DCTA-CHALLENGE-STORE\0v1\0" + gateway._decode(body), "sha256"
+            )
+        ),
+    ):
+        assert changed != mac
+        with pytest.raises(gateway.GatewayRejected):
+            gateway.verify_receipt(draft, prefix + "." + body + "." + changed)
+
+
+@pytest.mark.parametrize(
+    "signature", ["", "!", "=" * 86, "A" * 85, "A" * 87, "A" * 86, "A" * 10000]
+)
+def test_gateway_strict_raw_signature_format_and_invalid_values(
+    gateway_environment: SimpleNamespace,
+    signature: str,
+) -> None:
+    env = gateway_environment
+    _, _, request = _gateway_challenge(env)
+    with pytest.raises(gateway.GatewayRejected, match="bad_signature"):
+        gateway.execute(request.model_copy(update={"signature": signature}), **env.paths)
+    assert _ledger_state(env.ledger_paths)["transactions"] == []
+
+
+def test_gateway_wrong_key_curve_nonce_and_mutated_multi_action_signatures(
+    gateway_environment: SimpleNamespace,
+) -> None:
+    env = gateway_environment
+    draft = _ledger_draft(_ledger_action(), _ledger_action("bill_payment"))
+    _, challenge, request = _gateway_challenge(env, draft)
+    other = ec.generate_private_key(ec.SECP256R1())
+    with pytest.raises(gateway.GatewayRejected, match="bad_signature"):
+        gateway.execute(_sign_payment(other, challenge), **env.paths)
+    altered = copy.deepcopy(draft.model_dump(mode="json"))
+    altered["actions"][1]["amount"] = "100.00"
+    encoded = env.private.sign(
+        (
+            json.dumps(altered, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            + "."
+            + challenge.nonce
+        ).encode(),
+        ec.ECDSA(hashes.SHA256()),
+    )
+    r, s = utils.decode_dss_signature(encoded)
+    changed_signature = gateway._b64(r.to_bytes(32, "big") + s.to_bytes(32, "big"))
+    with pytest.raises(gateway.GatewayRejected, match="bad_signature"):
+        gateway.execute(request.model_copy(update={"signature": changed_signature}), **env.paths)
+    with pytest.raises(gateway.GatewayRejected, match="bad_signature"):
+        gateway.verify_signature(
+            {**_test_jwk(env.private), "crv": "P-384"}, challenge.signing_payload, request.signature
+        )
+    with pytest.raises(gateway.GatewayRejected, match="unknown_nonce"):
+        gateway.execute(
+            request.model_copy(update={"nonce": "n_" + secrets.token_urlsafe(32)}), **env.paths
+        )
+    assert _ledger_state(env.ledger_paths)["transactions"] == []
+
+
+def test_gateway_challenge_key_binding_rejects_even_valid_signature_for_replaced_key(
+    gateway_environment: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = gateway_environment
+    _, challenge, _ = _gateway_challenge(env)
+    other = ec.generate_private_key(ec.SECP256R1())
+    monkeypatch.setattr(devices, "get_public_key", lambda user: _test_jwk(other))
+    with pytest.raises(gateway.GatewayRejected, match="bad_signature"):
+        gateway.execute(_sign_payment(other, challenge), **env.paths)
+    assert _ledger_state(env.ledger_paths)["transactions"] == []
+
+
+def test_gateway_new_revision_invalidates_previous_nonce_and_receipt(
+    gateway_environment: SimpleNamespace,
+) -> None:
+    env = gateway_environment
+    draft, _, request = _gateway_challenge(env)
+    previous = env.contexts[draft.draft_id]
+    changed = _risk_draft("600.00")
+    context = env.approve(changed, previous.logical_id, "r_2")
+    challenge = gateway.issue_challenge(
+        ChallengeRequest(draft=changed, receipt=_synthetic_receipt(changed, context)), **env.paths
+    )
+    with pytest.raises(gateway.GatewayRejected, match="nonce_used"):
+        gateway.execute(request, **env.paths)
+    result = gateway.execute(_sign_payment(env.private, challenge), **env.paths)
+    assert result.status == "executed"
+    assert _ledger_balance(env.ledger_paths, "acc_5678") == "64400.00"
+
+
+def test_gateway_superseded_or_missing_context_blocks_execution_without_new_challenge(
+    gateway_environment: SimpleNamespace,
+) -> None:
+    env = gateway_environment
+    draft, _, request = _gateway_challenge(env)
+    context = env.contexts[draft.draft_id]
+    env.approve(draft, context.logical_id, "r_new")
+    with pytest.raises(gateway.GatewayRejected, match="receipt_superseded"):
+        gateway.execute(request, **env.paths)
+    assert _ledger_state(env.ledger_paths)["transactions"] == []
+    other = _risk_draft().model_copy(update={"draft_id": "d_missing"})
+    _, _, request = _gateway_challenge(env, other)
+    env.contexts.clear()
+    with pytest.raises(gateway.GatewayUnavailable, match="trusted_context_unavailable"):
+        gateway.execute(request, **env.paths)
+    assert _ledger_state(env.ledger_paths)["transactions"] == []
+
+
+def test_gateway_multiple_challenges_share_execution_identity_and_never_redebit(
+    gateway_environment: SimpleNamespace,
+) -> None:
+    env = gateway_environment
+    draft, challenge, request = _gateway_challenge(env)
+    context = env.contexts[draft.draft_id]
+    second = gateway.issue_challenge(
+        ChallengeRequest(draft=draft, receipt=_synthetic_receipt(draft, context)), **env.paths
+    )
+    assert challenge.nonce != second.nonce
+    records = _gateway_state(env)["challenges"]
+    assert records[challenge.nonce]["execution_id"] == records[second.nonce]["execution_id"]
+    gateway.execute(request, **env.paths)
+    with pytest.raises(gateway.GatewayRejected, match="nonce_used"):
+        gateway.execute(_sign_payment(env.private, second), **env.paths)
+    with pytest.raises(gateway.GatewayRejected, match="logical_transaction_committed"):
+        gateway.issue_challenge(
+            ChallengeRequest(draft=draft, receipt=_synthetic_receipt(draft, context)), **env.paths
+        )
+    assert len(_ledger_state(env.ledger_paths)["transactions"]) == 1
+
+
+def test_gateway_fresh_customer_request_with_identical_details_is_a_new_transfer(
+    gateway_environment: SimpleNamespace,
+) -> None:
+    env = gateway_environment
+    _, _, request = _gateway_challenge(env)
+    gateway.execute(request, **env.paths)
+    fresh = _risk_draft("500.00").model_copy(
+        update={"draft_id": "d_fresh_request", "session_id": "s_fresh"}
+    )
+    _, _, second = _gateway_challenge(env, fresh)
+    gateway.execute(second, **env.paths)
+    assert _ledger_balance(env.ledger_paths, "acc_5678") == "64000.00"
+    assert len(_ledger_state(env.ledger_paths)["executions"]) == 2
+
+
+@pytest.mark.parametrize("shared_nonce", [True, False])
+def test_gateway_concurrent_thread_replays_and_sibling_challenges_execute_once(
+    gateway_environment: SimpleNamespace,
+    shared_nonce: bool,
+) -> None:
+    env = gateway_environment
+    draft, _, first = _gateway_challenge(env)
+    requests = [first] * 6
+    if not shared_nonce:
+        context = env.contexts[draft.draft_id]
+        requests = [first] + [
+            _sign_payment(
+                env.private,
+                gateway.issue_challenge(
+                    ChallengeRequest(draft=draft, receipt=_synthetic_receipt(draft, context)),
+                    **env.paths,
+                ),
+            )
+            for _ in range(5)
+        ]
+    barrier = Barrier(6)
+
+    def submit(request: ExecuteRequest) -> Any:
+        barrier.wait(timeout=10)
+        try:
+            return gateway.execute(request, **env.paths).status
+        except gateway.GatewayRejected as error:
+            return str(error)
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        outcomes = list(pool.map(submit, requests))
+    assert outcomes.count("executed") == (6 if shared_nonce else 1)
+    assert outcomes.count("nonce_used") == (0 if shared_nonce else 5)
+    assert len(_ledger_state(env.ledger_paths)["transactions"]) == 1
+
+
+@pytest.mark.parametrize(
+    "amount,status,reason",
+    [("50000.00", "rejected", "limit_exceeded"), ("8000.00", "needs_extra_check", None)],
+)
+def test_gateway_real_risk_hard_limit_and_step_up_never_commit(
+    gateway_environment: SimpleNamespace,
+    amount: str,
+    status: str,
+    reason: str | None,
+) -> None:
+    env = gateway_environment
+    _, _, request = _gateway_challenge(env, _risk_draft(amount))
+    before = _financial_state(env.ledger_paths)
+    result = gateway.execute(request, **env.paths)
+    assert result.status == status
+    if reason:
+        assert result.reason == reason
+    assert _financial_state(env.ledger_paths) == before
+
+
+def test_gateway_raw_otp_is_never_a_proof_and_attempts_are_bounded(
+    gateway_environment: SimpleNamespace,
+) -> None:
+    env = gateway_environment
+    _, _, request = _gateway_challenge(env, _risk_draft("8000.00"))
+    for _ in range(env.limits.max_attempts - 1):
+        assert (
+            gateway.execute(request.model_copy(update={"otp": "123456"}), **env.paths).status
+            == "needs_extra_check"
+        )
+    assert (
+        gateway.execute(request.model_copy(update={"otp": "123456"}), **env.paths).reason
+        == "bad_otp"
+    )
+    with pytest.raises(gateway.GatewayRejected, match="nonce_used"):
+        gateway.execute(request, **env.paths)
+    assert _ledger_state(env.ledger_paths)["transactions"] == []
+    assert "123456" not in env.paths["storage_path"].read_text()
+    assert "123456" not in env.paths["audit_path"].read_text()
+
+
+@pytest.mark.parametrize("block", ["pause", "policy", "bill", "stock", "fx", "kyc", "funds"])
+def test_gateway_preserves_ledger_policy_pause_and_financial_checks(
+    gateway_environment: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    block: str,
+) -> None:
+    env = gateway_environment
+    if block == "pause":
+        ledger.set_payment_pause(True, operation_id="op_gateway_pause", **env.ledger_paths)
+    if block == "policy":
+        monkeypatch.setattr(rules, "execution_policy", lambda: None)
+    draft = (
+        _ledger_draft(
+            _ledger_action(
+                {"bill": "bill_payment", "stock": "stock_order", "fx": "fx_conversion"}[block]
+            )
+        )
+        if block in {"bill", "stock", "fx"}
+        else _risk_draft()
+    )
+    if block in {"kyc", "funds"}:
+        state = _ledger_state(env.ledger_paths)
+        if block == "kyc":
+            state["users"]["u_demo"]["kyc"]["status"] = "pending"
+        else:
+            state["users"]["u_demo"]["accounts"][1]["balance"] = "0.00"
+        ledger._save_state(env.ledger_paths["storage_path"], state)
+    _, _, request = _gateway_challenge(env, draft)
+    before = _financial_state(env.ledger_paths)
+    if block in {"kyc", "funds"}:
+        assert gateway.execute(request, **env.paths).reason == (
+            "kyc_incomplete" if block == "kyc" else "insufficient_funds"
+        )
+    else:
+        with pytest.raises(
+            gateway.GatewayUnavailable, match="payments_paused|policy_missing|policy_unsupported"
+        ):
+            gateway.execute(request, **env.paths)
+    assert _financial_state(env.ledger_paths) == before
+
+
+def test_gateway_api_has_no_fake_success_or_public_bypass_and_preserves_contracts(
+    gateway_environment: SimpleNamespace,
+) -> None:
+    env = gateway_environment
+    draft = _risk_draft("500.00")
+    context = env.approve(draft)
+    client = TestClient(app)
+    reply = client.post(
+        "/api/challenge",
+        json={
+            "draft": draft.model_dump(mode="json"),
+            "receipt": _synthetic_receipt(draft, context),
+        },
+    )
+    assert reply.status_code == 200
+    assert set(reply.json()) == {"nonce", "signing_payload", "expires_at"}
+    challenge = gateway.ChallengeResponse.model_validate(reply.json())
+    signed = _sign_payment(env.private, challenge)
+    response = client.post("/api/execute", json=signed.model_dump(mode="json"))
+    assert response.json() == {
+        "status": "executed",
+        "results": [{"action_index": 0, "reference": "tx_00000001"}],
+    }
+    assert (
+        client.post("/api/execute", json=signed.model_dump(mode="json")).json() == response.json()
+    )
+    assert _ledger_balance(env.ledger_paths, "acc_5678") == "64500.00"
+    for extra in (
+        {"validation_passed": True},
+        {"verified": True},
+        {"public_key_jwk": _test_jwk(env.private)},
+        {"skip_risk": True},
+    ):
+        assert (
+            client.post(
+                "/api/execute", json={**signed.model_dump(mode="json"), **extra}
+            ).status_code
+            == 400
+        )
+
+
+def test_gateway_live_defaults_fail_closed_without_touching_real_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(gateway, "_path", lambda path: tmp_path / "never-created.json")
+    assert gateway.gateway_policy() is None
+    client = TestClient(app)
+    request = {"nonce": "n_" + secrets.token_urlsafe(32), "signature": "fake", "otp": None}
+    reply = client.post("/api/execute", json=request)
+    assert reply.status_code == 503 and reply.json()["error"]["code"] == "upstream_error"
+    assert "executed" not in reply.text
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize(
+    "gap", ["before_commit", "after_commit", "after_gateway_save", "audit_before_ack"]
+)
+def test_gateway_crash_gaps_recover_original_identity_and_single_debit(
+    gateway_environment: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    gap: str,
+) -> None:
+    env = gateway_environment
+    draft, challenge, request = _gateway_challenge(env)
+    commit = gateway._commit
+    save = gateway._save
+    append = audit.append_event
+
+    def stopped_commit(*args: Any, **kwargs: Any) -> Any:
+        if gap == "after_commit":
+            commit(*args, **kwargs)
+        raise gateway.GatewayUnavailable("simulated_crash")
+
+    def stopped_save(path: Path, state: dict[str, Any], policy: gateway.GatewayPolicy) -> None:
+        record = state["challenges"][challenge.nonce]
+        if record["status"] == "committed":
+            save(path, state, policy)
+            raise gateway.GatewayUnavailable("simulated_crash")
+        save(path, state, policy)
+
+    def stopped_append(actor: str, event: str, data: dict[str, Any], **kwargs: Any) -> Any:
+        result = append(actor, event, data, **kwargs)
+        if event == "gateway_execution_confirmed":
+            raise audit.AuditError("simulated_crash_after_append")
+        return result
+
+    with monkeypatch.context() as patch:
+        if gap in {"before_commit", "after_commit"}:
+            patch.setattr(gateway, "_commit", stopped_commit)
+        elif gap == "after_gateway_save":
+            patch.setattr(gateway, "_save", stopped_save)
+        else:
+            patch.setattr(audit, "append_event", stopped_append)
+        with pytest.raises(gateway.GatewayUnavailable):
+            gateway.execute(request, **env.paths)
+    count = 0 if gap == "before_commit" else 1
+    assert len(_ledger_state(env.ledger_paths)["transactions"]) == count
+    result = gateway.execute(request, **env.paths)
+    assert result.status == "executed"
+    assert len(_ledger_state(env.ledger_paths)["transactions"]) == 1
+    assert _ledger_balance(env.ledger_paths, "acc_5678") == "64500.00"
+    log = audit.read_events(100, storage_path=env.paths["audit_path"])
+    assert log.chain_valid
+    assert sum(e.event == "transaction_executed" for e in log.entries) == 1
+    assert sum(e.event == "gateway_execution_confirmed" for e in log.entries) <= 1
+    assert _gateway_state(env)["outbox"] == []
+    assert (
+        _gateway_state(env)["challenges"][request.nonce]["execution_id"]
+        in _ledger_state(env.ledger_paths)["executions"]
+    )
+
+
+@pytest.mark.parametrize(
+    "gap", ["signature_audit", "start_audit", "ledger_audit", "confirmation_audit"]
+)
+def test_gateway_audit_failures_never_fabricate_success_and_recover(
+    gateway_environment: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    gap: str,
+) -> None:
+    env = gateway_environment
+    _, _, request = _gateway_challenge(env)
+    append = audit.append_event
+    blocked = {
+        "signature_audit": "signature_invalid",
+        "start_audit": "gateway_execution_started",
+        "ledger_audit": "transaction_executed",
+        "confirmation_audit": "gateway_execution_confirmed",
+    }[gap]
+
+    def unavailable(actor: str, event: str, data: dict[str, Any], **kwargs: Any) -> Any:
+        if event == blocked:
+            raise audit.AuditError("Unavailable")
+        return append(actor, event, data, **kwargs)
+
+    attempt = (
+        request.model_copy(update={"signature": "fake"}) if gap == "signature_audit" else request
+    )
+    with monkeypatch.context() as patch:
+        patch.setattr(audit, "append_event", unavailable)
+        with pytest.raises(gateway.GatewayUnavailable):
+            gateway.execute(attempt, **env.paths)
+    assert len(_ledger_state(env.ledger_paths)["transactions"]) == (
+        1 if gap in {"ledger_audit", "confirmation_audit"} else 0
+    )
+    assert gateway.execute(request, **env.paths).status == "executed"
+    assert len(_ledger_state(env.ledger_paths)["transactions"]) == 1
+    assert audit.read_events(100, storage_path=env.paths["audit_path"]).chain_valid
+
+
+@pytest.mark.parametrize("stage", ["inflight", "confirmation"])
+def test_gateway_atomic_write_failure_retains_safe_recovery_state(
+    gateway_environment: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+) -> None:
+    env = gateway_environment
+    _, challenge, request = _gateway_challenge(env)
+    save = gateway._save
+
+    def unavailable(path: Path, state: dict[str, Any], policy: gateway.GatewayPolicy) -> None:
+        if state["challenges"][challenge.nonce]["status"] == (
+            "inflight" if stage == "inflight" else "committed"
+        ):
+            raise gateway.GatewayUnavailable("challenge_storage_unavailable")
+        save(path, state, policy)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(gateway, "_save", unavailable)
+        with pytest.raises(gateway.GatewayUnavailable):
+            gateway.execute(request, **env.paths)
+    assert len(_ledger_state(env.ledger_paths)["transactions"]) == (0 if stage == "inflight" else 1)
+    assert gateway.execute(request, **env.paths).status == "executed"
+    assert len(_ledger_state(env.ledger_paths)["transactions"]) == 1
+
+
+@pytest.mark.parametrize("expired", ["nonce", "receipt"])
+def test_gateway_expired_uncommitted_approval_never_moves_money(
+    gateway_environment: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    expired: str,
+) -> None:
+    env = gateway_environment
+    _, challenge, request = _gateway_challenge(env)
+    later = challenge.expires_at + timedelta(seconds=1 if expired == "nonce" else 400)
+    monkeypatch.setattr(gateway, "_now", lambda: later)
+    with pytest.raises(gateway.GatewayRejected, match="nonce_expired"):
+        gateway.execute(request, **env.paths)
+    assert _ledger_state(env.ledger_paths)["transactions"] == []
+
+
+def test_gateway_expired_committed_exact_retry_only_recovers_actual_evidence(
+    gateway_environment: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = gateway_environment
+    _, challenge, request = _gateway_challenge(env)
+    first = gateway.execute(request, **env.paths)
+    monkeypatch.setattr(gateway, "_now", lambda: challenge.expires_at + timedelta(days=1))
+    env.contexts.clear()
+    monkeypatch.setattr(rules, "execution_policy", lambda: None)
+    ledger.set_payment_pause(True, operation_id="op_retry_paused", **env.ledger_paths)
+    assert gateway.execute(request, **env.paths) == first
+    assert len(_ledger_state(env.ledger_paths)["transactions"]) == 1
+    with pytest.raises(gateway.GatewayRejected, match="nonce_used"):
+        gateway.execute(_sign_payment(env.private, challenge), **env.paths)
+
+
+@pytest.mark.parametrize("storage", ["challenge", "ledger", "audit", "device"])
+def test_gateway_corrupted_storage_fails_closed_without_financial_changes(
+    gateway_environment: SimpleNamespace,
+    storage: str,
+) -> None:
+    env = gateway_environment
+    _, _, request = _gateway_challenge(env)
+    paths = {
+        "challenge": env.paths["storage_path"],
+        "ledger": env.paths["ledger_path"],
+        "audit": env.paths["audit_path"],
+        "device": env.device_root / "var" / "devices.json",
+    }
+    paths[storage].write_text("corrupted\n")
+    original = env.paths["ledger_path"].read_bytes()
+    with pytest.raises((gateway.GatewayUnavailable, devices.DeviceStorageError)):
+        gateway.execute(request, **env.paths)
+    assert env.paths["ledger_path"].read_bytes() == original
+
+
+@pytest.mark.parametrize("tamper", ["amount", "status", "key", "nonce", "result", "outbox"])
+def test_gateway_authenticated_store_refuses_tampering_without_reset(
+    gateway_environment: SimpleNamespace,
+    tamper: str,
+) -> None:
+    env = gateway_environment
+    _, _, request = _gateway_challenge(env)
+    state = json.loads(env.paths["storage_path"].read_text())
+    record = state["challenges"][request.nonce]
+    if tamper == "amount":
+        record["draft"]["actions"][0]["amount"] = "5000.00"
+    elif tamper == "status":
+        record["status"] = "committed"
+    elif tamper == "key":
+        record["key_hash"] = "f" * 64
+    elif tamper == "nonce":
+        state["challenges"]["n_" + secrets.token_urlsafe(32)] = state["challenges"].pop(
+            request.nonce
+        )
+    elif tamper == "result":
+        record["result"] = {
+            "status": "executed",
+            "results": [{"action_index": 0, "reference": "forged"}],
+        }
+    else:
+        state["outbox"] = ["unknown"]
+    env.paths["storage_path"].write_text(json.dumps(state) + "\n")
+    original = env.paths["storage_path"].read_bytes()
+    with pytest.raises(gateway.GatewayUnavailable, match="challenge_storage_unavailable"):
+        gateway.execute(request, **env.paths)
+    assert env.paths["storage_path"].read_bytes() == original
+    assert _ledger_state(env.ledger_paths)["transactions"] == []
+
+
+@pytest.mark.parametrize("missing", ["state", "both", "audit_evidence"])
+def test_gateway_missing_established_state_or_evidence_is_not_reset(
+    gateway_environment: SimpleNamespace,
+    missing: str,
+) -> None:
+    env = gateway_environment
+    draft, _, request = _gateway_challenge(env)
+    if missing == "audit_evidence":
+        env.paths["audit_path"].write_text("")
+    else:
+        env.paths["storage_path"].unlink()
+        if missing == "both":
+            env.paths["storage_path"].with_suffix(".lock").unlink()
+    with pytest.raises(gateway.GatewayUnavailable):
+        gateway.execute(request, **env.paths)
+    if missing != "audit_evidence":
+        assert not env.paths["storage_path"].exists()
+    assert _ledger_state(env.ledger_paths)["transactions"] == []
+
+
+def test_gateway_storage_cleanup_is_bounded_but_never_discards_uncertain_execution(
+    gateway_environment: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = gateway_environment
+    draft, _, request = _gateway_challenge(env)
+    original = gateway._commit
+
+    def unavailable(*args: Any, **kwargs: Any) -> Any:
+        raise gateway.GatewayUnavailable("uncertain")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(gateway, "_commit", unavailable)
+        with pytest.raises(gateway.GatewayUnavailable):
+            gateway.execute(request, **env.paths)
+    assert _gateway_state(env)["challenges"][request.nonce]["status"] == "inflight"
+    later = gateway._now() + timedelta(days=1)
+    monkeypatch.setattr(gateway, "_now", lambda: later)
+    fresh = _risk_draft().model_copy(update={"draft_id": "d_cleanup"})
+    env.approve(fresh)
+    gateway.issue_challenge(
+        ChallengeRequest(
+            draft=fresh, receipt=_synthetic_receipt(fresh, env.contexts[fresh.draft_id])
+        ),
+        **env.paths,
+    )
+    assert request.nonce in _gateway_state(env)["challenges"]
+    assert gateway._commit is original
+    with pytest.raises(gateway.GatewayRejected, match="nonce_expired"):
+        gateway.execute(request, **env.paths)
+    assert _ledger_state(env.ledger_paths)["transactions"] == []
+
+
+def test_gateway_capacity_and_signature_attempt_limits_are_enforced(
+    gateway_environment: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = gateway_environment
+    draft, _, request = _gateway_challenge(env)
+    bad = request.model_copy(update={"signature": "bad"})
+    for _ in range(env.limits.max_attempts):
+        with pytest.raises(gateway.GatewayRejected, match="bad_signature"):
+            gateway.execute(bad, **env.paths)
+    with pytest.raises(gateway.GatewayRejected, match="nonce_used"):
+        gateway.execute(request, **env.paths)
+    context = env.contexts[draft.draft_id]
+    for _ in range(env.limits.max_challenges_per_user - 1):
+        gateway.issue_challenge(
+            ChallengeRequest(draft=draft, receipt=_synthetic_receipt(draft, context)), **env.paths
+        )
+    with pytest.raises(gateway.GatewayUnavailable, match="challenge_capacity_exceeded"):
+        gateway.issue_challenge(
+            ChallengeRequest(draft=draft, receipt=_synthetic_receipt(draft, context)), **env.paths
+        )
+    assert _ledger_state(env.ledger_paths)["transactions"] == []
+
+
+def test_gateway_step_up_attempts_cannot_be_reset_by_another_challenge(
+    gateway_environment: SimpleNamespace,
+) -> None:
+    env = gateway_environment
+    draft, _, first = _gateway_challenge(env, _risk_draft("8000.00"))
+    context = env.contexts[draft.draft_id]
+    second = _sign_payment(
+        env.private,
+        gateway.issue_challenge(
+            ChallengeRequest(draft=draft, receipt=_synthetic_receipt(draft, context)), **env.paths
+        ),
+    )
+    for _ in range(3):
+        gateway.execute(first.model_copy(update={"otp": "fictional"}), **env.paths)
+    assert (
+        gateway.execute(second.model_copy(update={"otp": "fictional"}), **env.paths).status
+        == "needs_extra_check"
+    )
+    assert (
+        gateway.execute(second.model_copy(update={"otp": "fictional"}), **env.paths).reason
+        == "bad_otp"
+    )
+    with pytest.raises(gateway.GatewayRejected, match="step_up_locked"):
+        gateway.issue_challenge(
+            ChallengeRequest(draft=draft, receipt=_synthetic_receipt(draft, context)), **env.paths
+        )
+    assert _ledger_state(env.ledger_paths)["transactions"] == []
+
+
+def test_gateway_no_transcripts_otps_keys_or_money_in_security_audit(
+    gateway_environment: SimpleNamespace,
+) -> None:
+    env = gateway_environment
+    draft = _risk_draft("8000.00").model_copy(
+        update={"transcript": "PRIVATE_FICTIONAL_INSTRUCTION_879123"}
+    )
+    _, _, request = _gateway_challenge(env, draft)
+    gateway.execute(request.model_copy(update={"otp": "879123"}), **env.paths)
+    events = audit.read_events(1000, storage_path=env.paths["audit_path"])
+    text = events.model_dump_json()
+    for forbidden in (
+        "PRIVATE_FICTIONAL",
+        "879123",
+        config.VALIDATION_RECEIPT_KEY,
+        "8000.00",
+        "acc_5678",
+        "u_demo",
+        "John Doe",
+    ):
+        assert forbidden not in text
+    assert "private_key" not in text
+
+
+def test_gateway_context_lease_prevents_correction_racing_with_execution(
+    gateway_environment: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = gateway_environment
+    draft, _, request = _gateway_challenge(env)
+    entered, proceed, correction_started, correction_finished = Event(), Event(), Event(), Event()
+    commit = gateway._commit
+
+    def slow_commit(*args: Any, **kwargs: Any) -> Any:
+        entered.set()
+        assert proceed.wait(timeout=10)
+        assert not correction_finished.is_set()
+        return commit(*args, **kwargs)
+
+    def correction() -> None:
+        correction_started.set()
+        env.approve(draft, env.contexts[draft.draft_id].logical_id, "r_new")
+        correction_finished.set()
+
+    monkeypatch.setattr(gateway, "_commit", slow_commit)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        execution = pool.submit(gateway.execute, request, **env.paths)
+        assert entered.wait(timeout=10)
+        update = pool.submit(correction)
+        assert correction_started.wait(timeout=10)
+        assert not correction_finished.is_set()
+        proceed.set()
+        assert execution.result(timeout=10).status == "executed"
+        update.result(timeout=10)
+    assert correction_finished.is_set()
+    assert len(_ledger_state(env.ledger_paths)["transactions"]) == 1
+
+
+_GATEWAY_PROCESS = """
+import json,sys
+from contextlib import contextmanager
+from pathlib import Path
+from app import config
+from app.bank import gateway,devices,readonly,rules
+from app.contracts import Draft,ExecuteRequest
+# Synthetic trusted fixtures arrive on stdin, never argv or source literals.
+body=json.load(sys.stdin)
+config.VALIDATION_RECEIPT_KEY=body["key"]
+policy=gateway.GatewayPolicy.model_validate(body["policy"])
+gateway.gateway_policy=lambda: policy
+risk=rules.TransferPolicy.model_validate(body["risk"])
+rules.execution_policy=lambda: risk
+paths={k:Path(v) for k,v in body["paths"].items()}
+readonly._ledger_path=lambda path: path or paths["ledger_path"]
+devices.__file__=body["device_file"]
+context=gateway.TrustedContext.model_validate(body["context"])
+@contextmanager
+def lease(draft):
+    yield context
+gateway.trusted_context=lease
+request=ExecuteRequest.model_validate(body["request"])
+"""
+
+
+def _gateway_process_body(env: SimpleNamespace, draft: Draft, request: ExecuteRequest) -> str:
+    return json.dumps(
+        {
+            "key": config.VALIDATION_RECEIPT_KEY,
+            "policy": env.limits.model_dump(mode="json"),
+            "risk": rules.execution_policy().model_dump(mode="json"),
+            "paths": {k: str(v) for k, v in env.paths.items()},
+            "device_file": str(env.device_root / "app" / "bank" / "devices.py"),
+            "context": env.contexts[draft.draft_id].model_dump(mode="json"),
+            "request": request.model_dump(mode="json"),
+        }
+    )
+
+
+@pytest.mark.parametrize("siblings", [True, False])
+def test_gateway_separate_process_replays_and_multiple_challenges_debit_once(
+    gateway_environment: SimpleNamespace,
+    siblings: bool,
+) -> None:
+    env = gateway_environment
+    draft, _, request = _gateway_challenge(env)
+    requests = [request] * 4
+    if siblings:
+        context = env.contexts[draft.draft_id]
+        requests = [request] + [
+            _sign_payment(
+                env.private,
+                gateway.issue_challenge(
+                    ChallengeRequest(draft=draft, receipt=_synthetic_receipt(draft, context)),
+                    **env.paths,
+                ),
+            )
+            for _ in range(3)
+        ]
+    script = (
+        _GATEWAY_PROCESS
+        + """
+try:
+    result=gateway.execute(request,**paths)
+    sys.stdout.write(result.status)
+except gateway.GatewayRejected as error:
+    sys.stdout.write(str(error))
+"""
+    )
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", script],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for _ in requests
+    ]
+    try:
+        for process, payment in zip(processes, requests, strict=True):
+            process.stdin.write(_gateway_process_body(env, draft, payment))
+            process.stdin.close()
+            process.stdin = None
+        outputs = [process.communicate(timeout=30) for process in processes]
+        assert all(process.returncode == 0 for process in processes), [err for _, err in outputs]
+        outcomes = [out for out, _ in outputs]
+        assert outcomes.count("executed") == (1 if siblings else 4)
+        assert outcomes.count("nonce_used") == (3 if siblings else 0)
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+    assert len(_ledger_state(env.ledger_paths)["transactions"]) == 1
+    assert _ledger_balance(env.ledger_paths, "acc_5678") == "64500.00"
+
+
+@pytest.mark.parametrize(
+    "gap",
+    ["before_commit", "after_ledger_replace", "after_commit", "after_gateway_save", "audit_ack"],
+)
+def test_gateway_real_process_exit_recovers_single_execution_and_audit_evidence(
+    gateway_environment: SimpleNamespace,
+    gap: str,
+) -> None:
+    env = gateway_environment
+    draft, challenge, request = _gateway_challenge(env)
+    script = (
+        _GATEWAY_PROCESS
+        + """
+import os
+from app.bank import ledger
+stage=sys.argv[1]
+commit=gateway._commit
+save=gateway._save
+append=gateway.audit.append_event
+if stage=="before_commit":
+    gateway._commit=lambda *args,**kwargs: os._exit(79)
+elif stage=="after_ledger_replace":
+    ledger._sync_directory=lambda path: os._exit(79)
+elif stage=="after_commit":
+    def interrupted_commit(*args,**kwargs):
+        commit(*args,**kwargs)
+        os._exit(79)
+    gateway._commit=interrupted_commit
+elif stage=="after_gateway_save":
+    def interrupted_save(path,state,policy):
+        save(path,state,policy)
+        if state["challenges"][request.nonce]["status"]=="committed":
+            os._exit(79)
+    gateway._save=interrupted_save
+else:
+    def interrupted_append(actor,event,data,**kwargs):
+        result=append(actor,event,data,**kwargs)
+        if event=="gateway_execution_confirmed": os._exit(79)
+        return result
+    gateway.audit.append_event=interrupted_append
+gateway.execute(request,**paths)
+"""
+    )
+    outcome = subprocess.run(
+        [sys.executable, "-c", script, gap],
+        input=_gateway_process_body(env, draft, request),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert outcome.returncode == 79, outcome.stderr
+    assert len(_ledger_state(env.ledger_paths)["transactions"]) == (
+        0 if gap == "before_commit" else 1
+    )
+    if gap != "before_commit":
+        # A committed recovery retrieves actual evidence even when later policy/pause
+        # would forbid a new payment. J-08 still reconciles its durable execution audit.
+        ledger.set_payment_pause(True, operation_id="op_after_gateway_crash", **env.ledger_paths)
+        env.contexts.clear()
+    result = gateway.execute(request, **env.paths)
+    assert result.status == "executed"
+    assert _ledger_balance(env.ledger_paths, "acc_5678") == "64500.00"
+    assert len(_ledger_state(env.ledger_paths)["transactions"]) == 1
+    log = audit.read_events(100, storage_path=env.paths["audit_path"])
+    assert log.chain_valid
+    assert sum(e.event == "transaction_executed" for e in log.entries) == 1
+    assert _gateway_state(env)["outbox"] == []
+    assert _gateway_state(env)["challenges"][challenge.nonce]["status"] == "committed"
+
+
+def test_gateway_persistence_survives_module_reload_and_matches_original_result(
+    gateway_environment: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = gateway_environment
+    draft, challenge, request = _gateway_challenge(env)
+    first = gateway.execute(request, **env.paths)
+    lease = gateway.trusted_context
+    importlib.reload(gateway)
+    monkeypatch.setattr(gateway, "gateway_policy", lambda: env.limits)
+    monkeypatch.setattr(gateway, "trusted_context", lease)
+    assert gateway.execute(request, **env.paths) == first
+    assert len(_ledger_state(env.ledger_paths)["transactions"]) == 1
+
+
+def test_gateway_missing_trusted_provider_and_customer_binding_never_issue_approval(
+    gateway_environment: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = gateway_environment
+    draft = _risk_draft()
+    receipt = _synthetic_receipt(draft, env.approve(draft))
+
+    @contextmanager
+    def unavailable(draft: Draft) -> Any:
+        raise gateway.GatewayUnavailable("trusted_context_unavailable")
+        yield
+
+    monkeypatch.setattr(gateway, "trusted_context", unavailable)
+    client = TestClient(app)
+    reply = client.post(
+        "/api/challenge", json={"draft": draft.model_dump(mode="json"), "receipt": receipt}
+    )
+    assert reply.status_code == 503 and "signing_payload" not in reply.text
+    assert not _gateway_state(env)["challenges"]
+    assert _ledger_state(env.ledger_paths)["transactions"] == []
+
+
+@pytest.mark.parametrize("invalid", ["zero", "extra", "too_long", "inconsistent"])
+def test_gateway_requires_valid_explicit_backend_resource_configuration(
+    gateway_limits: gateway.GatewayPolicy,
+    monkeypatch: pytest.MonkeyPatch,
+    invalid: str,
+) -> None:
+    data = gateway_limits.model_dump(mode="python")
+    if invalid == "zero":
+        data["max_attempts"] = 0
+    elif invalid == "extra":
+        data["skip_checks"] = True
+    elif invalid == "too_long":
+        data["nonce_lifetime_seconds"] = 301
+    else:
+        data["max_challenges_per_user"] = 1000
+    forged = gateway_limits.model_copy(update=data)
+    monkeypatch.setattr(gateway, "gateway_policy", lambda: forged)
+    if invalid == "extra":
+        with pytest.raises(ValidationError):
+            gateway.GatewayPolicy.model_validate(data)
+    else:
+        with pytest.raises(gateway.GatewayUnavailable):
+            gateway._policy()
+
+
+def test_gateway_canonical_signing_includes_unicode_and_two_decimal_money(
+    gateway_environment: SimpleNamespace,
+) -> None:
+    env = gateway_environment
+    draft = _risk_draft("500.00").model_copy(update={"transcript": "Fictional transfer 五百 林"})
+    _, challenge, request = _gateway_challenge(env, draft)
+    assert "五百" in challenge.signing_payload and '"amount":"500.00"' in challenge.signing_payload
+    assert gateway.execute(request, **env.paths).status == "executed"
+    assert _ledger_balance(env.ledger_paths, "acc_5678") == "64500.00"
+
+
+@pytest.mark.parametrize(
+    "amount,workers,allowed,reason",
+    [("5000.00", 6, 4, "limit_exceeded"), ("100.00", 8, 5, "velocity_exceeded")],
+)
+def test_gateway_distinct_concurrent_requests_cannot_bypass_daily_or_velocity_limits(
+    gateway_environment: SimpleNamespace,
+    amount: str,
+    workers: int,
+    allowed: int,
+    reason: str,
+) -> None:
+    env = gateway_environment
+    requests = []
+    for index in range(workers):
+        draft = _risk_draft(amount).model_copy(update={"draft_id": f"d_atomic_{index}"})
+        _, _, request = _gateway_challenge(env, draft)
+        requests.append(request)
+    barrier = Barrier(workers)
+
+    def submit(request: ExecuteRequest) -> str:
+        barrier.wait(timeout=10)
+        result = gateway.execute(request, **env.paths)
+        return "executed" if result.status == "executed" else result.reason
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(submit, requests))
+    assert results.count("executed") == allowed
+    assert results.count(reason) == workers - allowed
+    assert len(_ledger_state(env.ledger_paths)["transactions"]) == allowed
+    assert (
+        Decimal(_ledger_balance(env.ledger_paths, "acc_5678"))
+        == Decimal("65000.00") - Decimal(amount) * allowed
+    )
+
+
+@pytest.mark.parametrize("mutation", ["amount", "recipient", "currency", "account", "action_list"])
+def test_gateway_customer_signature_cannot_cover_altered_signed_transaction(
+    gateway_environment: SimpleNamespace,
+    mutation: str,
+) -> None:
+    env = gateway_environment
+    draft, challenge, request = _gateway_challenge(env)
+    body = draft.model_dump(mode="json")
+    if mutation == "amount":
+        body["actions"][0]["amount"] = "5000.00"
+    elif mutation == "recipient":
+        body["actions"][0]["to_payee_id"] = "pay_8892"
+    elif mutation == "currency":
+        body["actions"][0]["currency"] = "USD"
+    elif mutation == "account":
+        body["actions"][0]["from_account_id"] = "acc_1234"
+    else:
+        body["actions"].append(_ledger_action("bill_payment"))
+    changed_payload = (
+        json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        + "."
+        + challenge.nonce
+    )
+    changed = _sign_payment(
+        env.private, SimpleNamespace(nonce=challenge.nonce, signing_payload=changed_payload)
+    )
+    before = _financial_state(env.ledger_paths)
+    with pytest.raises(gateway.GatewayRejected, match="bad_signature"):
+        gateway.execute(changed, **env.paths)
+    assert _financial_state(env.ledger_paths) == before
+    assert gateway.execute(request, **env.paths).status == "executed"
+    assert _ledger_balance(env.ledger_paths, "acc_5678") == "64500.00"
+
+
+@pytest.mark.parametrize("malformation", ["duplicate", "noncanonical", "bool_version", "extra"])
+def test_gateway_authenticated_malformed_receipt_envelopes_are_strictly_rejected(
+    gateway_environment: SimpleNamespace,
+    malformation: str,
+) -> None:
+    env = gateway_environment
+    draft = _risk_draft()
+    receipt = _synthetic_receipt(draft, env.approve(draft))
+    raw = gateway._decode(receipt.split(".")[1])
+    fields = json.loads(raw)
+    if malformation == "duplicate":
+        payload = b'{"version":1,' + raw[1:]
+    elif malformation == "noncanonical":
+        payload = json.dumps(fields, indent=2).encode()
+    else:
+        if malformation == "bool_version":
+            fields["version"] = True
+        else:
+            fields["validation_passed"] = True
+        payload = json.dumps(
+            fields, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode()
+    mac = hmac.digest(gateway._secret(), b"DCTA-VALIDATION-RECEIPT\0v1\0" + payload, "sha256")
+    with pytest.raises(gateway.GatewayRejected, match="invalid_receipt"):
+        gateway.verify_receipt(draft, "vr_1." + gateway._b64(payload) + "." + gateway._b64(mac))
+
+
+def test_gateway_expiry_is_checked_after_waiting_for_trusted_context_lease(
+    gateway_environment: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = gateway_environment
+    draft, challenge, request = _gateway_challenge(env)
+    now = gateway._now()
+    monkeypatch.setattr(gateway, "_now", lambda: now)
+    context = env.contexts[draft.draft_id]
+
+    @contextmanager
+    def delayed(draft: Draft) -> Any:
+        monkeypatch.setattr(gateway, "_now", lambda: challenge.expires_at + timedelta(seconds=1))
+        yield context
+
+    monkeypatch.setattr(gateway, "trusted_context", delayed)
+    with pytest.raises(gateway.GatewayRejected, match="nonce_expired"):
+        gateway.execute(request, **env.paths)
+    assert _ledger_state(env.ledger_paths)["transactions"] == []
+
+
+def test_gateway_stable_logical_identity_survives_receipt_key_change(
+    gateway_environment: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = gateway_environment
+    draft = _risk_draft()
+    receipt = _synthetic_receipt(draft, env.approve(draft))
+    claims = gateway.verify_receipt(draft, receipt)
+    identity = gateway._execution_id(claims)
+    monkeypatch.setattr(config, "VALIDATION_RECEIPT_KEY", gateway._b64(secrets.token_bytes(32)))
+    assert gateway._execution_id(claims) == identity
+    with pytest.raises(gateway.GatewayRejected, match="invalid_receipt"):
+        gateway.verify_receipt(draft, receipt)
