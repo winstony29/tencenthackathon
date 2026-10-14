@@ -7,6 +7,7 @@ Contract: docs/CONTRACTS.md §3 (endpoints) and §6 (errors)
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -17,7 +18,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException
 
-from app import evidence
+from app import config, evidence
 from app.audit import AuditError
 from app.audit_http import AuditMiddleware
 from app.audit_http import router as audit_router
@@ -54,7 +55,106 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         await jev.close_connection()
 
 
-app = FastAPI(title="DCTA voice banking agent", lifespan=_lifespan)
+# Security headers for every response. Next.js inlines its bootstrap scripts, so scripts and
+# styles allow 'unsafe-inline'; nothing loads from another site and nothing may frame the page.
+_HEADERS = [
+    (
+        b"content-security-policy",
+        b"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+        b"img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; "
+        b"frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'",
+    ),
+    (b"x-frame-options", b"DENY"),
+    (b"x-content-type-options", b"nosniff"),
+    (b"referrer-policy", b"no-referrer"),
+    (b"permissions-policy", b"microphone=(self), camera=(), geolocation=()"),
+]
+# Endpoints that spend a model call (the shared Jev key), and the rate group each belongs to.
+_MODEL_PATHS = {"/api/understand": "model", "/api/preview": "preview"}
+# Rate state: tokens and last refill per (client IP, group), and every recent model call.
+RATE_BUCKETS: dict[tuple[str, str], tuple[float, float]] = {}
+RATE_WINDOW: list[float] = []
+
+
+class _Guard:
+    """Outermost middleware: security headers, body-size caps and per-IP rate limits.
+
+    ponytail: in-memory buckets for one process; move to the reverse proxy (nginx limit_req)
+    or a shared store if the app ever runs as several workers.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    @staticmethod
+    def _allowed(client: str, group: str) -> bool:
+        now = time.monotonic()
+        RATE_WINDOW[:] = [t for t in RATE_WINDOW if now - t < 60]
+        if len(RATE_WINDOW) >= config.RATE_GLOBAL_PER_MINUTE:
+            return False
+        rate = config.RATE_PER_MINUTE[group]
+        tokens, last = RATE_BUCKETS.get((client, group), (rate, now))
+        tokens = min(rate, tokens + (now - last) * rate / 60)
+        if tokens < 1:
+            return False
+        if len(RATE_BUCKETS) > 10_000:  # forget idle clients rather than grow without bound
+            RATE_BUCKETS.clear()
+        RATE_BUCKETS[(client, group)] = (tokens - 1, now)
+        RATE_WINDOW.append(now)
+        return True
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                message["headers"] = list(message.get("headers", [])) + _HEADERS
+            await send(message)
+
+        path = scope.get("path", "")
+        if not path.startswith("/api/"):
+            return await self.app(scope, receive, send_with_headers)
+        limit = config.MAX_AUDIO_BYTES if path == "/api/transcribe" else config.MAX_REQUEST_BYTES
+        length = dict(scope.get("headers", [])).get(b"content-length", b"0")
+        if not length.isdigit() or int(length) > limit:
+            return await _error(413, "Request too large.")(scope, receive, send_with_headers)
+        group = _MODEL_PATHS.get(path, "model" if path.startswith("/api/presentation-") else None)
+        client = (scope.get("client") or ("unknown", 0))[0]
+        if group and not self._allowed(client, group):
+            response = _error(429, "Too many requests. Please wait a moment and try again.")
+            response.headers["retry-after"] = "10"
+            return await response(scope, receive, send_with_headers)
+        # Content-Length can be left out (chunked uploads), so read what actually arrives, up
+        # to the cap, and hand the app the same bytes.
+        body, more = b"", True
+        while more:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            body += message.get("body", b"")
+            more = message.get("more_body", False)
+            if len(body) > limit:
+                return await _error(413, "Request too large.")(scope, receive, send_with_headers)
+        replayed = False
+
+        async def replay():
+            nonlocal replayed
+            if replayed:
+                return await receive()
+            replayed = True
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        await self.app(scope, replay, send_with_headers)
+
+
+app = FastAPI(
+    title="DCTA voice banking agent",
+    lifespan=_lifespan,
+    docs_url="/docs" if config.API_DOCS else None,
+    redoc_url=None,
+    openapi_url="/openapi.json" if config.API_DOCS else None,
+)
 app.add_middleware(AuditMiddleware)
 app.include_router(audit_router)
 app.include_router(intent_router)
@@ -75,7 +175,14 @@ async def _unknown_api(path: str) -> None:
 if _WEB.is_dir():
     app.mount("/", StaticFiles(directory=_WEB, html=True), name="web")
 
-_ERROR_CODES = {400: "bad_request", 404: "not_found", 502: "upstream_error", 503: "upstream_error"}
+_ERROR_CODES = {
+    400: "bad_request",
+    404: "not_found",
+    413: "too_large",
+    429: "rate_limited",
+    502: "upstream_error",
+    503: "upstream_error",
+}
 
 
 def _error(status_code: int, message: str) -> JSONResponse:
@@ -98,3 +205,7 @@ async def _http_error(request: Request, exc: HTTPException) -> JSONResponse:
 @app.exception_handler(AuditError)
 async def _audit_error(request: Request, exc: AuditError) -> JSONResponse:
     return _error(503, "Audit storage unavailable. Request stopped.")
+
+
+# Added last so it wraps everything, including the audit middleware and the static UI.
+app.add_middleware(_Guard)

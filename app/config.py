@@ -65,3 +65,10 @@ AUDIT_ADMIN_TOKEN = os.getenv("AUDIT_ADMIN_TOKEN", "")
 AUDIT_RETENTION_DAYS = int(os.getenv("AUDIT_RETENTION_DAYS", "7"))
 AUDIT_MAX_BYTES = 2_000_000  # Bound each JSON request/response and evidence item.
 AUDIT_EVIDENCE_PATH = os.getenv("AUDIT_EVIDENCE_PATH", "")  # Blank uses var/evidence.sqlite3.
+
+# Request guard (app/main.py): limits for an anonymous public demo. Starting values.
+API_DOCS = os.getenv("API_DOCS", "1") == "1"  # 0 when deployed: hides /docs and /openapi.json
+MAX_REQUEST_BYTES = 256_000  # largest JSON body any /api/ endpoint accepts
+MAX_AUDIO_BYTES = 2_000_000  # largest /api/transcribe upload (a few seconds of speech)
+RATE_PER_MINUTE = {"preview": 120, "model": 40}  # model-backed calls per client IP per minute
+RATE_GLOBAL_PER_MINUTE = 600  # model-backed calls per minute from everyone together

@@ -8,7 +8,7 @@ Contract: none
 import pytest
 from fastapi.testclient import TestClient
 
-from app import config, transaction_state
+from app import config, main, transaction_state
 from app.bank import readonly
 from app.contracts import AccountsResponse, FxResponse, QuoteResponse
 from app.intent import jev, session
@@ -22,8 +22,10 @@ def client() -> TestClient:
 
 @pytest.fixture(autouse=True)
 def _no_leftover_sessions() -> None:
-    # Sessions live in memory for the whole process; each test starts with none.
+    # Sessions and rate limits live in memory for the whole process; each test starts clean.
     session._SESSIONS.clear()
+    main.RATE_BUCKETS.clear()
+    main.RATE_WINDOW.clear()
     transaction_state.clear()
 
 

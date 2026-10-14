@@ -1423,3 +1423,45 @@ def test_comma_grouped_conversion_preserves_full_amount(client, fake_jev, bank) 
     assert action["buy_amount"] == "740.00"
     assert action["sell_currency"] == "SGD"
     assert action["buy_currency"] == "USD"
+
+
+# --- request guard (app/main.py) ---
+
+
+def test_every_response_carries_the_security_headers(client) -> None:
+    for reply in (
+        client.get("/api/fx", params={"from": "SGD", "to": "USD"}),
+        client.get("/api/nope"),
+    ):
+        assert "frame-ancestors 'none'" in reply.headers["content-security-policy"]
+        assert reply.headers["x-content-type-options"] == "nosniff"
+        assert reply.headers["x-frame-options"] == "DENY"
+
+
+def test_oversized_bodies_are_refused_before_any_work(client) -> None:
+    big = {"user_id": "u_demo", "session_id": "s_big", "transcript": "x" * 300_000}
+    reply = client.post("/api/understand", json=big)
+    assert (reply.status_code, reply.json()["error"]["code"]) == (413, "too_large")
+    audio = client.post("/api/transcribe", files={"audio": ("a.webm", b"0" * 2_100_000)})
+    assert audio.status_code == 413
+
+
+def test_a_body_without_a_length_is_still_capped(client) -> None:
+    def chunks():
+        for _ in range(30):
+            yield b"0" * 10_000
+
+    reply = client.post(
+        "/api/preview", content=chunks(), headers={"content-type": "application/json"}
+    )
+    assert reply.status_code == 413
+
+
+def test_model_calls_are_rate_limited_per_client(client, monkeypatch) -> None:
+    monkeypatch.setitem(config.RATE_PER_MINUTE, "preview", 3)
+    codes = [client.post("/api/preview", json={"text": "s"}).status_code for _ in range(5)]
+    assert codes == [200, 200, 200, 429, 429]
+    limited = client.post("/api/preview", json={"text": "s"})
+    assert limited.json()["error"]["code"] == "rate_limited" and limited.headers["retry-after"]
+    # Free endpoints are not limited.
+    assert client.get("/api/fx", params={"from": "SGD", "to": "USD"}).status_code == 200
