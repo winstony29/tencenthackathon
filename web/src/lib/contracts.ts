@@ -151,20 +151,16 @@ export const quoteSchema = z.strictObject({
   currency,
   as_of: z.iso.datetime({ offset: true }),
 });
+const validationFields = z.array(z.strictObject({
+  field: z.string(), draft_value: z.string(), transcript_says: z.string(), note: z.string(),
+}));
 export const validationSchema = z.discriminatedUnion("status", [
-  z.strictObject({ status: z.literal("match"), receipt: z.string() }),
-  z.strictObject({
-    status: z.literal("mismatch"),
-    fields: z.array(
-      z.strictObject({
-        field: z.string(),
-        draft_value: z.string(),
-        transcript_says: z.string(),
-        note: z.string(),
-      }),
-    ),
-  }),
+  z.strictObject({status: z.literal("match"), receipt: z.string().min(1)}),
+  z.strictObject({status: z.literal("mismatch"), fields: validationFields}),
+  z.strictObject({status: z.literal("uncertain"), fields: validationFields}),
+  z.strictObject({status: z.enum(["pending", "unavailable", "stale"]), message: z.string()}),
 ]);
+
 export type Action = z.infer<typeof actionSchema>;
 export type Draft = z.infer<typeof draftSchema>;
 export type Objective = z.infer<typeof objectiveSchema>;

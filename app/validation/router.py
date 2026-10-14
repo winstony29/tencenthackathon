@@ -1,23 +1,20 @@
-"""Validation endpoint: compares a draft with its own transcript.
-
-Owner: Jayanth
-Diagram box: Validation agent
-Contract: docs/CONTRACTS.md §3.2
-"""
-
-from typing import Any
+"""Semantic validation and explicit revocation routes."""
 
 from fastapi import APIRouter
 
+from app import transaction_state
 from app.contracts import ValidateRequest, ValidateResponse
+from app.validation.validator import validate as audit
 
 router = APIRouter(prefix="/api", tags=["validation"])
 
-# Stub response copied from CONTRACTS §3.2 (CONTRACTS §7); J-05 replaces it.
-_STUB_MATCH = {"status": "match", "receipt": "vr_3f9a…"}
-
 
 @router.post("/validate", response_model=ValidateResponse)
-async def validate(request: ValidateRequest) -> dict[str, Any]:
-    """Check every field of the draft against the transcript. Stub: always a match."""
-    return _STUB_MATCH
+async def validate(request: ValidateRequest):
+    return await audit(request.draft)
+
+
+@router.post("/validation/cancel")
+async def cancel(request: ValidateRequest):
+    transaction_state.cancel(request.draft)
+    return {"status": "cancelled"}

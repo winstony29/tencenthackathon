@@ -334,3 +334,29 @@ Own-account action support from Winston is preserved across contracts, editors a
 Windows file-lock/fsync adaptations remain alongside POSIX behavior. Browser tests choose
 Chrome by platform or CHROME_PATH; no OS-specific shell scripts or dependencies are added.
 Validation and execution remain stubs; this integration does not implement the audit proposal.
+
+
+## Parallel semantic validator - 14 October 2026
+
+Darren authorized implementing the validator plan, including Winston's read-only answer
+bypass, own-account actions and FX. Use server-owned provenance and revision-bound
+receipts. A separate model audits all action fields and action coverage, with independent
+Decimal FX arithmetic. JEV receives no validator reasoning and is not rerun for errors.
+V5 starts the audit alongside composition; mismatch highlights fields, timeout offers
+retry, cancellation/new turns revoke approval. Tests cover tampering and stale results.
+
+Darren requested Local Codex until an independent API account is available. The CLI runs
+with isolated workdir, JSON schema, ignored user configuration, disabled shell/web/apps,
+read-only sandbox and an explicit timeout. Its existing sign-in is used; no credentials
+are copied into the app. This temporary adapter adds process startup latency. Production
+requires service credentials, authenticated user binding and a shared transactional store.
+Single-worker in-memory state matches today's intent-session deployment; fail closed
+on restart. Bank execution remains unavailable rather than falsely reporting success.
+The full risk/signature/ledger implementation remains Jayanth's separate integration.
+
+### Validator defaults correction (14 October 2026)
+
+The independent audit now receives the existing SGD currency convention and deterministic
+source-account fallback rules as trusted application policy. It must still prefer explicit
+user instructions and recipient clarifications. This fixes false uncertainty for "$50 to John"
+after the recipient is selected; it does not establish a real customer account preference.

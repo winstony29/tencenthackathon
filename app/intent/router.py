@@ -12,7 +12,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, UploadFile
 
-from app import config
+from app import config, transaction_state
 from app.bank import readonly
 from app.contracts import (
     NONE_OPTION_ID,
@@ -194,6 +194,10 @@ async def understand(request: UnderstandRequest) -> dict[str, Any]:
     from the stored replies without asking Jev again. A transcript sent while a question is
     open answers it instead (CONTRACTS §10.2).
     """
+    try:
+        transaction_state.start_turn(request.user_id, request.session_id)
+    except transaction_state.InvalidDraft as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
     if not _live():
         return _stub_understand(request)
     started = time.monotonic()
@@ -265,6 +269,7 @@ async def _spoken_answer(
     if p.option not in offered:  # "none", or a "no" that wasn't one of the chips
         session.drop(request.session_id)
         return _cancelled("user_declined", meta)
+    current.history.append({"kind": "spoken_answer", "text": request.transcript})
     current.record(Answer(question_id=question_id, option_id=p.option))
     return None
 
@@ -285,10 +290,18 @@ async def _start(user_id: str, transcript: str, session_id: str) -> session.Sess
     # batch clears the shield, and rewrites must keep the stand-in numbers unchanged.
     phrasings = [built.text]
     replies = await jev.ask_all(phrasings, built.questions)
-    return session.Session(user_id, transcript, built, data, replies)
+    return session.Session(
+        user_id,
+        transcript,
+        built,
+        data,
+        replies,
+        history=[{"kind": "instruction", "text": transcript}],
+    )
 
 
 async def _start_followup(current: session.Session, text: str, session_id: str) -> None:
+    current.history.append({"kind": "followup", "text": text})
     scope = f"{current.user_id}|{session_id}"
     current.options = options.build_followup(text, current.draft, current.data, scope)
     context = {"current_tasks": [options.describe(a) for a in current.draft.actions]}
@@ -439,6 +452,25 @@ def _ask(
 
 def _keep_draft(request, current, built, objective, scenario, meta) -> dict[str, Any]:
     # The session stays open after a draft so follow-up turns can amend it (CONTRACTS §3.1).
+    facts = {
+        "accounts": current.data.accounts.model_dump(mode="json"),
+        "quotes": [q.model_dump(mode="json") for q in current.data.quotes],
+        "fx_rates": [],
+    }
+    for action in built.actions:
+        if action.type == "fx_conversion":
+            try:
+                facts["fx_rates"].append(
+                    readonly.get_fx_rate(action.sell_currency, action.buy_currency).model_dump(
+                        mode="json", by_alias=True
+                    )
+                )
+            except LookupError:
+                pass
+    try:
+        transaction_state.register(built, current.history, facts)
+    except transaction_state.InvalidDraft as error:
+        raise HTTPException(409, str(error)) from error
     current.draft, current.followup, current.pending = built, None, None
     session.save(request.session_id, current)
     return {

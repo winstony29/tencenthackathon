@@ -117,6 +117,8 @@ export default function V5() {
   function reset() {
     if (bankLocked) return;
     cancel();
+    const draft = current.current.handoff?.draft;
+    if (draft) void fetch("/api/validation/cancel", {method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({draft}), keepalive: true}).catch(() => {});
     update(initialState);
     setComposition(null);
     setHeard("");
@@ -431,6 +433,7 @@ export default function V5() {
                 <>
                   {state.error && <p role="alert">{state.error}</p>}
                   <V5Cards
+                    key={JSON.stringify(state.handoff?.draft)}
                     state={state}
                     composing={composing}
                     dispatch={(event) => update(reducer(current.current, event))}

@@ -381,7 +381,20 @@ class MismatchResponse(ContractModel):
     fields: list[FieldMismatch]
 
 
-ValidateResponse = Annotated[MatchResponse | MismatchResponse, Field(discriminator="status")]
+class UncertainResponse(ContractModel):
+    status: Literal["uncertain"]
+    fields: list[FieldMismatch]
+
+
+class ValidationWaiting(ContractModel):
+    status: Literal["pending", "unavailable", "stale"]
+    message: str
+
+
+ValidateResponse = Annotated[
+    MatchResponse | MismatchResponse | UncertainResponse | ValidationWaiting,
+    Field(discriminator="status"),
+]
 
 
 # §3.3 Bank side

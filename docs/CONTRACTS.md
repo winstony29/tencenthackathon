@@ -470,3 +470,42 @@ Needs Darren's and Jayanth's agreement before it is final.
 Needs Darren's and Jayanth's agreement before it is final.
 - **Own-account moves:** new action `account_transfer` (§2.1) and card **Move money** (§5). Between currencies, a standalone `fx_conversion`, which also covers "convert 1,000 SGD to USD".
 - **Bank:** the ledger applies `account_transfer` like a transfer whose payee is the user's own account; D-007 decides limits.
+
+
+## Independent semantic auditing (14 October 2026)
+
+`POST /api/validate` still accepts `{draft}`. Only an exact server-registered current
+Winston draft is accepted. The server uses its saved original instruction, explicit
+clarification selections, follow-ups and bank snapshot; client transcript replacement
+fails closed. Match returns `{status:"match",receipt}`. Mismatch and uncertain return
+`{status:"mismatch"|"uncertain",fields:[{field,draft_value,transcript_says,note}]}`.
+Pending, unavailable and stale return `{status,message}`. Unavailable may be retried;
+a completed mismatch/uncertain result is terminal until a new instruction/revision.
+Every action field and action coverage must be audited. Amounts remain decimal strings.
+
+`POST /api/validation/cancel` accepts `{draft}` and returns `{status:"cancelled"}`.
+New intent turns supersede outstanding approval. Read-only answers never invoke auditing.
+JEV layout changes do not alter the audited draft. Local edited payloads require a fresh
+Winston handoff; the server refuses to validate fabricated client drafts.
+
+The shared bounded in-memory store supports ONE server worker only. It expires drafts
+and their receipts after five minutes; restart revokes all approvals. Receipts bind a
+random revision and full canonical draft digest using an HMAC secret. Setting a persistent
+secret does not make approvals survive restart. This is demo user-ID ownership, not
+production authentication. No new authenticated enrollment is claimed.
+
+Challenge now verifies the current receipt, stores an expiring nonce and returns the
+exact canonical draft payload. Execution checks that the receipt remains current but
+FAILS CLOSED with 503 until Jayanth's signature verification, risk rules and atomic
+ledger are connected. It no longer returns an unconditional fake success. No funds move.
+
+Local Codex is the temporary default validator (`VALIDATOR_PROVIDER=codex`), using an
+already signed-in CLI with read-only sandbox, no shell/web/apps, ignored user config,
+an isolated temporary working directory and ephemeral execution. Requires a current
+Codex CLI on PATH on Windows or macOS. It uses its default model unless
+`VALIDATOR_CODEX_MODEL` is set. CLI timeout is 45 seconds, frontend deadline 60 seconds.
+Alternatively set `VALIDATOR_PROVIDER=compatible-api`, `LLM_BASE_URL` (including /v1),
+`LLM_API_KEY`, `VALIDATOR_MODEL` (distinct from JEV and rewriter); deadline 12 seconds.
+Malformed/missing model output, missing config, audit-log failure and timeouts never
+produce approval. Raw audit context goes to the chosen model provider; performance
+logs contain only draft ID, verdict and elapsed milliseconds (count field).

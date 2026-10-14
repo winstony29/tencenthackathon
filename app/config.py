@@ -33,7 +33,7 @@ TENCENTCLOUD_SECRET_ID = os.getenv("TENCENTCLOUD_SECRET_ID", "")  # Tencent ASR 
 TENCENTCLOUD_SECRET_KEY = os.getenv("TENCENTCLOUD_SECRET_KEY", "")  # Tencent ASR secret
 TENCENTCLOUD_REGION = os.getenv("TENCENTCLOUD_REGION", "ap-singapore")  # Tencent ASR region
 
-VALIDATION_RECEIPT_KEY = os.getenv("VALIDATION_RECEIPT_KEY", "")  # HMAC key for receipts (D-011)
+VALIDATION_RECEIPT_KEY = os.getenv("VALIDATION_RECEIPT_KEY", "") or secrets.token_hex(32)
 
 USE_FAKES = os.getenv("USE_FAKES", "0") == "1"  # True: fake Jev / LLM / ASR instead of real calls
 
@@ -54,3 +54,7 @@ GATE_TAU_HIGH = 0.90  # the same, once the largest number said is above GATE_HIG
 GATE_HIGH_AMOUNT = Decimal("1000")  # where the stricter threshold starts
 GATE_DELTA = 0.15  # most a pick's probability may vary across phrasings
 AUDIT_DEFAULT_LIMIT = 50  # entries GET /api/audit returns when no limit is given (CONTRACTS §3.3)
+
+VALIDATOR_PROVIDER = os.getenv("VALIDATOR_PROVIDER", "codex")  # local demo, or compatible-api
+VALIDATOR_CODEX_MODEL = os.getenv("VALIDATOR_CODEX_MODEL", "")  # blank uses CLI default
+VALIDATOR_TIMEOUT_SECONDS = 45 if VALIDATOR_PROVIDER == "codex" else 12

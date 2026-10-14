@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { Check, LockKeyhole } from "lucide-react";
-import type { Draft } from "@/lib/contracts";
+import type { Draft, Validation } from "@/lib/contracts";
 import {
   preparePayment,
   submitPayment,
@@ -11,6 +11,7 @@ import {
 
 export function V5Payment({
   draft,
+  validation,
   onCancel,
   onLock,
   onSettled,
@@ -18,6 +19,7 @@ export function V5Payment({
 }: {
   preview?: boolean;
   draft: Draft;
+  validation: Validation;
   onCancel: () => void;
   onLock: (locked: boolean) => void;
   onSettled: (completed: boolean) => void;
@@ -45,7 +47,7 @@ export function V5Payment({
               ? "Convert now"
               : "Place order";
   async function send() {
-    if (preview) return;
+    if (preview || validation.status !== "match") return;
     if (
       locked.current ||
       uncertain ||
@@ -61,7 +63,7 @@ export function V5Payment({
     abort.current = controller;
     let executing = false;
     try {
-      pending.current ??= await preparePayment(draft, controller.signal);
+      pending.current ??= await preparePayment(draft, controller.signal, validation);
       controller.signal.throwIfAborted();
       executing = true;
       const reply = await submitPayment(
@@ -147,6 +149,7 @@ export function V5Payment({
           className="v5-primary"
           disabled={
             preview ||
+            validation.status !== "match" ||
             busy ||
             uncertain ||
             (result?.status === "needs_extra_check" && !otp.trim())

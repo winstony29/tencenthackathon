@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { post } from "./api";
-import { draftSchema, validationSchema, type Draft } from "./contracts";
+import { draftSchema, validationSchema, type Draft, type Validation } from "./contracts";
 
 const challengeSchema = z.strictObject({
   nonce: z.string().min(1),
@@ -76,14 +76,11 @@ async function deviceKey(user: string): Promise<CryptoKeyPair> {
     db.close();
   }
 }
-export async function preparePayment(value: Draft, signal: AbortSignal): Promise<Payment> {
+export async function preparePayment(value: Draft, signal: AbortSignal, approved?: Extract<Validation, {status: "match"}>): Promise<Payment> {
   const draft = draftSchema.parse(value);
-  const validation = await post("/validate", validationSchema, { draft }, signal);
+  const validation = approved ?? await post("/validate", validationSchema, { draft }, signal);
   if (validation.status !== "match") {
-    const fields = validation.fields
-      .map((f) => f.field.replace(/^actions\[\d+\]\./, "").replaceAll("_", " "))
-      .join(", ");
-    throw Error(`These details don’t match your request${fields ? `: ${fields}` : ""}. Please start again.`);
+    throw Error("message" in validation ? validation.message : "These details need correction before confirming.");
   }
   // Serialize key creation/registration across tabs sharing the demo user.
   return navigator.locks.request(`dcta-device-${draft.user_id}`, { signal }, async () => {

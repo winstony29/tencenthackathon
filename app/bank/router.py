@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 
 from app.audit import read_events
+from app.bank import gateway
 from app.bank.devices import register_public_key
 from app.bank.readonly import get_accounts, get_fx_rate, get_quote
 from app.config import AUDIT_DEFAULT_LIMIT
@@ -27,14 +28,6 @@ from app.contracts import (
 )
 
 router = APIRouter(prefix="/api", tags=["bank"])
-
-# Stub responses copied from CONTRACTS §3.3 (CONTRACTS §7); J-02 to J-08 replace them.
-_STUB_CHALLENGE = {
-    "nonce": "n_7d21…",
-    "signing_payload": "<canonical draft JSON>.n_7d21…",
-    "expires_at": "2026-10-12T09:35:00+08:00",
-}
-_STUB_EXECUTED = {"status": "executed", "results": [{"action_index": 0, "reference": "TX-000123"}]}
 
 
 @router.get("/accounts", response_model=AccountsResponse)
@@ -66,14 +59,14 @@ async def register_device(request: DeviceRegisterRequest) -> DeviceRegisterRespo
 
 @router.post("/challenge", response_model=ChallengeResponse)
 async def challenge(request: ChallengeRequest) -> dict[str, Any]:
-    """Issue a one-time nonce for a validated draft. Stub: does not check the receipt."""
-    return _STUB_CHALLENGE
+    """Issue a challenge only for the current independently audited draft."""
+    return gateway.challenge(request.draft, request.receipt)
 
 
 @router.post("/execute", response_model=ExecuteResponse)
 async def execute(request: ExecuteRequest) -> dict[str, Any]:
-    """Move money for a signed draft. Stub: always executed, and nothing moves."""
-    return _STUB_EXECUTED
+    """Fail closed until signature/risk/ledger execution is connected."""
+    return gateway.execute(request.nonce)
 
 
 @router.get("/audit", response_model=AuditResponse)

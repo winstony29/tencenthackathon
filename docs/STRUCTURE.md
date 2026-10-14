@@ -213,3 +213,5 @@ V4 financial-context additions (Darren):
 - `web/src/app/v5/components/page.tsx`: V5 component gallery with mock data and disabled payment execution.
 
 - `web/src/components/v5-enquiry.tsx`: validated read-only composition tree and account, bill, history and spending blocks.
+
+- `app/transaction_state.py`: shared single-process draft provenance, revision, audit state and HMAC receipt checks (no bank/model imports).

@@ -8,7 +8,7 @@ Contract: none
 import pytest
 from fastapi.testclient import TestClient
 
-from app import config
+from app import config, transaction_state
 from app.bank import readonly
 from app.contracts import AccountsResponse, FxResponse, QuoteResponse
 from app.intent import jev, session
@@ -24,6 +24,7 @@ def client() -> TestClient:
 def _no_leftover_sessions() -> None:
     # Sessions live in memory for the whole process; each test starts with none.
     session._SESSIONS.clear()
+    transaction_state.clear()
 
 
 class FakeJev:

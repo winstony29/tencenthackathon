@@ -4,8 +4,8 @@ export async function request<T>(path: string, schema: z.ZodType<T>, options: Re
   const response = await fetch(`/api${path}`, {
     ...options,
     signal: options.signal
-      ? AbortSignal.any([options.signal, AbortSignal.timeout(15000)])
-      : AbortSignal.timeout(15000),
+      ? AbortSignal.any([options.signal, AbortSignal.timeout(path === "/validate" ? 60000 : 15000)])
+      : AbortSignal.timeout(path === "/validate" ? 60000 : 15000),
   });
   if (!response.ok) {
     const error = await response.json().catch(() => null);

@@ -5,8 +5,8 @@ import type { Composition } from "@/lib/v4-composition";
 import type { State } from "@/lib/v4-state";
 import { financialRows } from "@/lib/v4-financial";
 import { displayMoney, estimatedTotal, fromCurrency } from "@/lib/money";
-import { quoteSchema, type Action, type Answer, type Quote } from "@/lib/contracts";
-import { request } from "@/lib/api";
+import { quoteSchema, validationSchema, type Validation, type Action, type Answer, type Quote } from "@/lib/contracts";
+import { post, request } from "@/lib/api";
 import {
   RecipientDetails,
   StockEstimate,
@@ -29,12 +29,14 @@ function Task({
   after,
   compact,
   flow = false,
+  auditFields = [],
 }: {
   action: Action;
   quote?: Quote;
   after?: string | null;
   compact: boolean;
   flow?: boolean;
+  auditFields?: string[];
 }) {
   const stock = a.type === "stock_order";
   const fx = a.type === "fx_conversion";
@@ -90,7 +92,7 @@ function Task({
         </span>
         <span>Not sent</span>
       </div>
-      <h2 className="v5-figure">
+      <h2 className={`v5-figure ${auditFields.some(f => ["amount", "sell_amount", "quantity"].includes(f)) ? "v5-field-error" : ""}`}>
         {stock ? (
           <>
             {a.quantity}
@@ -102,12 +104,15 @@ function Task({
           money(a.amount, a.currency)
         )}
       </h2>
+      {auditFields.length > 0 && <p className="v5-warning" role="alert">
+        Check {auditFields.map(f => f.replaceAll("_", " ")).join(", ")}.
+      </p>}
       <dl className="v5-facts">
         {a.type === "fx_conversion" ? (
           <>
             <div>
               <dt>From</dt>
-              <dd>{label(a.from_account_label)}</dd>
+              <dd className={auditFields.some(f => f.startsWith("from_account")) ? "v5-field-error" : ""}>{label(a.from_account_label)}</dd>
             </div>
             <div>
               <dt>Rate</dt>
@@ -117,17 +122,17 @@ function Task({
             </div>
             <div>
               <dt>Get</dt>
-              <dd>{money(a.buy_amount, a.buy_currency)}</dd>
+              <dd className={auditFields.some(f => f.startsWith("buy_")) ? "v5-field-error" : ""}>{money(a.buy_amount, a.buy_currency)}</dd>
             </div>
             <div>
               <dt>Into</dt>
-              <dd>{label(a.to_account_label)}</dd>
+              <dd className={auditFields.some(f => f.startsWith("to_account")) ? "v5-field-error" : ""}>{label(a.to_account_label)}</dd>
             </div>
           </>
         ) : (
           <div>
             <dt>{stock ? "Stock" : a.type === "bill_payment" ? "Biller" : "To"}</dt>
-            <dd>
+            <dd className={auditFields.some(f => /^(to_|biller|ticker|company)/.test(f)) ? "v5-field-error" : ""}>
               {a.type === "stock_order"
                 ? `${a.ticker} · ${a.company_name}`
                 : label(
@@ -149,7 +154,7 @@ function Task({
         {!fx && (
           <div>
             <dt>{stock && a.side === "sell" ? "Into" : "From"}</dt>
-            <dd>{label(a.from_account_label)}</dd>
+            <dd className={auditFields.some(f => f.startsWith("from_account")) ? "v5-field-error" : ""}>{label(a.from_account_label)}</dd>
           </div>
         )}
         {stock && (
@@ -247,6 +252,33 @@ export function V5Cards({
   };
   const values = effective(viewState);
   const draft = { ...h.draft, actions: values.actions };
+  const auditKey = JSON.stringify(draft);
+  const [attempt, setAttempt] = useState(0);
+  const [auditResult, setAuditResult] = useState<{key: string; attempt: number; value: Validation} | null>(null);
+  const validation: Validation = auditResult?.key === auditKey && auditResult.attempt === attempt
+    ? auditResult.value : {status: "pending", message: "Checking your request..."};
+  useEffect(() => {
+    if (preview) return;
+    const controller = new AbortController();
+    async function check() {
+      try {
+        let result: Validation;
+        do {
+          result = await post("/validate", validationSchema, {draft: JSON.parse(auditKey)}, controller.signal);
+          if (result.status === "pending") await new Promise(resolve => setTimeout(resolve, 500));
+        } while (result.status === "pending" && !controller.signal.aborted);
+        if (!controller.signal.aborted) setAuditResult({key: auditKey, attempt, value: result});
+      } catch {
+        if (!controller.signal.aborted) setAuditResult({key: auditKey, attempt, value: {
+          status: "unavailable", message: "Checking is unavailable. Retry before confirming.",
+        }});
+      }
+    }
+    void check();
+    return () => controller.abort();
+  }, [auditKey, preview, attempt]);
+  const issues = "fields" in validation ? validation.fields : [];
+  const fieldsFor = (index: number) => issues.filter(f => f.field.startsWith(`actions[${index}].`)).map(f => f.field.split(".")[1]);
   const root = composition.spec.elements[composition.spec.root];
   function render(id: string): ReactNode {
     const node = composition.nodes.find((n) => n.id === id)!;
@@ -270,6 +302,7 @@ export function V5Cards({
         content = (
           <Task
             action={a}
+            auditFields={fieldsFor(index)}
             compact={variant === "compact"}
             flow={variant === "flow"}
             quote={a.type === "stock_order" ? quotes[a.ticker] : undefined}
@@ -301,6 +334,7 @@ export function V5Cards({
           <Task
             key={i}
             action={a}
+            auditFields={fieldsFor(i)}
             compact={false}
             quote={a.type === "stock_order" ? quotes[a.ticker] : undefined}
           />
@@ -340,7 +374,20 @@ export function V5Cards({
           Can I afford it? <ArrowUpRight size={14} />
         </button>
       )}
+      {!preview && <div className="v5-validation" role={issues.length ? "alert" : "status"}>
+        {validation.status === "match" ? <p className="v5-caption">Request checked</p>
+          : "message" in validation ? <p>{validation.message}</p>
+          : <><p className="v5-warning">Request paused. Please correct or clarify these details.</p>
+            {issues.map((f, i) => <p className="v5-field-error" key={i}>
+              <strong>{f.field.replace(/^actions\[(\d+)\]\./, (_, n) => `Task ${Number(n) + 1}: `).replaceAll("_", " ")}</strong>: {f.note}
+              {f.transcript_says && <span> Expected: {f.transcript_says}</span>}
+            </p>)}
+            <button className="v5-secondary" onClick={onCancel}>Correct request</button></>}
+        {validation.status === "unavailable" && <button className="v5-secondary" onClick={() => setAttempt(n => n + 1)}>Retry check</button>}
+      </div>}
       <V5Payment
+        key={auditKey}
+        validation={validation}
         preview={preview || composing || Object.keys(values.errors).length > 0}
         draft={draft}
         onSettled={(done) => {

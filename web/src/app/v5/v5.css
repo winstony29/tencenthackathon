@@ -927,3 +927,7 @@
     transform: rotate(90deg);
   }
 }
+
+.v5-validation { margin: 18px 0; font-size: 14px; }
+.v5-validation p { margin: 8px 0; }
+.v5-field-error { background: #fff1f0; color: #9b1c25; border-left: 3px solid #c8102e; padding: 8px 10px; border-radius: 4px; }

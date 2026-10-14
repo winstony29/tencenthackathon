@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { tmpdir } from "node:os";
 import { chromium } from "playwright";
 
 const executablePath = process.env.CHROME_PATH ?? (process.platform === "win32"
@@ -166,6 +167,7 @@ async function setup(page, mode = "otp", beforeComposition = async () => {}) {
     await beforeComposition();
     return route.fulfill({ json: response(route.request().postDataJSON()) });
   });
+  await page.route("**/api/validation/cancel", route => route.fulfill({json: {status:"cancelled"}}));
   await page.route("**/api/validate", async (route) => {
     calls.push("validate");
     draft = route.request().postDataJSON().draft;
@@ -262,7 +264,7 @@ test(
       assert.equal(await page.getByText("Composition details").count(), 0);
       assert.equal(await page.getByRole("button", { name: /Review/ }).count(), 0);
       assert.match(await page.locator(".v5-figure").innerText(), /50\.00/);
-      await page.screenshot({ path: `${process.env.TEMP}/v5-clean-mobile.png`, fullPage: true });
+      await page.screenshot({ path: `${tmpdir()}/v5-clean-mobile.png`, fullPage: true });
       for (const width of [320, 390, 768, 1440]) {
         await page.setViewportSize({ width, height: 900 });
         assert.ok(
@@ -270,7 +272,7 @@ test(
           `overflow at ${width}`,
         );
       }
-      await page.screenshot({ path: `${process.env.TEMP}/v5-clean-desktop.png`, fullPage: true });
+      await page.screenshot({ path: `${tmpdir()}/v5-clean-desktop.png`, fullPage: true });
       await page.getByRole("button", { name: "Transfer now" }).click();
       await page.getByRole("textbox", { name: "One-time code" }).waitFor();
       assert.deepEqual(calls, ["validate", "register", "challenge", "execute"]);
@@ -296,12 +298,13 @@ test(
       for (const mode of ["mismatch", "expired", "reject", "lost"]) {
         const page = await browser.newPage({ reducedMotion: "reduce" });
         const calls = await setup(page, mode);
-        await page.getByRole("button", { name: "Transfer now" }).click();
-        await page.locator(".v5-surface").getByRole("alert").waitFor();
+        if (mode !== "mismatch") await page.getByRole("button", { name: "Transfer now" }).click();
+        else assert.equal(await page.getByRole("button", { name: "Transfer now" }).isDisabled(), true);
+        await page.locator(".v5-surface").getByRole("alert").first().waitFor();
         assert.equal(
           calls.includes("execute"),
           mode === "reject" || mode === "lost",
-          `${mode}: ${await page.locator(".v5-surface").getByRole("alert").innerText()} ${calls}`,
+          `${mode}: ${await page.locator(".v5-surface").getByRole("alert").first().innerText()} ${calls}`,
         );
         if (mode === "lost") assert.ok(await page.getByRole("button", { name: "Transfer now" }).isDisabled());
         if (mode === "mismatch") assert.deepEqual(calls, ["validate"]);
@@ -324,9 +327,9 @@ test(
       await page.getByRole("button", { name: "Can I afford it?" }).click();
       await page.getByRole("region", { name: "Balance projection" }).waitFor();
       assert.equal(await page.locator(".v5-task").count(), 1);
-      assert.equal(calls.length, 0, "looking at affordability never calls the bank");
+      assert.ok(calls.every(c => c === "validate"), "inspection may audit but never authorizes or executes");
       await page.getByRole("button", { name: "Transfer now" }).waitFor();
-      await page.screenshot({ path: `${process.env.TEMP}/v5-clean-afford.png`, fullPage: true });
+      await page.screenshot({ path: `${tmpdir()}/v5-clean-afford.png`, fullPage: true });
     } finally {
       await browser.close();
     }
@@ -357,6 +360,7 @@ test("V5 keeps both requested actions and confirms the complete draft once", { t
     assert.equal(await page.locator(".v5-task").count(), 2);
     await page.getByText("4120-XXXX-XXXX-9012").waitFor();
     await page.getByText("US$22,750.00").waitFor();
+    await page.locator(".v5-validation").getByText("Request checked", {exact:true}).waitFor();
     await page.getByRole("button", { name: "Confirm 2 actions" }).evaluate((button) => {
       button.click();
       button.click();
@@ -388,7 +392,7 @@ test(
       await page.getByLabel("What would you like to do?").fill("what's the weather");
       await page.getByRole("button", { name: "Send request" }).click();
       await page.getByRole("heading", { name: "Nothing was sent." }).waitFor();
-      assert.deepEqual(calls, []);
+      assert.ok(calls.every(c => c === "validate"));
     } finally {
       await browser.close();
     }
@@ -405,9 +409,10 @@ test("V5 shows resolved task before composition and disables payment until ready
       compositions++;
       await page.locator(".v5-task").waitFor();
       assert.equal(await page.getByRole("button", { name: "Transfer now" }).isDisabled(), true);
-      assert.match(await page.locator(".v5-card-content [role=status]").innerText(), /Preparing/);
+      assert.match(await page.locator(".v5-card-content [role=status]").first().innerText(), /Preparing/);
     });
     assert.equal(compositions, 1);
+    await page.getByText("Request checked", {exact:true}).waitFor();
     assert.equal(await page.getByRole("button", { name: "Transfer now" }).isEnabled(), true);
   } finally { await browser.close(); }
 });
@@ -433,7 +438,7 @@ test(
           assert.equal(await page.getByRole("button", { name: /now|Confirm/ }).count(), 0);
         } else await page.getByRole("heading", { name: expected }).waitFor();
       }
-      assert.deepEqual(calls, []);
+      assert.ok(calls.every(c => c === "validate"));
     } finally {
       await browser.close();
     }
@@ -470,4 +475,42 @@ test("V5 preserves filtered bill answers through timeline composition", {timeout
     assert.deepEqual(forbidden, []);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   } finally { await browser.close(); }
+});
+
+
+test("pending and unavailable audits cannot authorize; a late result cannot restore a cancelled task", {timeout:30000}, async () => {
+  const browser = await chromium.launch({executablePath, headless:true});
+  try {
+    const page = await browser.newPage({reducedMotion:"reduce"});
+    const calls = await setup(page, "success");
+    await page.getByText("Request checked", {exact:true}).waitFor();
+    await page.route("**/api/understand", r => r.fulfill({json: understand({...r.request().postDataJSON(), answer:{option_id:"pay_4521"}}, {})}));
+    let release;
+    const hold = new Promise(resolve => {release = resolve;});
+    let entered;
+    const started = new Promise(resolve => {entered = resolve;});
+    await page.route("**/api/validate", async route => {
+      entered();
+      await hold;
+      await route.fulfill({json:{status:"match",receipt:"old-receipt"}}).catch(() => {});
+    });
+    await page.getByRole("button", {name:"Start over",exact:true}).first().click();
+    await page.getByRole("button", {name:"Choose a banking request"}).click();
+    await page.getByLabel("What would you like to do?").fill("send 500 to John Doe");
+    await page.getByRole("button", {name:"Send request"}).click();
+    await started;
+    await page.getByRole("button", {name:"Transfer now"}).waitFor();
+    assert.equal(await page.getByRole("button", {name:"Transfer now"}).isDisabled(),true);
+    await page.getByRole("button", {name:"Start over",exact:true}).first().click();
+    release();
+    await page.getByRole("button", {name:"Choose a banking request"}).waitFor();
+    assert.equal(await page.getByRole("button", {name:"Transfer now"}).count(),0);
+    await page.route("**/api/validate", r => r.fulfill({json:{status:"unavailable",message:"Check unavailable"}}));
+    await page.getByRole("button", {name:"Choose a banking request"}).click();
+    await page.getByLabel("What would you like to do?").fill("send 500 to John Doe");
+    await page.getByRole("button", {name:"Send request"}).click();
+    await page.getByRole("button", {name:"Retry check"}).waitFor();
+    assert.equal(await page.getByRole("button", {name:"Transfer now"}).isDisabled(),true);
+    assert.ok(calls.every(c => c === "validate"));
+  } finally {await browser.close();}
 });

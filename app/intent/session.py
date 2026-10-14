@@ -28,6 +28,8 @@ class Session:
     draft: Draft | None = None  # the current draft, kept for follow-up turns
     followup: str | None = None  # the follow-up turn being worked on, if any
 
+    history: list[dict] = field(default_factory=list)
+
     def record(self, answer: Answer) -> None:
         """Store the user's answer to the open question; refuse answers to anything else."""
         if self.pending is None or answer.question_id != self.pending[0]:
@@ -35,6 +37,16 @@ class Session:
         _, question, offered = self.pending
         if answer.option_id not in offered:
             raise ValueError("That option was not offered.")
+        self.history.append(
+            {
+                "kind": "clarification",
+                "question": question,
+                "selected_id": answer.option_id,
+                "selected_label": self.options.labels.get(question, {}).get(
+                    answer.option_id, answer.option_id
+                ),
+            }
+        )
         self.answers[question] = answer.option_id
         self.pending = None
 
