@@ -144,7 +144,7 @@ function understand(body, sessions) {
   };
 }
 
-async function setup(page, mode = "otp") {
+async function setup(page, mode = "otp", beforeComposition = async () => {}) {
   const calls = [];
   const sessions = {};
   let draft, publicKey, payload;
@@ -152,9 +152,10 @@ async function setup(page, mode = "otp") {
     route.fulfill({ json: understand(route.request().postDataJSON(), sessions) }),
   );
   await page.route("**/api/accounts?*", (route) => route.fulfill({ json: accounts }));
-  await page.route("**/api/presentation-v4/evaluate", (route) =>
-    route.fulfill({ json: response(route.request().postDataJSON()) }),
-  );
+  await page.route("**/api/presentation-v4/evaluate", async (route) => {
+    await beforeComposition();
+    return route.fulfill({ json: response(route.request().postDataJSON()) });
+  });
   await page.route("**/api/validate", async (route) => {
     calls.push("validate");
     draft = route.request().postDataJSON().draft;
@@ -228,7 +229,7 @@ async function setup(page, mode = "otp") {
               },
     });
   });
-  await page.goto("http://127.0.0.1:3000/v5/");
+  await page.goto(`${process.env.APP_URL ?? "http://127.0.0.1:3000"}/v5/`);
   await page.getByRole("button", { name: "Choose a banking request" }).click();
   await page.getByRole("button", { name: "Send $50 to John", exact: true }).click();
   assert.equal(calls.length, 0);
@@ -383,3 +384,20 @@ test(
     }
   },
 );
+
+
+test("V5 shows resolved task before composition and disables payment until ready", { timeout: 30000 }, async () => {
+  const browser = await chromium.launch({ executablePath, headless: true });
+  try {
+    const page = await browser.newPage({ reducedMotion: "reduce" });
+    let compositions = 0;
+    await setup(page, "success", async () => {
+      compositions++;
+      await page.locator(".v5-task").waitFor();
+      assert.equal(await page.getByRole("button", { name: "Transfer now" }).isDisabled(), true);
+      assert.match(await page.locator(".v5-card-content [role=status]").innerText(), /Preparing/);
+    });
+    assert.equal(compositions, 1);
+    assert.equal(await page.getByRole("button", { name: "Transfer now" }).isEnabled(), true);
+  } finally { await browser.close(); }
+});

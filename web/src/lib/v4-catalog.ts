@@ -82,6 +82,7 @@ export function recipes(context: Context): Recipe[] {
       : [null];
     return actions.flatMap((action) =>
       Object.entries(d.variants).flatMap(([variant, description]) => {
+        if (variant === "flow" && (action === null || context.action_types[action] !== "transfer")) return [];
         if (variant === "funding-gap" && context.funding !== "shortfall") return [];
         if (component === "Workspace" && context.viewport === "mobile" && variant === "split") return [];
         return [

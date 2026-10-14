@@ -1115,3 +1115,30 @@ def test_unknown_api_paths_answer_the_json_404(client) -> None:
     # The UI's static export is mounted at "/", so this guards CONTRACTS §6 for /api/.
     reply = client.get("/api/no-such-endpoint")
     assert (reply.status_code, reply.json()["error"]["code"]) == (404, "not_found")
+
+
+@pytest.mark.parametrize("topic", ["balances", "bills", "transactions", "spending", "overview"])
+def test_readonly_enquiry_handoff(client, fake_jev, topic):
+    fake_jev.script["enquiry"] = {topic: 1.0}
+    response = client.post(
+        "/api/understand",
+        json={
+            "user_id": "u_demo",
+            "session_id": "s_enquiry",
+            "transcript": "Show my account information",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "enquiry"
+    assert response.json()["topic"] == topic
+    assert "draft" not in response.json()
+
+
+def test_enquiry_does_not_override_requested_transfer(client, fake_jev):
+    fake_jev.script["enquiry"] = {"balances": 1.0}
+    fake_jev.script["has_transfer"] = {"yes": 1.0}
+    response = client.post(
+        "/api/understand",
+        json={"user_id": "u_demo", "session_id": "s_enquiry", "transcript": "Send money"},
+    )
+    assert response.json()["status"] != "enquiry"

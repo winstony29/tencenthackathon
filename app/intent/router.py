@@ -305,6 +305,21 @@ def _amount(current: session.Session) -> Decimal:
 def _command_step(
     request: UnderstandRequest, current: session.Session, meta: dict
 ) -> dict[str, Any]:
+    # Only a confidently read-only command may bypass transaction field resolution.
+    enquiry = gate.pick(current.replies, "enquiry")
+    no_actions = all(
+        gate.pick(current.replies, f"has_{kind}").option == "no"
+        and gate.trusted(gate.pick(current.replies, f"has_{kind}"), _amount(current))
+        for kind in options.ACTION_TYPES
+    )
+    if enquiry.option != "none" and no_actions and gate.trusted(enquiry, _amount(current)):
+        session.drop(request.session_id)
+        return {
+            "status": "enquiry",
+            "topic": enquiry.option,
+            "user_id": current.user_id,
+            "meta": meta,
+        }
     decision = gate.decide(current.replies, current.answers, _amount(current), current.options)
     if decision.ask:
         question = _ask(request, current, decision, meta)

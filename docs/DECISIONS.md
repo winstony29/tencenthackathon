@@ -279,3 +279,26 @@ Verification: 29 frontend unit tests, TypeScript, targeted ESLint, production st
 **Decision:** CONTRACTS §3.4 documents `POST /api/presentation-v4/evaluate` (V4, V5) and lists `/api/presentation-demo` (V2) and `/api/presentation-v3` (V3). Their models stay in `web/` with Darren. A missing model key returns 503 `upstream_error`.
 **Why:** V5 calls Jev twice per screen through these endpoints, on the same key as the intent engine, but only Darren's decision entries (D-019, D-021, D-029) described them. Changes to them should go through the same agreement as every other endpoint.
 **Rejected:** Leaving them undocumented (a change to them needed no one's agreement).
+
+### V5 composition latency and rendering (13 October 2026)
+
+Simple single-action prepare requests use one batched selection call. Code attaches selected
+recipes to their required slots and validates the complete JSON tree. Multi-action,
+affordability and simulation requests retain the two-stage composer. The V4 presentation
+gateway client is pooled for the FastAPI lifespan. Accounts and stock quotes load concurrently.
+
+V5 shows a local validated task view while JEV finishes, with payment disabled until
+composition completes. The final renderer follows tree slots and variants and renders
+distinct approved support components. Invalid composition still uses the checked fallback.
+This changes presentation only; unsupported enquiries still require an intent/handoff contract.
+No end-to-end latency guarantee is inferred from call count.
+
+### Approved local diagrams (14 October 2026)
+
+JEV can select a bills timeline or cashflow waterfall within the existing enquiry
+batch (at most one primary diagram). Data eligibility gates the offered choices.
+The transaction catalogue offers a transfer-only TaskEditor flow variant in its
+existing selection batch. All diagrams render locally using CSS/SVG, retain readable
+amounts, keep currencies separate, and add no model round trip. The gallery exposes
+the variants together for inspection. Waterfalls show estimated closing balances,
+not chronological liquidity or transaction approval.

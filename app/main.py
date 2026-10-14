@@ -19,6 +19,7 @@ from app.bank.router import router as bank_router
 from app.intent import jev
 from app.intent.router import router as intent_router
 from app.validation.router import router as validation_router
+from web import presentation_v4
 from web.jev import router as presentation_router
 
 
@@ -26,8 +27,12 @@ from web.jev import router as presentation_router
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Keep one warm connection to the Jev gateway for the server's life (app/intent/jev.py).
     await jev.open_connection()
-    yield
-    await jev.close_connection()
+    await presentation_v4.open_connection()
+    try:
+        yield
+    finally:
+        await presentation_v4.close_connection()
+        await jev.close_connection()
 
 
 app = FastAPI(title="DCTA voice banking agent", lifespan=_lifespan)

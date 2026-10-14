@@ -114,3 +114,52 @@ test("V4 financial signals change with valid edits; no money or identity goes in
   assert.ok(!JSON.stringify(ctx).includes("4000"));
   assert.equal(decimal(-1n), "-0.01");
 });
+
+test("simple composition uses one gateway call and preserves a validated task tree", async () => {
+  const { compose, selectionQuestions } = await import("../src/lib/v4-composition");
+  const ctx = contextFor(start(), "desktop");
+  const original = globalThis.fetch;
+  let count = 0;
+  globalThis.fetch = async (_url, init) => {
+    count++;
+    const body = JSON.parse(String(init?.body));
+    assert.deepEqual(body.selected, []);
+    assert.deepEqual(body.questions, selectionQuestions(ctx));
+    const answers = Object.fromEntries(
+      Object.entries(body.questions as Record<string, string[]>).map(([key, options]) => [
+        key,
+        { choice: key === "root" ? options[0] : options.find((o) => o.startsWith("use:"))!, confidence: 1 },
+      ]),
+    );
+    return Response.json({
+      answers,
+      model: "jev-test",
+      latency_ms: 10,
+      usage: { input_tokens: 1, output_tokens: 1 },
+    });
+  };
+  try {
+    const result = await compose(ctx, new AbortController().signal);
+    assert.equal(count, 1);
+    assert.equal(result.source, "jev");
+    assert.equal(result.calls.length, 1);
+    assert.equal(accept(result.spec, ctx).filter((n) => n.recipe.component === "TaskEditor").length, 1);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("single-call tree refuses missing mandatory fields and unapproved choices", async () => {
+  const { selectionQuestions, selectedTree } = await import("../src/lib/v4-composition");
+  const ctx = contextFor(start(), "desktop");
+  const answers = Object.fromEntries(
+    Object.entries(selectionQuestions(ctx)).map(([key, options]) => [
+      key,
+      { choice: key === "root" ? options[0] : "omit", confidence: 1 },
+    ]),
+  );
+  const result = { answers, model: "jev-test", latency_ms: 1, usage: { input_tokens: 1, output_tokens: 1 } };
+  assert.throws(() => selectedTree(ctx, result), /required/);
+  result.answers.root.choice = "unapproved";
+  assert.throws(() => selectedTree(ctx, result), /root/);
+});

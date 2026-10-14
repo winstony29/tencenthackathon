@@ -107,3 +107,99 @@ def test_financial_context_gates_insights_and_rejects_raw_financial_values():
     raw["balance"] = "3200.00"
     with pytest.raises(ValidationError):
         Context.model_validate(raw)
+
+
+def test_evaluations_reuse_lifespan_client(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock, Mock
+
+    from web import presentation_v4 as module
+
+    request_body = body()
+    native = build_request(request_body)
+    reply = {
+        "model": "jev-test",
+        "answers": {
+            k: {"type": "choice", "choice": next(iter(q["criteria"])), "confidence": 1}
+            for k, q in native["questions"].items()
+        },
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    }
+    client = Mock()
+    client.post = AsyncMock(return_value=Mock(json=lambda: reply))
+    monkeypatch.setattr(module, "_client", client)
+    monkeypatch.setattr(module.config, "MAKERS_MODELS_KEY", "test")
+
+    async def run():
+        await module.evaluate(request_body)
+        await module.evaluate(request_body)
+
+    asyncio.run(run())
+    assert client.post.await_count == 2
+
+
+def test_enquiry_fallback_retains_requested_information(monkeypatch):
+    import asyncio
+
+    from app.contracts import EnquiryPresentationRequest
+    from web import presentation_v4 as module
+
+    monkeypatch.setattr(module, "_client", None)
+    result = asyncio.run(
+        module.enquiry(EnquiryPresentationRequest(user_id="u_demo", topic="balances"))
+    )
+    assert result["source"] == "fallback"
+    assert [e["type"] for e in result["spec"]["elements"].values()] == [
+        "EnquiryWorkspace",
+        "BalanceSummary",
+        "AccountList",
+    ]
+    assert result["data"]["source"] == "synthetic"
+    assert all("status" not in a for a in result["data"]["accounts"])
+    assert "draft" not in result
+
+
+def test_enquiry_diagram_selected_in_same_call(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock, Mock
+
+    from app.contracts import EnquiryPresentationRequest
+    from web import presentation_v4 as module
+
+    async def post(*args, **kwargs):
+        request = kwargs["json"]
+        answers = {
+            k: {"type": "choice", "choice": next(iter(q["criteria"])), "confidence": 1}
+            for k, q in request["questions"].items()
+        }
+        answers["diagram"]["choice"] = "waterfall"
+        return Mock(
+            json=lambda: {
+                "model": "jev-test",
+                "answers": answers,
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            }
+        )
+
+    client = Mock(post=AsyncMock(side_effect=post))
+    monkeypatch.setattr(module, "_client", client)
+    monkeypatch.setattr(module.config, "MAKERS_MODELS_KEY", "test")
+    result = asyncio.run(
+        module.enquiry(EnquiryPresentationRequest(user_id="u_demo", topic="bills"))
+    )
+    assert client.post.await_count == 1
+    assert result["source"] == "jev"
+    diagrams = [
+        e for e in result["spec"]["elements"].values() if e["variant"] in {"timeline", "waterfall"}
+    ]
+    assert len(diagrams) == 1
+    assert diagrams[0]["type"] == "CashflowSummary"
+
+
+def test_transfer_flow_variant_not_offered_for_other_actions():
+    for kind in ["transfer", "bill_payment", "stock_order", "fx_conversion"]:
+        context = Context(
+            objective="prepare", action_types=[kind], alternatives=False, viewport="desktop"
+        )
+        flows = [r for r in recipes(context) if r["id"].endswith("_flow")]
+        assert bool(flows) == (kind == "transfer")

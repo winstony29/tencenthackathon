@@ -2,14 +2,21 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, LockKeyhole } from "lucide-react";
 import type { Draft } from "@/lib/contracts";
-import { preparePayment, submitPayment, type Payment, type Execution } from "@/lib/v5-bank";
+import {
+  preparePayment,
+  submitPayment,
+  type Payment,
+  type Execution,
+} from "@/lib/v5-bank";
 
 export function V5Payment({
   draft,
   onCancel,
   onLock,
   onSettled,
+  preview = false,
 }: {
+  preview?: boolean;
   draft: Draft;
   onCancel: () => void;
   onLock: (locked: boolean) => void;
@@ -34,7 +41,14 @@ export function V5Payment({
           ? "Pay now"
           : "Place order";
   async function send() {
-    if (locked.current || uncertain || result?.status === "executed" || result?.status === "rejected") return;
+    if (preview) return;
+    if (
+      locked.current ||
+      uncertain ||
+      result?.status === "executed" ||
+      result?.status === "rejected"
+    )
+      return;
     locked.current = true;
     setBusy(true);
     onLock(true);
@@ -54,7 +68,8 @@ export function V5Payment({
       if (!controller.signal.aborted) {
         setResult(reply);
         setOtp("");
-        if (reply.status !== "needs_extra_check") onSettled(reply.status === "executed");
+        if (reply.status !== "needs_extra_check")
+          onSettled(reply.status === "executed");
       }
     } catch (e) {
       if (!controller.signal.aborted) {
@@ -126,10 +141,19 @@ export function V5Payment({
         </button>
         <button
           className="v5-primary"
-          disabled={busy || uncertain || (result?.status === "needs_extra_check" && !otp.trim())}
+          disabled={
+            preview ||
+            busy ||
+            uncertain ||
+            (result?.status === "needs_extra_check" && !otp.trim())
+          }
           onClick={() => void send()}
         >
-          {busy ? "Confirming…" : result?.status === "needs_extra_check" ? "Confirm code" : label}
+          {busy
+            ? "Confirming…"
+            : result?.status === "needs_extra_check"
+              ? "Confirm code"
+              : label}
           {!busy && <LockKeyhole size={14} />}
         </button>
       </div>

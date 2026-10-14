@@ -209,3 +209,7 @@ V4 financial-context additions (Darren):
 - `web/src/components/v5-payment.tsx`: single confirmation action, bank result and conditional OTP entry.
 - `web/src/lib/v5-bank.ts`: runtime-checked validation, persistent non-extractable device key, challenge binding, signing and execution.
 - `web/tests/v5-bank.test.ts`: exact displayed-draft challenge binding and expiry checks.
+
+- `web/src/app/v5/components/page.tsx`: V5 component gallery with mock data and disabled payment execution.
+
+- `web/src/components/v5-enquiry.tsx`: validated read-only composition tree and account, bill, history and spending blocks.

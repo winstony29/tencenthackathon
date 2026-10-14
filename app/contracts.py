@@ -218,6 +218,13 @@ class DraftResponse(ContractModel):
     meta: Meta
 
 
+class EnquiryResponse(ContractModel):
+    status: Literal["enquiry"]
+    topic: Literal["balances", "bills", "transactions", "spending", "overview"]
+    user_id: str
+    meta: Meta
+
+
 class BlockedResponse(ContractModel):
     status: Literal["blocked"]
     reason: Literal["possible_injection"]
@@ -239,7 +246,12 @@ class CancelledResponse(ContractModel):
 
 
 UnderstandResponse = Annotated[
-    QuestionResponse | DraftResponse | BlockedResponse | UnsupportedResponse | CancelledResponse,
+    QuestionResponse
+    | DraftResponse
+    | EnquiryResponse
+    | BlockedResponse
+    | UnsupportedResponse
+    | CancelledResponse,
     Field(discriminator="status"),
 ]
 
@@ -417,3 +429,8 @@ class ErrorDetail(ContractModel):
 
 class ErrorResponse(ContractModel):
     error: ErrorDetail
+
+
+class EnquiryPresentationRequest(ContractModel):
+    user_id: str = Field(min_length=1, max_length=128)
+    topic: Literal["balances", "bills", "transactions", "spending", "overview"]

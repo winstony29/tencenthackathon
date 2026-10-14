@@ -184,6 +184,69 @@ export function fallback(context: Context, reason = "Using a local layout."): Co
     elapsedMs: 0,
   };
 }
+// Simple tasks need model-selected variants, but their legal parent slots are fixed.
+export function selectionQuestions(context: Context): Record<string, string[]> {
+  const pool = recipes(context);
+  const groups = pool.reduce((groups, r) => {
+    const group = groups.get(r.resource!) ?? [];
+    group.push(r);
+    groups.set(r.resource!, group);
+    return groups;
+  }, new Map<string, Recipe[]>());
+  return {
+    root: [...pool.filter((r) => r.root).map((r) => r.id), "unavailable"],
+    ...Object.fromEntries(
+      [...groups.values()].map((group, i) => [`select_${i}`, ["omit", ...group.map((r) => `use:${r.id}`)]]),
+    ),
+  };
+}
+export function selectedTree(context: Context, result: Evaluation): Spec {
+  const pool = recipes(context),
+    groups = [
+      ...pool
+        .reduce((groups, r) => {
+          const group = groups.get(r.resource!) ?? [];
+          group.push(r);
+          groups.set(r.resource!, group);
+          return groups;
+        }, new Map<string, Recipe[]>())
+        .values(),
+    ];
+  const root = pool.find((r) => r.root && r.id === result.answers.root?.choice);
+  if (!root) throw Error("Invalid root choice.");
+  const chosen = [root];
+  groups.forEach((group, i) => {
+    const choice = result.answers[`select_${i}`]?.choice;
+    if (choice === "omit") {
+      if (
+        !["Workspace", "RecipientDetails", "StockEstimate", "FundingOptions", "AccountInsights"].includes(
+          group[0].component,
+        )
+      )
+        throw Error("A required component was omitted.");
+      return;
+    }
+    const recipe = group.find((r) => `use:${r.id}` === choice);
+    if (!recipe) throw Error("Invalid component choice.");
+    if (!recipe.root) chosen.push(recipe);
+  });
+  const spec: Spec = { root: root.id, elements: {} };
+  for (const r of chosen) spec.elements[r.id] = structuredClone(r.element);
+  for (const r of chosen.slice(1)) {
+    const taskChild = ["TaskEditor", "RecipientDetails", "StockEstimate"].includes(r.component);
+    const parent = taskChild
+      ? chosen.find((p) => p.component === "TaskGroup" && p.action === r.action)
+      : root;
+    if (!parent) throw Error("Missing task group.");
+    const slot = taskChild ? "details" : r.component === "TaskGroup" ? "primary" : "context";
+    const e = spec.elements[parent.id];
+    e.slots ??= {};
+    (e.slots[slot] ??= []).push(r.id);
+  }
+  accept(spec, context);
+  return spec;
+}
+
 export async function compose(
   context: Context,
   signal: AbortSignal,
@@ -194,6 +257,26 @@ export async function compose(
     started = performance.now();
   try {
     let final: Spec | null = null;
+    if (context.objective === "prepare" && context.action_types.length === 1) {
+      onCall?.();
+      const result = await post(
+        "/presentation-v4/evaluate",
+        evaluationSchema,
+        { context, selected: [], questions: selectionQuestions(context) },
+        signal,
+      );
+      calls.push(result);
+      final = selectedTree(context, result);
+      return {
+        spec: final,
+        nodes: accept(final, context),
+        layout: String(final.elements[final.root].props.variant),
+        source: "jev",
+        reason: null,
+        calls,
+        elapsedMs: Math.round(performance.now() - started),
+      };
+    }
     for await (const event of experimental_composeSpec({
       catalog,
       candidates: offered,

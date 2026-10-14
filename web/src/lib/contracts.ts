@@ -80,6 +80,12 @@ export const draftSchema = z.strictObject({
 });
 export const understandSchema = z.discriminatedUnion("status", [
   z.strictObject({
+    status: z.literal("enquiry"),
+    topic: z.enum(["balances", "bills", "transactions", "spending", "overview"]),
+    user_id: z.string(),
+    meta: metaSchema,
+  }),
+  z.strictObject({
     status: z.literal("draft"),
     draft: draftSchema,
     objective: objectiveSchema,

@@ -5,7 +5,6 @@ Diagram box: Audit log
 Contract: docs/CONTRACTS.md §3.3 (GET /api/audit); anyone may call it, only Jayanth changes it
 """
 
-import fcntl
 import hashlib
 import json
 import os
@@ -16,6 +15,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
 from typing import Any, BinaryIO
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 from pydantic import ValidationError
 
@@ -28,7 +32,7 @@ class AuditError(RuntimeError):
 
 # A chain cannot detect valid tail truncation or full rewriting and rehashing.
 # Independently protected checkpoints would be needed to detect those attacks.
-# flock provides local POSIX process locking; this is not a distributed storage service.
+# Native file locks serialize local processes; this is not distributed storage.
 _THREAD_LOCK = RLock()
 
 
@@ -69,12 +73,20 @@ def _locked_file(storage_path: Path | None) -> Iterator[BinaryIO]:
         with _THREAD_LOCK:
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.with_suffix(".lock").open("a+b") as lock:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+                if os.name == "nt":
+                    lock.seek(0)
+                    msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+                else:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
                 try:
                     with path.open("a+b") as stream:
                         yield stream
                 finally:
-                    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+                    if os.name == "nt":
+                        lock.seek(0)
+                        msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
     except OSError:
         raise AuditError("Audit storage operation failed") from None
 
@@ -154,11 +166,13 @@ def append_event(
         stream.flush()
         os.fsync(stream.fileno())
         # Persist the directory entry too when this is the first append to a new file.
-        descriptor = os.open(str(Path(stream.name).parent), os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        # Directory fsync is POSIX-only; Windows still flushes the file above.
+        if os.name != "nt":
+            descriptor = os.open(str(Path(stream.name).parent), os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
     return AuditEntry.model_validate(record)
 
 

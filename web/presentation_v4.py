@@ -11,6 +11,23 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from app import config
+from app.bank.readonly import get_account_insights
+from app.contracts import EnquiryPresentationRequest
+
+_client: httpx.AsyncClient | None = None
+
+
+async def open_connection() -> None:
+    global _client
+    _client = httpx.AsyncClient(timeout=config.MAKERS_JEV_TIMEOUT_SECONDS)
+
+
+async def close_connection() -> None:
+    global _client
+    if _client is not None:
+        await _client.aclose()
+        _client = None
+
 
 router = APIRouter()
 CATALOG = json.loads(Path(__file__).with_name("v4-catalog.json").read_text("utf-8"))
@@ -58,6 +75,10 @@ def recipes(context: Context) -> list[dict[str, Any]]:
         )
         for action in actions:
             for variant, description in d["variants"].items():
+                if variant == "flow" and (
+                    action is None or context.action_types[action] != "transfer"
+                ):
+                    continue
                 if variant == "funding-gap" and context.funding != "shortfall":
                     continue
                 if component == "Workspace" and context.viewport == "mobile" and variant == "split":
@@ -245,14 +266,138 @@ async def evaluate(body: EvaluationRequest) -> dict[str, Any]:
         raise HTTPException(503, "Live presentation unavailable")
     started = time.perf_counter()
     try:
-        async with httpx.AsyncClient(timeout=config.MAKERS_JEV_TIMEOUT_SECONDS) as client:
-            response = await client.post(
+
+        async def send(client: httpx.AsyncClient) -> httpx.Response:
+            return await client.post(
+                config.MAKERS_JEV_ENDPOINT,
+                headers={"Authorization": f"Bearer {config.MAKERS_MODELS_KEY}"},
+                json=request,
+            )
+
+        if _client is not None:
+            response = await send(_client)
+        else:
+            async with httpx.AsyncClient(timeout=config.MAKERS_JEV_TIMEOUT_SECONDS) as client:
+                response = await send(client)
+        response.raise_for_status()
+        result = parse_response(response.json(), request)
+    except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as error:
+        raise HTTPException(502, "Live presentation unavailable") from error
+    return {**result, "latency_ms": round((time.perf_counter() - started) * 1000)}
+
+
+ENQUIRY_COMPONENTS = {
+    "balances": ["BalanceSummary", "AccountList"],
+    "bills": ["UpcomingBills", "CashflowSummary"],
+    "transactions": ["TransactionList"],
+    "spending": ["SpendingBreakdown", "PeriodComparison"],
+    "overview": ["BalanceSummary", "UpcomingBills", "SpendingBreakdown", "PeriodComparison"],
+}
+
+
+@router.post("/presentation-v5/enquiry")
+async def enquiry(body: EnquiryPresentationRequest) -> dict[str, Any]:
+    """Compose a bounded read-only tree. No user values enter the model request."""
+    data = get_account_insights(body.user_id)
+    required = list(ENQUIRY_COMPONENTS[body.topic])
+    optional = {
+        "balances": ["UpcomingBills"],
+        "bills": ["AccountList"],
+        "transactions": ["BalanceSummary"],
+        "spending": ["TransactionList"],
+        "overview": ["AccountList", "TransactionList"],
+    }[body.topic]
+    questions = {
+        "layout": {
+            "type": "choice",
+            "instructions": "Choose a readable enquiry layout.",
+            "criteria": {"focus": "One column", "split": "Two columns on wide screens"},
+        },
+        "detail": {
+            "type": "choice",
+            "instructions": "Choose how much supporting detail to show.",
+            "criteria": {
+                "compact": "Summary with expandable detail",
+                "expanded": "Supporting detail visible",
+            },
+        },
+    }
+    for component in optional:
+        questions[f"include_{component}"] = {
+            "type": "choice",
+            "instructions": f"Include {component} only if it helps explain this enquiry. "
+            "Avoid clutter and redundant information.",
+            "criteria": {"include": f"Show {component}", "omit": "Leave out optional context"},
+        }
+    diagrams = {"none": "No diagram; use readable text."}
+    has_bills = any(f.get("commitments") for f in data["forecasts"])
+    has_forecast = any(not f.get("unavailable") for f in data["forecasts"])
+    if "UpcomingBills" in required + optional and has_bills:
+        diagrams["timeline"] = "Show upcoming bills chronologically on a timeline."
+    if "CashflowSummary" in required and has_forecast:
+        diagrams["waterfall"] = (
+            "Show balance plus scheduled income minus bills as a cashflow waterfall."
+        )
+    if len(diagrams) > 1:
+        questions["diagram"] = {
+            "type": "choice",
+            "instructions": "Choose at most one useful diagram.",
+            "criteria": diagrams,
+        }
+    diagram = "none"
+    source, layout, detail = "fallback", "focus", "compact"
+    started = time.perf_counter()
+    if config.MAKERS_MODELS_KEY and _client is not None:
+        try:
+            request = {
+                "model": config.MAKERS_JEV_MODEL,
+                "state": {
+                    "topic": body.topic,
+                    "components": required,
+                    "history_available": data["transactions"] is not None,
+                    "schedule_available": all(not f.get("unavailable") for f in data["forecasts"]),
+                },
+                "questions": questions,
+            }
+            response = await _client.post(
                 config.MAKERS_JEV_ENDPOINT,
                 headers={"Authorization": f"Bearer {config.MAKERS_MODELS_KEY}"},
                 json=request,
             )
             response.raise_for_status()
-            result = parse_response(response.json(), request)
-    except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as error:
-        raise HTTPException(502, "Live presentation unavailable") from error
-    return {**result, "latency_ms": round((time.perf_counter() - started) * 1000)}
+            checked = parse_response(response.json(), request)
+            layout, detail = (checked["answers"][k]["choice"] for k in ["layout", "detail"])
+            required.extend(
+                c for c in optional if checked["answers"][f"include_{c}"]["choice"] == "include"
+            )
+            diagram = checked["answers"].get("diagram", {}).get("choice", "none")
+            source = "jev"
+        except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
+            pass  # A failed presentation call never removes the requested bank information.
+    elements = {
+        "workspace": {
+            "type": "EnquiryWorkspace",
+            "variant": layout,
+            "children": [f"card{i}" for i in range(len(required))],
+        }
+    }
+    for i, component in enumerate(required):
+        variant = detail
+        if component == "UpcomingBills" and diagram == "timeline":
+            variant = "timeline"
+        elif component == "CashflowSummary" and diagram == "waterfall":
+            variant = "waterfall"
+        elements[f"card{i}"] = {"type": component, "variant": variant, "children": []}
+    return {
+        "data": data,
+        "spec": {"root": "workspace", "elements": elements},
+        "source": source,
+        "topic": body.topic,
+        "latency_ms": round((time.perf_counter() - started) * 1000),
+    }
+
+
+@router.get("/account-insights")
+async def account_insights(user_id: str) -> dict[str, Any]:
+    """Read synthetic demo insights; same user ownership rules as /accounts."""
+    return get_account_insights(user_id)

@@ -43,7 +43,7 @@ def bank_seed() -> dict[str, Any]:
             result[key] = value
         return result
 
-    return json.loads(path.read_text(), object_pairs_hook=unique_object)
+    return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
 
 
 def test_seed_has_required_demo_records(bank_seed: dict[str, Any]) -> None:
@@ -345,7 +345,7 @@ def test_audit_tampering_is_detected_and_append_refused(
 ) -> None:
     for number in range(3):
         audit.append_event("bank", "transaction_executed", {"amount": "50.00", "count": number})
-    records = [json.loads(line) for line in audit_path.read_text().splitlines()]
+    records = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
     if attack == "amount":
         records[0]["data"]["amount"] = "500.00"
     elif attack == "reorder":
@@ -375,7 +375,7 @@ def test_malformed_or_interrupted_audit_log_fails_safely(audit_path: Path, conte
     ):
         with pytest.raises(audit.AuditError):
             operation()
-    assert audit_path.read_text() == content
+    assert audit_path.read_text(encoding="utf-8") == content
     response = TestClient(app, raise_server_exceptions=False).get("/api/audit")
     assert response.status_code == 500
     assert content not in response.text
@@ -451,7 +451,7 @@ def test_audit_flushes_and_syncs_and_refuses_write_failures(
 
     monkeypatch.setattr(audit.os, "fsync", sync)
     audit.append_event("gateway", "kill_switch_activated", {"reason": "manual_pause"})
-    assert len(calls) == 2
+    assert len(calls) == (1 if os.name == "nt" else 2)
 
     def fail(descriptor: int) -> None:
         raise OSError("sensitive-test-value")
@@ -463,7 +463,7 @@ def test_audit_flushes_and_syncs_and_refuses_write_failures(
 
 def test_audit_hash_can_be_independently_recomputed(audit_path: Path) -> None:
     audit.append_event("validation", "validation_mismatch", {"amount": "50.00"})
-    record = json.loads(audit_path.read_text())
+    record = json.loads(audit_path.read_text(encoding="utf-8"))
     stored_hash = record.pop("hash")
     canonical = json.dumps(
         record, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
@@ -541,7 +541,7 @@ def test_device_registration_persists_only_public_coordinates(
     assert response.json() == {"status": "registered"}
     expected = {key: public_jwk[key] for key in ("kty", "crv", "x", "y")}
     assert devices.get_public_key("u_demo") == expected
-    assert json.loads(device_path.read_text()) == {"u_demo": expected}
+    assert json.loads(device_path.read_text(encoding="utf-8")) == {"u_demo": expected}
     importlib.reload(devices)
     assert devices.get_public_key("u_demo", storage_path=device_path) == expected
 
@@ -669,7 +669,7 @@ def test_corrupt_device_registry_is_never_reset(
         devices.get_public_key("u_demo")
     with pytest.raises(devices.DeviceStorageError):
         devices.register_public_key("u_demo", public_jwk)
-    assert device_path.read_text() == content
+    assert device_path.read_text(encoding="utf-8") == content
     response = TestClient(app, raise_server_exceptions=False).post(
         "/api/device/register", json={"user_id": "u_demo", "public_key_jwk": public_jwk}
     )
@@ -694,7 +694,7 @@ def test_device_storage_failure_preserves_existing_registry(
     with pytest.raises(devices.DeviceStorageError) as error:
         devices.register_public_key("u_demo", public_jwk)
     assert "secret-test-value" not in str(error.value)
-    assert device_path.read_text() == "{}\n"
+    assert device_path.read_text(encoding="utf-8") == "{}\n"
     assert not list(device_path.parent.glob("*.tmp"))
 
 
@@ -772,6 +772,7 @@ def test_device_registry_read_failure_never_fabricates_an_empty_registry(
     assert not device_path.exists()
 
 
+@pytest.mark.skipif(devices.os.name == "nt", reason="Directory fsync is POSIX-only")
 def test_device_directory_sync_failure_does_not_report_success(
     device_path: Path,
     public_jwk: dict[str, Any],
@@ -790,7 +791,7 @@ def test_device_directory_sync_failure_does_not_report_success(
     with pytest.raises(devices.DeviceStorageError):
         devices.register_public_key("u_demo", public_jwk)
     # Replace may have committed before directory fsync failed; the file stays whole.
-    assert json.loads(device_path.read_text())["u_demo"]["x"] == public_jwk["x"]
+    assert json.loads(device_path.read_text(encoding="utf-8"))["u_demo"]["x"] == public_jwk["x"]
     assert len(calls) == 2
     assert not list(device_path.parent.glob("*.tmp"))
 
@@ -1102,7 +1103,7 @@ def test_cashflow_forecast_preserves_database_and_existing_api_responses(
 
 
 def test_forecasting_has_no_ai_or_execution_dependencies() -> None:
-    tree = ast.parse(Path(readonly.__file__).read_text())
+    tree = ast.parse(Path(readonly.__file__).read_text(encoding="utf-8"))
     imports = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -1232,3 +1233,29 @@ def test_cashflow_unknown_bill_payment_state_and_absent_schedule_fail_clearly(
     user.pop("cashflow_schedule")
     with pytest.raises(readonly.ForecastDataError, match="unavailable"):
         _demo_forecast()
+
+
+def test_account_insights_are_allowlisted_and_do_not_mutate_bank():
+    before = readonly.get_accounts("u_demo")
+    data = readonly.get_account_insights("u_demo")
+    assert data["source"] == "synthetic"
+    assert data["transactions"]
+    assert all(t["category"] == "Uncategorised" for t in data["transactions"])
+    assert "kyc" not in data and "payees" not in data
+    assert before == readonly.get_accounts("u_demo")
+    for row in data["spending"]:
+        assert isinstance(row["current"]["total"], str)
+
+
+def test_account_insights_missing_history_stays_unavailable(monkeypatch):
+    original = readonly._load_database
+
+    def without_history():
+        data = original()
+        del data["users"]["u_demo"]["transaction_history"]
+        return data
+
+    monkeypatch.setattr(readonly, "_load_database", without_history)
+    data = readonly.get_account_insights("u_demo")
+    assert data["transactions"] is None
+    assert data["spending"] is None

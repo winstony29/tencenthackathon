@@ -333,6 +333,32 @@ def build(transcript: str, data: UserData, scope: str) -> Options:
     default = ("default", "No account is said.", "My usual account")
 
     spec = {
+        "enquiry": (
+            "Is this a read-only request about existing account data? Choose none if any "
+            "payment, purchase, sale, conversion, or change is requested. Overview covers "
+            "multiple read-only topics. "
+            "Do not classify hypothetical transaction affordability here.",
+            [
+                ("none", "Not a supported read-only enquiry, or includes an action.", "None"),
+                (
+                    "balances",
+                    "Current account balances or how much money the user has.",
+                    "Balances",
+                ),
+                ("bills", "Upcoming bills and scheduled expenses.", "Upcoming bills"),
+                ("transactions", "Recent account transaction history.", "Transactions"),
+                (
+                    "spending",
+                    "Spending breakdown or comparison with the previous month.",
+                    "Spending",
+                ),
+                (
+                    "overview",
+                    "Multiple read-only topics: balances, bills, spending or history.",
+                    "Overview",
+                ),
+            ],
+        ),
         "has_transfer": ("Does the text ask to send money to a person?", _ASKS_FOR["transfer"]),
         "has_bill_payment": ("Does the text ask to pay a bill or card?", _ASKS_FOR["bill_payment"]),
         "has_stock_order": ("Does the text ask to buy or sell shares?", _ASKS_FOR["stock_order"]),

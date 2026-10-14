@@ -392,3 +392,24 @@ Voice: if the browser's built-in speech recognition gives live text, the UI may 
 
 - **Presentation endpoints documented (§3.4).** They were already in use by V2 to V5; this records them. `action_types` now includes `fx_conversion` for V4 and V5.
 - **503:** a missing model key returns 503 `upstream_error` (§6).
+
+## Read-only enquiry handoff (13 October 2026)
+
+POST /api/understand can additionally return status enquiry, topic (balances, bills,
+transactions, spending, overview), user_id and the existing meta object. It contains no
+transaction draft. This response requires a confident read-only selection and confident
+negative transaction selections; the existing shield runs first.
+
+POST /api/presentation-v5/enquiry accepts user_id and topic. It reads synthetic bank
+insights and returns data, a bounded spec (root and allowlisted elements), source,
+topic and latency_ms. Required topic components cannot be omitted. JEV chooses layout,
+detail and eligible optional support using structural context only. Gateway failure
+returns an explicitly labelled fallback. GET /api/account-insights?user_id=u_demo
+returns the same data without a model call, for the gallery.
+
+Data: allowlisted accounts and completed history, next-30-day cashflow forecasts,
+and per-currency previous-calendar-month/current-month-to-date outflows. Dates use
+Asia/Singapore. The history is a seed sample, not a complete statement; missing categories
+remain Uncategorised. Missing history/schedules are unavailable, never fabricated zeros.
+User-ID selection follows the existing demo API; production authentication is not added.
+These endpoints do not validate, register devices, sign or execute transactions.

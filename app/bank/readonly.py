@@ -7,7 +7,7 @@ Contract: docs/CONTRACTS.md §3.3 (GET /api/accounts, GET /api/quote, readonly f
 
 import json
 import re
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, localcontext
 from pathlib import Path
 from typing import Any
@@ -362,3 +362,94 @@ def get_cashflow_forecast(
         horizon_days=horizon_days,
         proposed_amount=proposed_amount,
     )
+
+
+def get_account_insights(user_id: str) -> dict[str, Any]:
+    """Read synthetic account history and the next 30 days of scheduled expenses.
+
+    History is a seed sample, not a complete statement. Never infer categories.
+    Keep account ownership, dates and currencies intact; expose only allowlisted fields.
+    """
+    from zoneinfo import ZoneInfo
+
+    public = get_accounts(user_id)
+    user = _load_database()["users"][user_id]
+    accounts = {a.account_id: a for a in public.accounts}
+    now = datetime.now(UTC).astimezone(ZoneInfo("Asia/Singapore"))
+    start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    previous = (start - timedelta(days=1)).replace(day=1)
+    history = user.get("transaction_history")
+    transactions = None
+    if isinstance(history, list):
+        transactions = []
+        seen = set()
+        for item in history:
+            account = accounts.get(item.get("account_id"))
+            if account is None or item.get("currency") != account.currency:
+                raise ForecastDataError("History account or currency is invalid")
+            identifier = item["transaction_id"]
+            if identifier in seen:
+                raise ForecastDataError("Duplicate history record")
+            seen.add(identifier)
+            amount = _forecast_money(item["amount"])
+            when = _forecast_time(item["time"])
+            if item.get("direction") not in {"debit", "credit"}:
+                raise ForecastDataError("Invalid history direction")
+            if when > now or item.get("status") != "completed":
+                continue
+            transactions.append(
+                {
+                    "id": identifier,
+                    "account_id": account.account_id,
+                    "amount": f"{amount:.2f}",
+                    "currency": account.currency,
+                    "direction": item["direction"],
+                    "time": when.isoformat(),
+                    "description": str(item["description"]),
+                    "category": "Uncategorised",
+                }
+            )
+        transactions.sort(key=lambda t: t["time"], reverse=True)
+    forecasts = []
+    for account in public.accounts:
+        try:
+            forecasts.append(
+                get_cashflow_forecast(
+                    user_id,
+                    account.account_id,
+                    as_of=now,
+                    horizon_days=30,
+                    proposed_amount=Decimal("0.00"),
+                )
+            )
+        except ForecastDataError:
+            forecasts.append({"account_id": account.account_id, "unavailable": True})
+    spending = []
+    for currency in sorted({a.currency for a in public.accounts}):
+        periods = []
+        for lower, upper in [(previous, start), (start, now)]:
+            records = [
+                t
+                for t in transactions or []
+                if t["currency"] == currency
+                and t["direction"] == "debit"
+                and lower <= _forecast_time(t["time"]) < upper
+            ]
+            total = sum((Decimal(t["amount"]) for t in records), Decimal("0.00"))
+            periods.append(
+                {
+                    "from": lower.isoformat(),
+                    "through": upper.isoformat(),
+                    "total": f"{total:.2f}",
+                    "count": len(records),
+                }
+            )
+        spending.append({"currency": currency, "previous": periods[0], "current": periods[1]})
+    return {
+        "source": "synthetic",
+        "as_of": now.isoformat(),
+        "accounts": public.model_dump()["accounts"],
+        "transactions": transactions,
+        "forecasts": forecasts,
+        "spending": spending if transactions is not None else None,
+    }
