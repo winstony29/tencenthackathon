@@ -1412,3 +1412,14 @@ def test_a_followup_cannot_silently_skip_a_requested_conversion(client, fake_jev
         client, fake_jev, "can I afford that?", {"objective": {"assess_affordability": SURE}}
     )
     assert reply["status"] == "draft"
+
+
+def test_comma_grouped_conversion_preserves_full_amount(client, fake_jev, bank) -> None:
+    fake_jev.script = _move_script("acc_1234", "acc_7788")
+    reply = _understand(client, "Convert 1,000 SGD to USD").json()
+    (action,) = reply["draft"]["actions"]
+    assert action["type"] == "fx_conversion"
+    assert action["sell_amount"] == "1000.00"
+    assert action["buy_amount"] == "740.00"
+    assert action["sell_currency"] == "SGD"
+    assert action["buy_currency"] == "USD"

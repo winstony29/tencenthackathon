@@ -225,10 +225,17 @@ _ASKS_FOR = {
         (
             "yes",
             "It asks to move money between the user's own accounts, or to convert currency "
-            "between them; e.g. 'move some money from current to savings'.",
+            "between them; e.g. 'move some money from current to savings'. "
+            "An instruction such as 'convert 1,000 SGD to USD' is YES even if account "
+            "names are omitted: the currencies identify the source and destination.",
             "Yes",
         ),
-        ("no", "It does not move money between the user's own accounts.", "No"),
+        (
+            "no",
+            "No instruction to move or convert money. "
+            "A question asking only for an exchange rate is no.",
+            "No",
+        ),
     ],
     "stock_order": [
         (
@@ -486,7 +493,12 @@ INFO_KINDS = [
     ("bills", "Bills or payments coming up; when a bill is due or what is owed.", "Upcoming bills"),
     ("holdings", "Which shares the user owns, or what they are worth.", "My shares"),
     ("quote", "The current price of a company's shares.", "A share price"),
-    ("fx_rate", "An exchange rate between two currencies.", "An exchange rate"),
+    (
+        "fx_rate",
+        "Asks only for an exchange rate between currencies, "
+        "not an instruction to convert a sum of money.",
+        "An exchange rate",
+    ),
     ("payees", "Who the user can send money to; saved recipients.", "My payees"),
     ("help", "What the assistant can do, or how to use it.", "What you can do"),
 ]
