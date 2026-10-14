@@ -132,12 +132,80 @@ def _validate_ledger_history(state: dict[str, Any]) -> None:
             if event["event"] not in {"transaction_executed", "fx_converted"}:
                 raise ValueError("Invalid execution event")
         expected_events.extend(events)
+    expected_events.extend(_validate_payment_controls(state))
     if any(event not in expected_events for event in state["outbox"]):
         raise ValueError("Unrecognised outbox event")
     if len({json.dumps(event, sort_keys=True) for event in state["outbox"]}) != len(
         state["outbox"]
     ):
         raise ValueError("Duplicate outbox event")
+
+
+def _validate_payment_controls(state: dict[str, Any]) -> list[dict[str, Any]]:
+    # Legacy state can lack controls: the writer treats that as paused. Reads never
+    # migrate storage, repair controls or infer permission from an earlier audit.
+    if "payment_control" in state:
+        control = state["payment_control"]
+        if (
+            not isinstance(control, dict)
+            or set(control) != {"paused"}
+            or type(control["paused"]) is not bool
+        ):
+            raise ValueError("Invalid payment control state")
+    events = state.get("security_events", [])
+    if not isinstance(events, list):
+        raise ValueError("Invalid security events")
+    identities = set()
+    for event in events:
+        if not isinstance(event, dict) or set(event) != {"event", "data"}:
+            raise ValueError("Invalid security event")
+        data = event["data"]
+        audit._safe_data(data)
+        if not re.fullmatch(r"tx_[0-9a-f]{64}", data.get("transaction_id", "")):
+            raise ValueError("Invalid security event identity")
+        if event["event"] in {"kill_switch_activated", "kill_switch_deactivated"}:
+            if set(data) != {"transaction_id", "reason"} or data["reason"] != "operator_control":
+                raise ValueError("Invalid operator event")
+        elif event["event"] in {"risk_rejected", "step_up_required"}:
+            if (
+                set(data) != {"transaction_id", "reason", "count"}
+                or data["reason"]
+                not in {
+                    "payments_paused",
+                    "policy_missing",
+                    "policy_invalid",
+                    "policy_unsupported",
+                    "state_invalid",
+                    "clock_invalid",
+                    "draft_invalid",
+                    "execution_conflict",
+                    "unknown_user",
+                    "kyc_incomplete",
+                    "account_not_owned",
+                    "account_inactive",
+                    "account_type_invalid",
+                    "account_label_mismatch",
+                    "currency_mismatch",
+                    "invalid_amount",
+                    "per_transfer_limit_exceeded",
+                    "daily_limit_exceeded",
+                    "velocity_exceeded",
+                    "step_up_required",
+                }
+                or (
+                    (event["event"] == "step_up_required") != (data["reason"] == "step_up_required")
+                )
+                or not 1 <= data["count"] <= MAX_ACTIONS_PER_DRAFT
+            ):
+                raise ValueError("Invalid risk event")
+        else:
+            raise ValueError("Unsupported security event")
+        # Control retries share an identity even when the requested direction changes.
+        identity = data["transaction_id"]
+        if identity in identities:
+            raise ValueError("Duplicate security operation")
+        identities.add(identity)
+    return events
 
 
 def _read_ledger_state(path: Path) -> dict[str, Any]:

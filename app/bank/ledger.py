@@ -7,6 +7,9 @@ Contract: none; only app/bank/gateway.py may import it
 Gateway interface: execute_batch(draft, execution_id). J-06 must authorise the exact
 draft and supply the identifier; this function performs no authentication. Identical
 retries return the original ExecutedResponse. Changed payloads cannot reuse an ID.
+Every new execution requires a configured backend policy, a risk allow decision
+and unpaused runtime controls under the same lock. Step-up remains uncommitted
+until J-06 supplies securely bound verification. Unconfigured action types are closed.
 
 Atomicity covers this local simulated ledger, not real bank/exchange settlement.
 Mock orders fill immediately at the stored quote (no fees); limits must permit that
@@ -34,7 +37,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from app import audit
-from app.bank import readonly
+from app.bank import readonly, rules
 from app.contracts import Draft, ExecutedResponse, FxResponse, QuoteResponse
 
 _LOCK = threading.RLock()
@@ -50,6 +53,14 @@ class LedgerRejected(ValueError):
 
 class LedgerAuditPending(RuntimeError):
     """Audit delivery failed. Money may be committed: retry only with the SAME ID."""
+
+
+class LedgerRiskRejected(LedgerRejected):
+    """No financial commit; J-06 must map status and reason to its public response."""
+
+    def __init__(self, reason: str, status: str = "reject") -> None:
+        self.status = status
+        super().__init__(reason)
 
 
 @contextmanager
@@ -128,6 +139,10 @@ def _load_state(path: Path, established: bool, audit_path: Path | None) -> dict[
             in {
                 "transaction_executed",
                 "fx_converted",
+                "risk_rejected",
+                "step_up_required",
+                "kill_switch_activated",
+                "kill_switch_deactivated",
             }
             for entry in log.entries
         ):
@@ -142,6 +157,8 @@ def _load_state(path: Path, established: bool, audit_path: Path | None) -> dict[
             "executions": {},
             "outbox": [],
             "next_reference": 1,
+            "payment_control": {"paused": True},
+            "security_events": [],
         }
         readonly._validate_ledger_users(state["users"])
         _save_state(path, state)
@@ -201,6 +218,10 @@ def _delivered_events(entries: list[Any]) -> set[str]:
         if entry.actor != "bank" or entry.event not in {
             "transaction_executed",
             "fx_converted",
+            "risk_rejected",
+            "step_up_required",
+            "kill_switch_activated",
+            "kill_switch_deactivated",
         }:
             continue
         identity = (entry.event, entry.data["transaction_id"], entry.data.get("action_index"))
@@ -223,6 +244,7 @@ def _reconcile(state: dict[str, Any], path: Path, audit_path: Path | None) -> No
             for execution in state["executions"].values()
             for event in execution["audit_events"]
         }
+        expected.update(_event_key(event) for event in state.get("security_events", []))
         if not expected.issubset(delivered | pending):
             raise audit.AuditError("An acknowledged execution audit record is missing")
         for event in state["outbox"]:
@@ -250,6 +272,125 @@ def reconcile_audit(*, storage_path: Path | None = None, audit_path: Path | None
     path = readonly._ledger_path(storage_path)
     with _locked(path) as established:
         _reconcile(_load_state(path, established, audit_path), path, audit_path)
+
+
+def _security_event(
+    state: dict[str, Any], event: dict[str, Any], path: Path, audit_path: Path | None
+) -> None:
+    events = state.setdefault("security_events", [])
+    prior = next(
+        (e for e in events if e["data"]["transaction_id"] == event["data"]["transaction_id"]), None
+    )
+    if prior is not None:
+        _require(prior == event, "control_operation_conflict")
+    else:
+        audit._safe_data(event["data"])
+        events.append(event)
+        state["outbox"].append(event)
+        _save_state(path, state)
+    _reconcile(state, path, audit_path)
+
+
+def set_payment_pause(
+    paused: bool,
+    *,
+    operation_id: str,
+    storage_path: Path | None = None,
+    audit_path: Path | None = None,
+) -> None:
+    """Restricted internal operator control; never expose it through an API or AI.
+
+    Run only inside an access-controlled backend/operator process. Python access is
+    not operator authentication: deployment must restrict OS/process/file access.
+    Initialise a genuinely fresh demo with reconcile_audit(), review current state,
+    then (only AFTER approved backend policy configuration) call this with False and
+    a unique op_ identifier. With no configured policy, enabling is refused. Use True
+    to pause; it cannot reverse committed payments. Legacy missing controls mean paused
+    and this operation adds controls without resetting any balances or history.
+
+    A write/audit failure may already have persisted the control: retry the SAME ID
+    and direction. Identical retries recover evidence without repeating old changes.
+    Activation persists even when audit delivery is unavailable; resume needs a healthy
+    audit chain. Lock order is always ledger then audit, never the reverse.
+    """
+    if (
+        type(paused) is not bool
+        or not isinstance(operation_id, str)
+        or not re.fullmatch(r"op_[A-Za-z0-9_-]{1,80}", operation_id)
+    ):
+        raise LedgerRejected("invalid_operator_control")
+    event = {
+        "event": "kill_switch_activated" if paused else "kill_switch_deactivated",
+        "data": {
+            "transaction_id": "tx_"
+            + hashlib.sha256(("operator:" + operation_id).encode()).hexdigest(),
+            "reason": "operator_control",
+        },
+    }
+    path = readonly._ledger_path(storage_path)
+    with _locked(path) as established:
+        state = _load_state(path, established, audit_path)
+        prior = next(
+            (
+                e
+                for e in state.get("security_events", [])
+                if e["data"]["transaction_id"] == event["data"]["transaction_id"]
+            ),
+            None,
+        )
+        if prior is not None:
+            _require(prior == event, "control_operation_conflict")
+            _reconcile(state, path, audit_path)
+            return
+        if not paused:
+            _reconcile(state, path, audit_path)
+            policy = rules.execution_policy()
+            if policy is None:
+                raise LedgerRejected("policy_missing")
+            try:
+                rules.TransferPolicy.model_validate(
+                    policy.model_dump(mode="python", warnings=False)
+                )
+            except (ValueError, TypeError, AttributeError):
+                raise LedgerRejected("policy_invalid") from None
+        state["payment_control"] = {"paused": paused}
+        _security_event(state, event, path, audit_path)
+
+
+def _enforce_risk(
+    state: dict[str, Any],
+    draft: Draft,
+    execution_id: str,
+    fingerprint: str,
+    now: datetime,
+    path: Path,
+    audit_path: Path | None,
+) -> None:
+    # No request-supplied policy/proof/skip flag. This call is mandatory and remains
+    # under the same lock through staging, replacement and audit acknowledgement.
+    decision = rules.evaluate_risk(
+        draft, execution_id=execution_id, policy=rules.execution_policy(), state=state, now=now
+    )
+    paused = state.get("payment_control", {"paused": True})["paused"]
+    reason = "payments_paused" if paused else decision.reason
+    status = "reject" if paused else decision.status
+    if status == "allow":
+        return
+    identity = json.dumps(["risk", execution_id, fingerprint, reason], separators=(",", ":"))
+    _security_event(
+        state,
+        {
+            "event": "step_up_required" if status == "needs_extra_check" else "risk_rejected",
+            "data": {
+                "transaction_id": "tx_" + hashlib.sha256(identity.encode()).hexdigest(),
+                "count": len(draft.actions),
+                "reason": reason,
+            },
+        },
+        path,
+        audit_path,
+    )
+    raise LedgerRiskRejected(reason, status)
 
 
 def _record(records: list[dict[str, Any]], field: str, identifier: str) -> dict[str, Any]:
@@ -448,6 +589,8 @@ def execute_batch(
     Rejects conflicts and invalid invariants without financial changes. On storage
     or audit errors the outcome may be committed: reconcile/retry using the SAME ID.
     Internal reasons require gateway mapping to the existing public error contract.
+    Risk checks are mandatory against committed state and backend time under the
+    ledger lock. Missing controls mean paused; no client proof or bypass is accepted.
     """
     if not isinstance(execution_id, str) or not re.fullmatch(
         r"ex_[A-Za-z0-9_-]{1,80}", execution_id
@@ -471,6 +614,7 @@ def execute_batch(
         prior = state["executions"].get(execution_id)
         if prior is None:
             now = datetime.now(UTC)
+            _enforce_risk(state, draft, execution_id, fingerprint, now, path, audit_path)
         try:
             if prior is not None:
                 _require(prior["fingerprint"] == fingerprint, "execution_conflict")

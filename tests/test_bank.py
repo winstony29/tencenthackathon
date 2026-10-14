@@ -19,7 +19,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from decimal import Decimal, localcontext
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -1286,6 +1287,49 @@ def ledger_paths(tmp_path: Path) -> dict[str, Path]:
 
 
 @pytest.fixture
+def financial_kernel(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Isolate existing J-08 financial/storage tests from unapproved live policies.
+
+    Only explicitly marked older component tests use this risk-engine test double.
+    Real mandatory-risk integration tests below use the actual evaluator and controls.
+    Stock/bill/FX calculations remain tested here, without enabling those live policies.
+    """
+    monkeypatch.setattr(
+        ledger,
+        "rules",
+        SimpleNamespace(
+            execution_policy=lambda: None,
+            evaluate_risk=lambda *args, **kwargs: rules.RiskDecision(
+                status="allow", reason="allowed"
+            ),
+        ),
+    )
+    load = ledger._load_state
+
+    def load_financial_fixture(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        state = load(*args, **kwargs)
+        state["payment_control"] = {"paused": False}
+        return state
+
+    monkeypatch.setattr(ledger, "_load_state", load_financial_fixture)
+
+
+_FINANCIAL_KERNEL_PROCESS = """
+# Test-only financial-component isolation, identical to financial_kernel fixture.
+from app.bank import ledger, rules
+from types import SimpleNamespace
+ledger.rules = SimpleNamespace(execution_policy=lambda: None,
+    evaluate_risk=lambda *args, **kwargs: rules.RiskDecision(status="allow", reason="allowed"))
+load = ledger._load_state
+def load_financial_fixture(*args, **kwargs):
+    state = load(*args, **kwargs)
+    state["payment_control"] = {"paused": False}
+    return state
+ledger._load_state = load_financial_fixture
+"""
+
+
+@pytest.fixture
 def ledger_store(ledger_paths: dict[str, Path]) -> dict[str, Path]:
     ledger.reconcile_audit(**ledger_paths)
     return ledger_paths
@@ -1365,6 +1409,7 @@ def _ledger_balance(paths: dict[str, Path], account_id: str = "acc_1234") -> str
     return next(a["balance"] for a in user["accounts"] if a["account_id"] == account_id)
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_transfer_commits_seed_snapshot_and_minimal_audit(
     ledger_paths: dict[str, Path],
     bank_seed: dict[str, Any],
@@ -1397,6 +1442,7 @@ def test_ledger_transfer_commits_seed_snapshot_and_minimal_audit(
     assert readonly.get_accounts("u_demo").accounts[0].balance == Decimal("3100.00")
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_partial_and_full_bill_payments_update_forecast(
     ledger_store: dict[str, Path],
 ) -> None:
@@ -1438,6 +1484,7 @@ def test_ledger_partial_and_full_bill_payments_update_forecast(
     assert ledger_store["storage_path"].read_bytes() == before
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_stock_buy_sell_and_execution_details(
     ledger_store: dict[str, Path], bank_seed: dict[str, Any]
 ) -> None:
@@ -1462,6 +1509,7 @@ def test_ledger_stock_buy_sell_and_execution_details(
 
 
 @pytest.mark.parametrize("ticker", ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"])
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_buys_all_five_seed_stocks(
     ticker: str,
     ledger_store: dict[str, Path],
@@ -1492,6 +1540,7 @@ def test_ledger_buys_all_five_seed_stocks(
         ("sell", "228.00", False),
     ],
 )
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_limit_orders_use_quote_and_never_leave_pending_orders(
     side: str,
     limit: str,
@@ -1514,6 +1563,7 @@ def test_ledger_limit_orders_use_quote_and_never_leave_pending_orders(
         assert ledger_store["storage_path"].read_bytes() == before
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_fx_direction_rounding_and_records(ledger_store: dict[str, Path]) -> None:
     action = _ledger_action("fx_conversion", sell_amount="1000.01")
     ledger.execute_batch(_ledger_draft(action), "ex_fx", **ledger_store)
@@ -1586,6 +1636,7 @@ def test_ledger_fx_direction_rounding_and_records(ledger_store: dict[str, Path])
         ),
     ],
 )
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_invalid_actions_reject_without_any_financial_changes(
     action: dict[str, Any],
     reason: str,
@@ -1601,6 +1652,7 @@ def test_ledger_invalid_actions_reject_without_any_financial_changes(
     assert entry.data["reason"] == reason
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_unknown_user_cannot_use_another_users_accounts(
     ledger_store: dict[str, Path],
 ) -> None:
@@ -1610,6 +1662,7 @@ def test_ledger_unknown_user_cannot_use_another_users_accounts(
     assert ledger_store["storage_path"].read_bytes() == before
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_failed_final_action_rolls_back_bills_stocks_fx_and_history(
     ledger_store: dict[str, Path],
 ) -> None:
@@ -1625,6 +1678,7 @@ def test_ledger_failed_final_action_rolls_back_bills_stocks_fx_and_history(
     assert ledger_store["storage_path"].read_bytes() == before
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_ordered_batch_can_fund_stock_purchase_with_explicit_fx(
     ledger_store: dict[str, Path],
 ) -> None:
@@ -1636,6 +1690,7 @@ def test_ledger_ordered_batch_can_fund_stock_purchase_with_explicit_fx(
     assert _ledger_balance(ledger_store, "acc_7788") == "1000.00"
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_same_draft_retry_returns_original_response_after_reload(
     ledger_store: dict[str, Path],
 ) -> None:
@@ -1653,6 +1708,7 @@ def test_ledger_same_draft_retry_returns_original_response_after_reload(
     "changes",
     [{"amount": "101.00"}, {"to_payee_id": "pay_8892", "to_payee_label": "John Smith …8892"}],
 )
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_changed_payload_cannot_reuse_committed_identifier(
     changes: dict[str, Any], ledger_store: dict[str, Path]
 ) -> None:
@@ -1663,6 +1719,7 @@ def test_ledger_changed_payload_cannot_reuse_committed_identifier(
     assert ledger_store["storage_path"].read_bytes() == before
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_fingerprint_binds_transcript_session_and_all_draft_fields(
     ledger_store: dict[str, Path],
 ) -> None:
@@ -1677,6 +1734,7 @@ def test_ledger_fingerprint_binds_transcript_session_and_all_draft_fields(
     assert _ledger_balance(ledger_store) == "3100.00"
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_thread_race_prevents_double_spending(ledger_store: dict[str, Path]) -> None:
     barrier = Barrier(2)
 
@@ -1697,6 +1755,7 @@ def test_ledger_thread_race_prevents_double_spending(ledger_store: dict[str, Pat
     assert len(_ledger_state(ledger_store)["transactions"]) == 1
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_concurrent_identical_retries_have_one_effect(ledger_store: dict[str, Path]) -> None:
     barrier = Barrier(8)
 
@@ -1711,8 +1770,11 @@ def test_ledger_concurrent_identical_retries_have_one_effect(ledger_store: dict[
     assert len(_ledger_state(ledger_store)["transactions"]) == 1
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_process_race_prevents_double_spending(ledger_store: dict[str, Path]) -> None:
-    script = """
+    script = (
+        _FINANCIAL_KERNEL_PROCESS
+        + """
 import json, sys
 from pathlib import Path
 from app.bank import ledger
@@ -1725,6 +1787,7 @@ try:
 except ledger.LedgerRejected as error:
     sys.stdout.write(error.reason)
 """
+    )
     payload = _ledger_draft(_ledger_action(amount="2000.00")).model_dump_json()
     processes = [
         subprocess.Popen(
@@ -1760,6 +1823,7 @@ except ledger.LedgerRejected as error:
     assert len(_ledger_state(ledger_store)["transactions"]) == 1
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_audit_failure_leaves_durable_outbox_and_retry_recovers(
     ledger_store: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
@@ -1782,6 +1846,7 @@ def test_ledger_audit_failure_leaves_durable_outbox_and_retry_recovers(
     assert audit.verify(storage_path=ledger_store["audit_path"])
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_crash_after_audit_append_reuses_evidence_and_never_redebits(
     ledger_store: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
@@ -1806,10 +1871,13 @@ def test_ledger_crash_after_audit_append_reuses_evidence_and_never_redebits(
     assert _ledger_state(ledger_store)["outbox"] == []
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_real_process_exit_after_replacement_recovers_once(
     ledger_store: dict[str, Path],
 ) -> None:
-    script = """
+    script = (
+        _FINANCIAL_KERNEL_PROCESS
+        + """
 import json, os, sys
 from pathlib import Path
 from app.bank import ledger
@@ -1818,6 +1886,7 @@ ledger._sync_directory = lambda path: os._exit(73)
 ledger.execute_batch(Draft.model_validate(json.loads(sys.argv[1])), "ex_crash",
     storage_path=Path(sys.argv[2]), audit_path=Path(sys.argv[3]))
 """
+    )
     result = subprocess.run(
         [
             sys.executable,
@@ -1840,6 +1909,7 @@ ledger.execute_batch(Draft.model_validate(json.loads(sys.argv[1])), "ex_crash",
 
 
 @pytest.mark.parametrize("failure", ["replace", "fsync"])
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_failed_write_before_replacement_preserves_old_state(
     failure: str,
     ledger_store: dict[str, Path],
@@ -1860,6 +1930,7 @@ def test_ledger_failed_write_before_replacement_preserves_old_state(
     assert _ledger_balance(ledger_store) == "3100.00"
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_failed_directory_sync_requires_same_id_retry(
     ledger_store: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
@@ -1878,6 +1949,7 @@ def test_ledger_failed_directory_sync_requires_same_id_retry(
 
 
 @pytest.mark.parametrize("corruption", ["truncated", "checksum", "duplicate", "missing"])
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_corruption_or_missing_established_storage_never_resets(
     corruption: str,
     ledger_store: dict[str, Path],
@@ -1901,6 +1973,7 @@ def test_ledger_corruption_or_missing_established_storage_never_resets(
     assert (path.read_bytes() if path.exists() else None) == before
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_first_write_failure_is_not_silently_reinitialised(
     ledger_paths: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
@@ -1920,6 +1993,7 @@ def test_ledger_first_write_failure_is_not_silently_reinitialised(
 
 
 @pytest.mark.parametrize("corruption", ["tamper", "truncated", "deleted"])
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_bad_audit_or_missing_acknowledged_event_blocks_new_money_movements(
     corruption: str,
     ledger_store: dict[str, Path],
@@ -1953,6 +2027,7 @@ def test_ledger_snapshot_is_detached_and_never_imports_writer(
     assert error.value.status_code == 404
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_precision_is_independent_of_ambient_decimal_context(
     ledger_store: dict[str, Path],
 ) -> None:
@@ -1965,6 +2040,7 @@ def test_ledger_precision_is_independent_of_ambient_decimal_context(
 
 
 @pytest.mark.parametrize("identifier", ["", "customer-chosen", "ex_", "ex_\nunsafe", None])
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_requires_safe_gateway_execution_identifier(
     identifier: Any, ledger_paths: dict[str, Path]
 ) -> None:
@@ -1973,6 +2049,7 @@ def test_ledger_requires_safe_gateway_execution_identifier(
     assert not ledger_paths["storage_path"].exists()
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_revalidates_mutated_draft(ledger_store: dict[str, Path]) -> None:
     draft = _ledger_draft()
     draft.actions[0].amount = 1.5
@@ -1982,6 +2059,7 @@ def test_ledger_revalidates_mutated_draft(ledger_store: dict[str, Path]) -> None
     assert ledger_store["storage_path"].read_bytes() == before
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_has_no_ai_network_or_public_execution_path(
     ledger_store: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
@@ -2012,6 +2090,7 @@ def test_ledger_has_no_ai_network_or_public_execution_path(
     assert "ledger" not in vars(router)
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_fx_audit_contains_documented_fields_and_valid_chain(
     ledger_store: dict[str, Path],
 ) -> None:
@@ -2062,6 +2141,7 @@ def test_audit_fx_allowlist_remains_strict(
     assert not ledger_paths["audit_path"].exists()
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_partial_fx_audit_delivery_recovers_every_event(
     ledger_store: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
@@ -2106,6 +2186,7 @@ def test_ledger_partial_fx_audit_delivery_recovers_every_event(
         "outbox",
     ],
 )
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_structural_corruption_fails_even_with_recomputed_checksum(
     corruption: str,
     ledger_store: dict[str, Path],
@@ -2145,6 +2226,7 @@ def test_ledger_structural_corruption_fails_even_with_recomputed_checksum(
     "kind,reason",
     [("account", "account_inactive"), ("payee", "recipient_inactive"), ("bill", "biller_inactive")],
 )
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_inactive_records_block_payments(
     kind: str,
     reason: str,
@@ -2163,6 +2245,7 @@ def test_ledger_inactive_records_block_payments(
     assert ledger_paths["storage_path"].read_bytes() == before
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_missing_seed_fails_without_creating_fake_balances(
     ledger_paths: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
@@ -2176,6 +2259,7 @@ def test_ledger_missing_seed_fails_without_creating_fake_balances(
     assert not ledger_paths["storage_path"].exists()
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_distinct_concurrent_requests_preserve_all_updates(
     ledger_store: dict[str, Path],
 ) -> None:
@@ -2192,6 +2276,7 @@ def test_ledger_distinct_concurrent_requests_preserve_all_updates(
     assert audit.verify(storage_path=ledger_store["audit_path"])
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_default_path_is_independent_of_working_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2222,6 +2307,7 @@ def test_forecast_rejects_snapshot_from_other_user(ledger_store: dict[str, Path]
         )
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_missing_state_and_marker_cannot_reset_when_execution_audits_exist(
     ledger_store: dict[str, Path],
 ) -> None:
@@ -2233,6 +2319,7 @@ def test_ledger_missing_state_and_marker_cannot_reset_when_execution_audits_exis
     assert not ledger_store["storage_path"].exists()
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_invalid_audit_prevents_first_initialisation(ledger_paths: dict[str, Path]) -> None:
     ledger_paths["audit_path"].write_text("incomplete")
     with pytest.raises(ledger.LedgerAuditPending):
@@ -2241,6 +2328,7 @@ def test_ledger_invalid_audit_prevents_first_initialisation(ledger_paths: dict[s
 
 
 @pytest.mark.parametrize("kind", ["transfer", "bill_payment", "stock_order"])
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_enforces_documented_unique_customer_action_types(
     kind: str,
     ledger_store: dict[str, Path],
@@ -2255,6 +2343,7 @@ def test_ledger_enforces_documented_unique_customer_action_types(
     assert ledger_store["storage_path"].read_bytes() == before
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_ledger_unaffordable_stock_order_rolls_back_earlier_bill_payment(
     ledger_store: dict[str, Path],
 ) -> None:
@@ -2291,6 +2380,7 @@ def _runtime_forecast() -> dict[str, Any]:
     )
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_integration_transfer_updates_account_api_and_default_forecast(
     integrated_views: dict[str, Path],
 ) -> None:
@@ -2311,6 +2401,7 @@ def test_integration_transfer_updates_account_api_and_default_forecast(
     assert forecast["projected_balance_after"] == "317.60"
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_integration_stock_orders_update_public_holdings(integrated_views: dict[str, Path]) -> None:
     ledger.execute_batch(
         _ledger_draft(_ledger_action("stock_order")), "ex_api_stock", **integrated_views
@@ -2329,6 +2420,7 @@ def test_integration_stock_orders_update_public_holdings(integrated_views: dict[
     assert next(h["quantity"] for h in data["holdings"] if h["ticker"] == "AAPL") == 109
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_integration_partial_and_settled_bill_do_not_double_count(
     integrated_views: dict[str, Path],
 ) -> None:
@@ -2359,6 +2451,7 @@ def test_integration_partial_and_settled_bill_do_not_double_count(
     assert data["billers"][0]["amount_due"] == "0.00"
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_integration_rejected_batch_leaves_displayed_views_unchanged(
     integrated_views: dict[str, Path],
 ) -> None:
@@ -2378,6 +2471,7 @@ def test_integration_rejected_batch_leaves_displayed_views_unchanged(
     assert _runtime_forecast() == before_forecast
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_integration_crash_retry_reuses_audit_evidence_and_committed_views(
     integrated_views: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
@@ -2413,6 +2507,7 @@ def test_integration_crash_retry_reuses_audit_evidence_and_committed_views(
 @pytest.mark.parametrize(
     "failure", ["missing", "truncated", "checksum", "lost_marker_too", "lost_all_evidence"]
 )
+@pytest.mark.usefixtures("financial_kernel")
 def test_integration_missing_or_corrupt_state_never_displays_seed_balances(
     failure: str,
     integrated_views: dict[str, Path],
@@ -2468,6 +2563,7 @@ def test_integration_ambiguous_first_use_requires_supervised_initialisation(
     )
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_integration_reads_never_write_reconcile_execute_or_contact_ai(
     integrated_views: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
@@ -2743,6 +2839,7 @@ def test_audit_idempotency_requires_explicit_safe_identity(ledger_paths: dict[st
     assert ledger_paths["audit_path"].read_bytes() == b""
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_integration_conflicting_pending_audit_refuses_acknowledgement(
     integrated_views: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
@@ -2773,11 +2870,14 @@ def test_integration_conflicting_pending_audit_refuses_acknowledgement(
     assert readonly.get_accounts("u_demo").accounts[0].balance == Decimal("3100.00")
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_integration_real_crash_after_audit_append_reuses_exact_evidence(
     integrated_views: dict[str, Path],
 ) -> None:
     ledger.reconcile_audit(**integrated_views)
-    script = """
+    script = (
+        _FINANCIAL_KERNEL_PROCESS
+        + """
 import json, os, sys
 from pathlib import Path
 from app.bank import ledger
@@ -2791,6 +2891,7 @@ ledger._save_state = interrupted_ack
 ledger.execute_batch(Draft.model_validate(json.loads(sys.argv[1])), "ex_real_audit_crash",
     storage_path=Path(sys.argv[2]), audit_path=Path(sys.argv[3]))
 """
+    )
     result = subprocess.run(
         [
             sys.executable,
@@ -2814,6 +2915,7 @@ ledger.execute_batch(Draft.model_validate(json.loads(sys.argv[1])), "ex_real_aud
     assert readonly.get_accounts("u_demo").accounts[0].balance == Decimal("3100.00")
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_integration_conflicting_acknowledged_audit_blocks_new_execution(
     integrated_views: dict[str, Path],
 ) -> None:
@@ -3612,6 +3714,7 @@ def test_risk_uses_explicit_configuration_instead_of_hardcoded_limits(
     assert _risk_evaluate(policy, risk_state, risk_now).reason == "velocity_exceeded"
 
 
+@pytest.mark.usefixtures("financial_kernel")
 def test_risk_evaluator_accepts_actual_committed_j08_records_and_retry_fingerprint(
     risk_policy: rules.TransferPolicy,
     ledger_store: dict[str, Path],
@@ -3736,3 +3839,866 @@ def test_risk_datetime_underflow_is_rejected_without_an_exception(
 ) -> None:
     now = datetime.fromisoformat("0001-01-01T00:00:00+00:00")
     assert _risk_evaluate(risk_policy, risk_state, now).reason == "clock_invalid"
+
+
+@pytest.fixture
+def risk_execution_store(
+    ledger_paths: dict[str, Path],
+    risk_policy: rules.TransferPolicy,
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, Path]:
+    """Use the real evaluator, with proposed policy installed only in the test backend."""
+    monkeypatch.setattr(rules, "execution_policy", lambda: risk_policy)
+    ledger.reconcile_audit(**ledger_paths)
+    ledger.set_payment_pause(False, operation_id="op_test_enable", **ledger_paths)
+    return ledger_paths
+
+
+def _financial_state(paths: dict[str, Path]) -> dict[str, Any]:
+    state = _ledger_state(paths)
+    return {key: state[key] for key in ("users", "transactions", "executions", "next_reference")}
+
+
+def _risk_execution_result(paths: dict[str, Path], identifier: str, draft: Draft) -> str:
+    try:
+        ledger.execute_batch(draft, identifier, **paths)
+        return "executed"
+    except ledger.LedgerRejected as error:
+        return error.reason
+
+
+def _bank_clock(monkeypatch: pytest.MonkeyPatch, now: datetime) -> None:
+    class BackendClock(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> datetime:
+            return now.astimezone(tz) if tz is not None else now.replace(tzinfo=None)
+
+    monkeypatch.setattr(ledger, "datetime", BackendClock)
+
+
+def test_enforcement_fresh_state_is_paused_and_unconfigured(
+    ledger_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert rules.execution_policy() is None
+    calls = []
+    evaluate = rules.evaluate_risk
+
+    def observed(*args: Any, **kwargs: Any) -> rules.RiskDecision:
+        calls.append(kwargs)
+        return evaluate(*args, **kwargs)
+
+    monkeypatch.setattr(rules, "evaluate_risk", observed)
+    with pytest.raises(ledger.LedgerRiskRejected, match="payments_paused"):
+        ledger.execute_batch(_risk_draft(), "ex_default_paused", **ledger_paths)
+    assert len(calls) == 1 and calls[0]["policy"] is None
+    assert calls[0]["now"].utcoffset() is not None
+    assert _ledger_state(ledger_paths)["payment_control"] == {"paused": True}
+    assert _ledger_state(ledger_paths)["transactions"] == []
+    with pytest.raises(ledger.LedgerRejected, match="policy_missing"):
+        ledger.set_payment_pause(False, operation_id="op_unapproved", **ledger_paths)
+    assert _ledger_state(ledger_paths)["payment_control"]["paused"] is True
+
+
+@pytest.mark.parametrize(
+    "amount,status,reason",
+    [
+        ("50000.00", "reject", "per_transfer_limit_exceeded"),
+        ("20000.01", "reject", "per_transfer_limit_exceeded"),
+        ("8000.00", "needs_extra_check", "step_up_required"),
+        ("5000.01", "needs_extra_check", "step_up_required"),
+    ],
+)
+def test_enforcement_hard_limits_and_step_up_never_commit(
+    risk_execution_store: dict[str, Path],
+    amount: str,
+    status: str,
+    reason: str,
+) -> None:
+    before = _financial_state(risk_execution_store)
+    with pytest.raises(ledger.LedgerRiskRejected) as error:
+        ledger.execute_batch(_risk_draft(amount), "ex_blocked_limit", **risk_execution_store)
+    assert (error.value.status, error.value.reason) == (status, reason)
+    assert _financial_state(risk_execution_store) == before
+    state = _ledger_state(risk_execution_store)
+    assert state["outbox"] == []
+    assert state["security_events"][-1]["data"]["reason"] == reason
+
+
+@pytest.mark.parametrize("kind", ["bill_payment", "stock_order", "fx_conversion", "USD", "mixed"])
+def test_enforcement_unsupported_policies_fail_closed(
+    risk_execution_store: dict[str, Path],
+    kind: str,
+) -> None:
+    before = _financial_state(risk_execution_store)
+    if kind == "USD":
+        draft = _risk_draft(currency="USD")
+    elif kind == "mixed":
+        draft = _ledger_draft(_ledger_action(), _ledger_action("bill_payment"))
+    else:
+        draft = _ledger_draft(_ledger_action(kind))
+    assert (
+        _risk_execution_result(risk_execution_store, "ex_unsupported", draft)
+        == "policy_unsupported"
+    )
+    assert _financial_state(risk_execution_store) == before
+
+
+@pytest.mark.parametrize("policy", [None, {}, False])
+def test_enforcement_unconfigured_or_invalid_policy_after_enabling_fails_closed(
+    risk_execution_store: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    policy: Any,
+) -> None:
+    before = _financial_state(risk_execution_store)
+    monkeypatch.setattr(rules, "execution_policy", lambda: policy)
+    assert _risk_execution_result(risk_execution_store, "ex_policy_missing", _risk_draft()) == (
+        "policy_missing" if policy is None else "policy_invalid"
+    )
+    assert _financial_state(risk_execution_store) == before
+    with pytest.raises(ledger.LedgerRejected, match="policy_missing|policy_invalid"):
+        ledger.set_payment_pause(False, operation_id="op_new_resume", **risk_execution_store)
+
+
+@pytest.mark.parametrize(
+    "change,reason",
+    [
+        ("kyc", "kyc_incomplete"),
+        ("status", "account_inactive"),
+        ("ownership", "account_not_owned"),
+        ("currency", "currency_mismatch"),
+    ],
+)
+def test_enforcement_latest_committed_eligibility_is_required(
+    risk_execution_store: dict[str, Path],
+    change: str,
+    reason: str,
+) -> None:
+    state = _ledger_state(risk_execution_store)
+    draft = _risk_draft()
+    if change == "kyc":
+        state["users"]["u_demo"]["kyc"]["status"] = "pending"
+    elif change == "status":
+        state["users"]["u_demo"]["accounts"][1]["status"] = "inactive"
+    elif change == "currency":
+        state["users"]["u_demo"]["accounts"][1]["currency"] = "USD"
+    else:
+        draft = _risk_draft(from_account_id="acc_other")
+    ledger._save_state(risk_execution_store["storage_path"], state)
+    before = _financial_state(risk_execution_store)
+    assert _risk_execution_result(risk_execution_store, "ex_eligibility", draft) == reason
+    assert _financial_state(risk_execution_store) == before
+
+
+@pytest.mark.parametrize(
+    "amount,workers,allowed,reason",
+    [
+        ("5000.00", 6, 4, "daily_limit_exceeded"),
+        ("100.00", 8, 5, "velocity_exceeded"),
+    ],
+)
+def test_enforcement_concurrent_daily_and_velocity_limits_are_atomic(
+    risk_execution_store: dict[str, Path],
+    amount: str,
+    workers: int,
+    allowed: int,
+    reason: str,
+) -> None:
+    barrier = Barrier(workers)
+
+    def transfer(index: int) -> str:
+        barrier.wait(timeout=10)
+        return _risk_execution_result(
+            risk_execution_store, f"ex_racing_{index}", _risk_draft(amount)
+        )
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        outcomes = list(pool.map(transfer, range(workers)))
+    assert outcomes.count("executed") == allowed
+    assert outcomes.count(reason) == workers - allowed
+    state = _ledger_state(risk_execution_store)
+    assert len(state["transactions"]) == len(state["executions"]) == allowed
+    assert Decimal(_ledger_balance(risk_execution_store, "acc_5678")) == (
+        Decimal("65000.00") - Decimal(amount) * allowed
+    )
+    assert audit.read_events(100, storage_path=risk_execution_store["audit_path"]).chain_valid
+
+
+def test_enforcement_daily_limit_is_shared_across_customer_accounts(
+    risk_execution_store: dict[str, Path],
+) -> None:
+    for index in range(4):
+        ledger.execute_batch(_risk_draft("4000.00"), f"ex_current_{index}", **risk_execution_store)
+    ledger.execute_batch(
+        _ledger_draft(_ledger_action(amount="3000.00")), "ex_savings", **risk_execution_store
+    )
+    before = _financial_state(risk_execution_store)
+    assert (
+        _risk_execution_result(risk_execution_store, "ex_over_daily", _risk_draft("1000.01"))
+        == "daily_limit_exceeded"
+    )
+    assert _financial_state(risk_execution_store) == before
+    assert _ledger_balance(risk_execution_store) == "200.00"
+
+
+def test_enforcement_midnight_reset_uses_backend_singapore_time(
+    risk_execution_store: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    before_midnight = datetime.fromisoformat("2026-10-14T23:30:00+08:00")
+    _bank_clock(monkeypatch, before_midnight)
+    for index in range(4):
+        ledger.execute_batch(
+            _risk_draft("5000.00"), f"ex_yesterday_{index}", **risk_execution_store
+        )
+    _bank_clock(monkeypatch, datetime.fromisoformat("2026-10-14T16:00:00+00:00"))
+    ledger.execute_batch(_risk_draft("5000.00"), "ex_today", **risk_execution_store)
+    assert (
+        _risk_execution_result(risk_execution_store, "ex_hour_full", _risk_draft("1.00"))
+        == "velocity_exceeded"
+    )
+    _bank_clock(monkeypatch, datetime.fromisoformat("2026-10-15T01:00:00+08:00"))
+    ledger.execute_batch(_risk_draft("5000.00"), "ex_next_hour", **risk_execution_store)
+    assert len(_ledger_state(risk_execution_store)["transactions"]) == 6
+
+
+def test_enforcement_exact_retries_survive_pause_and_missing_policy_without_new_usage(
+    risk_execution_store: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    draft = _risk_draft()
+    first = ledger.execute_batch(draft, "ex_once_with_risk", **risk_execution_store)
+    ledger.set_payment_pause(True, operation_id="op_stop", **risk_execution_store)
+    before = _financial_state(risk_execution_store)
+    monkeypatch.setattr(rules, "execution_policy", lambda: None)
+    assert ledger.execute_batch(draft, "ex_once_with_risk", **risk_execution_store) == first
+    assert _financial_state(risk_execution_store) == before
+    assert _risk_execution_result(risk_execution_store, "ex_new_paused", draft) == "payments_paused"
+    assert (
+        _risk_execution_result(risk_execution_store, "ex_once_with_risk", _risk_draft("101.00"))
+        == "execution_conflict"
+    )
+    assert len(_ledger_state(risk_execution_store)["transactions"]) == 1
+
+
+def test_enforcement_committed_retries_do_not_exhaust_velocity(
+    risk_execution_store: dict[str, Path],
+) -> None:
+    for index in range(5):
+        response = ledger.execute_batch(_risk_draft(), f"ex_slot_{index}", **risk_execution_store)
+        for _ in range(3):
+            assert (
+                ledger.execute_batch(_risk_draft(), f"ex_slot_{index}", **risk_execution_store)
+                == response
+            )
+    assert (
+        _risk_execution_result(risk_execution_store, "ex_sixth", _risk_draft())
+        == "velocity_exceeded"
+    )
+    assert len(_ledger_state(risk_execution_store)["transactions"]) == 5
+
+
+def test_enforcement_repeat_blocked_decision_reuses_audit_evidence(
+    risk_execution_store: dict[str, Path],
+) -> None:
+    for _ in range(3):
+        assert (
+            _risk_execution_result(risk_execution_store, "ex_step_up", _risk_draft("8000.00"))
+            == "step_up_required"
+        )
+    events = audit.read_events(100, storage_path=risk_execution_store["audit_path"]).entries
+    assert sum(e.event == "step_up_required" for e in events) == 1
+    assert _ledger_state(risk_execution_store)["transactions"] == []
+
+
+def test_enforcement_real_transfer_updates_account_api_and_forecast(
+    risk_execution_store: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        readonly, "_ledger_path", lambda path: path or risk_execution_store["storage_path"]
+    )
+    before = _runtime_forecast()
+    ledger.execute_batch(_ledger_draft(), "ex_risk_api", **risk_execution_store)
+    response = TestClient(app).get("/api/accounts?user_id=u_demo")
+    assert response.status_code == 200
+    assert response.json()["accounts"][0]["balance"] == "3100.00"
+    assert (
+        _runtime_forecast()["projected_balance_after"]
+        == f"{Decimal(before['projected_balance_after']) - Decimal('100.00'):.2f}"
+    )
+    unchanged = response.json(), _runtime_forecast()
+    assert (
+        _risk_execution_result(
+            risk_execution_store, "ex_risk_bill", _ledger_draft(_ledger_action("bill_payment"))
+        )
+        == "policy_unsupported"
+    )
+    assert (
+        TestClient(app).get("/api/accounts?user_id=u_demo").json(),
+        _runtime_forecast(),
+    ) == unchanged
+    assert "payment_control" not in response.text and "security_events" not in response.text
+
+
+def test_payment_pause_operator_retry_does_not_reverse_later_control(
+    risk_execution_store: dict[str, Path],
+) -> None:
+    ledger.set_payment_pause(True, operation_id="op_stop", **risk_execution_store)
+    ledger.set_payment_pause(False, operation_id="op_restart", **risk_execution_store)
+    ledger.set_payment_pause(True, operation_id="op_stop", **risk_execution_store)
+    assert _ledger_state(risk_execution_store)["payment_control"]["paused"] is False
+    with pytest.raises(ledger.LedgerRejected, match="control_operation_conflict"):
+        ledger.set_payment_pause(False, operation_id="op_stop", **risk_execution_store)
+    assert _ledger_state(risk_execution_store)["payment_control"]["paused"] is False
+    events = audit.read_events(100, storage_path=risk_execution_store["audit_path"]).entries
+    assert sum(e.event == "kill_switch_activated" for e in events) == 1
+    assert sum(e.event == "kill_switch_deactivated" for e in events) == 2
+
+
+@pytest.mark.parametrize(
+    "paused,operation", [("false", "op_x"), (0, "op_x"), (False, "bad"), (True, None)]
+)
+def test_payment_pause_invalid_operator_inputs_cannot_write(
+    ledger_paths: dict[str, Path],
+    paused: Any,
+    operation: Any,
+) -> None:
+    with pytest.raises(ledger.LedgerRejected, match="invalid_operator_control"):
+        ledger.set_payment_pause(paused, operation_id=operation, **ledger_paths)
+    assert not ledger_paths["storage_path"].exists()
+
+
+@pytest.mark.parametrize("first", ["execution", "pause"])
+def test_payment_pause_racing_with_execution_uses_same_lock(
+    risk_execution_store: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    first: str,
+) -> None:
+    entered, release, competing = Event(), Event(), Event()
+    if first == "execution":
+        stage = ledger._stage
+
+        def held_stage(*args: Any, **kwargs: Any) -> Any:
+            entered.set()
+            assert release.wait(timeout=10)
+            return stage(*args, **kwargs)
+
+        monkeypatch.setattr(ledger, "_stage", held_stage)
+    else:
+        save = ledger._save_state
+
+        def held_save(path: Path, state: dict[str, Any]) -> None:
+            if state["payment_control"]["paused"]:
+                entered.set()
+                assert release.wait(timeout=10)
+            save(path, state)
+
+        monkeypatch.setattr(ledger, "_save_state", held_save)
+
+    def execute() -> str:
+        if first == "pause":
+            competing.set()
+        return _risk_execution_result(risk_execution_store, "ex_pause_race", _risk_draft())
+
+    def pause() -> None:
+        if first == "execution":
+            competing.set()
+        ledger.set_payment_pause(True, operation_id="op_racing_stop", **risk_execution_store)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        initial = pool.submit(execute if first == "execution" else pause)
+        assert entered.wait(timeout=10)
+        following = pool.submit(pause if first == "execution" else execute)
+        assert competing.wait(timeout=10)
+        release.set()
+        outcome = (
+            initial.result(timeout=10) if first == "execution" else following.result(timeout=10)
+        )
+        (following if first == "execution" else initial).result(timeout=10)
+    assert outcome == ("executed" if first == "execution" else "payments_paused")
+    state = _ledger_state(risk_execution_store)
+    assert state["payment_control"]["paused"] is True
+    assert len(state["transactions"]) == (1 if first == "execution" else 0)
+    assert (
+        _risk_execution_result(risk_execution_store, "ex_after_pause", _risk_draft())
+        == "payments_paused"
+    )
+
+
+def test_payment_pause_existing_state_migration_preserves_committed_money(
+    risk_execution_store: dict[str, Path],
+) -> None:
+    ledger.execute_batch(_risk_draft(), "ex_before_migration", **risk_execution_store)
+    financial = _financial_state(risk_execution_store)
+    state = _ledger_state(risk_execution_store)
+    # Model an older J-08 snapshot: keep only its transaction audit evidence.
+    state.pop("payment_control")
+    state.pop("security_events")
+    ledger._save_state(risk_execution_store["storage_path"], state)
+    before_read = risk_execution_store["storage_path"].read_bytes()
+    assert readonly.get_ledger_snapshot("u_demo", storage_path=risk_execution_store["storage_path"])
+    assert risk_execution_store["storage_path"].read_bytes() == before_read
+    assert (
+        _risk_execution_result(risk_execution_store, "ex_legacy_denied", _risk_draft())
+        == "payments_paused"
+    )
+    assert _financial_state(risk_execution_store) == financial
+    ledger.set_payment_pause(True, operation_id="op_migrate_paused", **risk_execution_store)
+    assert _ledger_state(risk_execution_store)["payment_control"] == {"paused": True}
+    ledger.set_payment_pause(False, operation_id="op_migrate_enable", **risk_execution_store)
+    assert _financial_state(risk_execution_store) == financial
+    ledger.execute_batch(_risk_draft(), "ex_after_migration", **risk_execution_store)
+    assert len(_ledger_state(risk_execution_store)["transactions"]) == 2
+
+
+@pytest.mark.parametrize(
+    "control",
+    [
+        None,
+        {},
+        {"paused": None},
+        {"paused": "false"},
+        {"paused": 0},
+        {"paused": False, "skip": True},
+    ],
+)
+def test_payment_pause_corrupt_controls_never_reset_or_allow_execution(
+    risk_execution_store: dict[str, Path],
+    control: Any,
+) -> None:
+    state = _ledger_state(risk_execution_store)
+    state["payment_control"] = control
+    ledger._save_state(risk_execution_store["storage_path"], state)
+    before = risk_execution_store["storage_path"].read_bytes()
+    with pytest.raises(readonly.LedgerStorageError):
+        ledger.execute_batch(_risk_draft(), "ex_corrupt_control", **risk_execution_store)
+    with pytest.raises(readonly.LedgerStorageError):
+        ledger.set_payment_pause(False, operation_id="op_corrupt_resume", **risk_execution_store)
+    assert risk_execution_store["storage_path"].read_bytes() == before
+
+
+def test_payment_pause_missing_control_with_previous_resume_still_defaults_paused(
+    risk_execution_store: dict[str, Path],
+) -> None:
+    state = _ledger_state(risk_execution_store)
+    state.pop("payment_control")
+    ledger._save_state(risk_execution_store["storage_path"], state)
+    assert (
+        _risk_execution_result(risk_execution_store, "ex_missing_control", _risk_draft())
+        == "payments_paused"
+    )
+    assert _ledger_state(risk_execution_store)["transactions"] == []
+
+
+@pytest.mark.parametrize("action", ["pause", "risk", "execution"])
+def test_enforcement_audit_delivery_failure_is_durable_and_recoverable(
+    risk_execution_store: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+) -> None:
+    financial = _financial_state(risk_execution_store)
+
+    def unavailable(*args: Any, **kwargs: Any) -> Any:
+        raise audit.AuditError("Unavailable")
+
+    def perform() -> Any:
+        if action == "pause":
+            return ledger.set_payment_pause(
+                True, operation_id="op_audit_stop", **risk_execution_store
+            )
+        return ledger.execute_batch(
+            _risk_draft("8000.00" if action == "risk" else "100.00"),
+            "ex_audit_recover",
+            **risk_execution_store,
+        )
+
+    with monkeypatch.context() as patch:
+        patch.setattr(audit, "append_event", unavailable)
+        with pytest.raises(ledger.LedgerAuditPending):
+            perform()
+        state = _ledger_state(risk_execution_store)
+        assert len(state["outbox"]) == 1
+        before = _financial_state(risk_execution_store)
+        with pytest.raises(ledger.LedgerAuditPending):
+            ledger.execute_batch(_risk_draft(), "ex_no_audit_bypass", **risk_execution_store)
+        assert _financial_state(risk_execution_store) == before
+    if action == "risk":
+        with pytest.raises(ledger.LedgerRiskRejected, match="step_up_required"):
+            perform()
+    else:
+        perform()
+    state = _ledger_state(risk_execution_store)
+    assert state["outbox"] == []
+    if action == "execution":
+        assert len(state["transactions"]) == 1
+        assert _ledger_balance(risk_execution_store, "acc_5678") == "64900.00"
+    else:
+        assert _financial_state(risk_execution_store) == financial
+    log = audit.read_events(100, storage_path=risk_execution_store["audit_path"])
+    assert log.chain_valid
+    assert len(log.entries) == 2
+
+
+def test_payment_pause_can_activate_during_audit_corruption_but_resume_cannot(
+    risk_execution_store: dict[str, Path],
+) -> None:
+    risk_execution_store["audit_path"].write_text("corrupted\n")
+    with pytest.raises(ledger.LedgerAuditPending):
+        ledger.set_payment_pause(True, operation_id="op_emergency", **risk_execution_store)
+    assert _ledger_state(risk_execution_store)["payment_control"]["paused"] is True
+    with pytest.raises(ledger.LedgerAuditPending):
+        ledger.set_payment_pause(False, operation_id="op_unsafe_resume", **risk_execution_store)
+    assert _ledger_state(risk_execution_store)["transactions"] == []
+
+
+@pytest.mark.parametrize("action", ["pause", "risk", "execution"])
+def test_enforcement_crash_after_audit_before_ack_reuses_logical_event(
+    risk_execution_store: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+) -> None:
+    save = ledger._save_state
+
+    def fail_ack(path: Path, state: dict[str, Any]) -> None:
+        if not state["outbox"]:
+            raise readonly.LedgerStorageError("Simulated crash before acknowledgement")
+        save(path, state)
+
+    def perform() -> Any:
+        if action == "pause":
+            return ledger.set_payment_pause(
+                True, operation_id="op_ack_stop", **risk_execution_store
+            )
+        return ledger.execute_batch(
+            _risk_draft("8000.00" if action == "risk" else "100.00"),
+            "ex_ack_recover",
+            **risk_execution_store,
+        )
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ledger, "_save_state", fail_ack)
+        with pytest.raises(readonly.LedgerStorageError):
+            perform()
+    evidence = risk_execution_store["audit_path"].read_bytes()
+    assert len(_ledger_state(risk_execution_store)["outbox"]) == 1
+    if action == "risk":
+        with pytest.raises(ledger.LedgerRiskRejected):
+            perform()
+    else:
+        perform()
+    assert risk_execution_store["audit_path"].read_bytes() == evidence
+    assert _ledger_state(risk_execution_store)["outbox"] == []
+    assert len(_ledger_state(risk_execution_store)["transactions"]) == (
+        1 if action == "execution" else 0
+    )
+
+
+@pytest.mark.parametrize("action", ["pause", "risk", "execution"])
+def test_enforcement_write_failure_before_replace_preserves_financial_state(
+    risk_execution_store: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+) -> None:
+    before = risk_execution_store["storage_path"].read_bytes()
+
+    def fail_replace(*args: Any, **kwargs: Any) -> None:
+        raise OSError("Disk unavailable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ledger.os, "replace", fail_replace)
+        with pytest.raises(readonly.LedgerStorageError):
+            if action == "pause":
+                ledger.set_payment_pause(
+                    True, operation_id="op_failed_stop", **risk_execution_store
+                )
+            else:
+                ledger.execute_batch(
+                    _risk_draft("8000.00" if action == "risk" else "100.00"),
+                    "ex_failed_replace",
+                    **risk_execution_store,
+                )
+    assert risk_execution_store["storage_path"].read_bytes() == before
+    assert _ledger_state(risk_execution_store)["transactions"] == []
+
+
+def test_enforcement_controls_have_no_public_or_ai_access_and_no_bypass_arguments() -> None:
+    import inspect
+
+    from app.bank import router
+
+    assert "set_payment_pause" not in vars(router)
+    assert "ledger" not in vars(router)
+    assert not any("pause" in route.path for route in router.router.routes)
+    arguments = inspect.signature(ledger.execute_batch).parameters
+    assert set(arguments) == {"draft", "execution_id", "storage_path", "audit_path"}
+    assert set(inspect.signature(rules.execution_policy).parameters) == set()
+
+
+def test_enforcement_audits_exclude_sensitive_inputs(
+    risk_execution_store: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def no_network(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("No network or AI allowed in risk enforcement")
+
+    monkeypatch.setattr(socket, "socket", no_network)
+    draft = _risk_draft("8000.00").model_copy(
+        update={"transcript": "OTP secret 999123 sensitive fictional instruction"}
+    )
+    assert (
+        _risk_execution_result(risk_execution_store, "ex_private_risk", draft) == "step_up_required"
+    )
+    text = risk_execution_store["audit_path"].read_text()
+    for forbidden in ("999123", "sensitive fictional", "8000", "u_demo", "acc_5678", "John Doe"):
+        assert forbidden not in text
+    assert "step_up_required" in text
+
+
+_RISK_BACKEND_PROCESS = """
+import json, sys
+from pathlib import Path
+from app.bank import ledger, rules
+from app.contracts import Draft
+# Approved fictional fixtures for this test process only, never client policy inputs.
+policy = rules.TransferPolicy.model_validate(json.loads(sys.argv[1]))
+rules.execution_policy = lambda: policy
+paths = dict(storage_path=Path(sys.argv[4]), audit_path=Path(sys.argv[5]))
+draft = Draft.model_validate(json.loads(sys.argv[2]))
+identifier = sys.argv[3]
+"""
+
+
+@pytest.mark.parametrize(
+    "amount,reason", [("5000.00", "daily_limit_exceeded"), ("100.00", "velocity_exceeded")]
+)
+def test_enforcement_processes_cannot_bypass_committed_daily_or_velocity_limits(
+    risk_execution_store: dict[str, Path],
+    risk_policy: rules.TransferPolicy,
+    amount: str,
+    reason: str,
+) -> None:
+    for index in range(3 if amount == "5000.00" else 4):
+        ledger.execute_batch(_risk_draft(amount), f"ex_prefill_{index}", **risk_execution_store)
+    script = (
+        _RISK_BACKEND_PROCESS
+        + """
+sys.stdin.read(1)
+try:
+    ledger.execute_batch(draft, identifier, **paths)
+    sys.stdout.write("executed")
+except ledger.LedgerRiskRejected as error:
+    sys.stdout.write(error.reason)
+"""
+    )
+    processes = [
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                script,
+                risk_policy.model_dump_json(),
+                _risk_draft(amount).model_dump_json(),
+                f"ex_process_risk_{index}",
+                str(risk_execution_store["storage_path"]),
+                str(risk_execution_store["audit_path"]),
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for index in range(2)
+    ]
+    try:
+        for process in processes:
+            process.stdin.write("x")
+            process.stdin.flush()
+        results = [process.communicate(timeout=20) for process in processes]
+        assert all(process.returncode == 0 for process in processes), results
+        assert sorted(output for output, _ in results) == sorted(["executed", reason])
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+    assert len(_ledger_state(risk_execution_store)["transactions"]) == (
+        4 if amount == "5000.00" else 5
+    )
+
+
+@pytest.mark.parametrize(
+    "action,crash",
+    [
+        ("execution", "replace"),
+        ("execution", "ack"),
+        ("pause", "replace"),
+        ("pause", "ack"),
+        ("risk", "ack"),
+    ],
+)
+def test_enforcement_real_process_crash_recovers_without_second_debit_or_event(
+    risk_execution_store: dict[str, Path],
+    risk_policy: rules.TransferPolicy,
+    action: str,
+    crash: str,
+) -> None:
+    script = (
+        _RISK_BACKEND_PROCESS
+        + """
+import os
+if sys.argv[7] == "replace":
+    ledger._sync_directory = lambda path: os._exit(76)
+else:
+    save = ledger._save_state
+    def crash_ack(path, state):
+        if not state["outbox"]:
+            os._exit(76)
+        save(path, state)
+    ledger._save_state = crash_ack
+if sys.argv[6] == "pause":
+    ledger.set_payment_pause(True, operation_id="op_real_crash_pause", **paths)
+else:
+    ledger.execute_batch(draft, identifier, **paths)
+"""
+    )
+    draft = _risk_draft("8000.00" if action == "risk" else "100.00")
+    process = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            risk_policy.model_dump_json(),
+            draft.model_dump_json(),
+            "ex_real_risk_crash",
+            str(risk_execution_store["storage_path"]),
+            str(risk_execution_store["audit_path"]),
+            action,
+            crash,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert process.returncode == 76, process.stderr
+    financial = _financial_state(risk_execution_store)
+    evidence = risk_execution_store["audit_path"].read_bytes()
+    assert len(_ledger_state(risk_execution_store)["outbox"]) == 1
+    if action == "pause":
+        assert _ledger_state(risk_execution_store)["payment_control"]["paused"] is True
+        ledger.set_payment_pause(True, operation_id="op_real_crash_pause", **risk_execution_store)
+    elif action == "risk":
+        with pytest.raises(ledger.LedgerRiskRejected, match="step_up_required"):
+            ledger.execute_batch(draft, "ex_real_risk_crash", **risk_execution_store)
+    else:
+        ledger.execute_batch(draft, "ex_real_risk_crash", **risk_execution_store)
+    if crash == "ack":
+        assert risk_execution_store["audit_path"].read_bytes() == evidence
+    assert _financial_state(risk_execution_store) == financial
+    state = _ledger_state(risk_execution_store)
+    assert state["outbox"] == []
+    assert len(state["transactions"]) == (1 if action == "execution" else 0)
+    log = audit.read_events(100, storage_path=risk_execution_store["audit_path"])
+    assert len(log.entries) == 2 and log.chain_valid
+
+
+def test_payment_pause_concurrent_operator_retries_and_risk_retries_reuse_evidence(
+    risk_execution_store: dict[str, Path],
+) -> None:
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(
+            pool.map(
+                lambda _: ledger.set_payment_pause(
+                    True, operation_id="op_concurrent_stop", **risk_execution_store
+                ),
+                range(8),
+            )
+        )
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        outcomes = list(
+            pool.map(
+                lambda _: _risk_execution_result(
+                    risk_execution_store, "ex_concurrent_denied", _risk_draft()
+                ),
+                range(8),
+            )
+        )
+    assert outcomes == ["payments_paused"] * 8
+    events = audit.read_events(100, storage_path=risk_execution_store["audit_path"]).entries
+    assert [e.event for e in events] == [
+        "kill_switch_deactivated",
+        "kill_switch_activated",
+        "risk_rejected",
+    ]
+    assert _ledger_state(risk_execution_store)["transactions"] == []
+
+
+@pytest.mark.parametrize(
+    "corruption", ["reason", "sensitive", "duplicate", "unknown_event", "missing_ack"]
+)
+def test_enforcement_security_storage_and_acknowledgement_corruption_fails_closed(
+    risk_execution_store: dict[str, Path],
+    corruption: str,
+) -> None:
+    state = _ledger_state(risk_execution_store)
+    if corruption == "missing_ack":
+        risk_execution_store["audit_path"].write_text("")
+    else:
+        event = state["security_events"][0]
+        if corruption == "reason":
+            event["data"]["reason"] = "unsafe customer transcript"
+        elif corruption == "sensitive":
+            event["data"]["otp"] = "secret"
+        elif corruption == "duplicate":
+            state["security_events"].append(copy.deepcopy(event))
+        else:
+            event["event"] = "unknown_control"
+        ledger._save_state(risk_execution_store["storage_path"], state)
+    original = risk_execution_store["storage_path"].read_bytes()
+    with pytest.raises(
+        ledger.LedgerAuditPending if corruption == "missing_ack" else readonly.LedgerStorageError
+    ):
+        ledger.execute_batch(_risk_draft(), "ex_corrupt_security", **risk_execution_store)
+    assert risk_execution_store["storage_path"].read_bytes() == original
+
+
+def test_payment_pause_failed_resume_delivery_blocks_new_commits_until_recovered(
+    risk_execution_store: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger.set_payment_pause(True, operation_id="op_before_resume", **risk_execution_store)
+
+    def unavailable(*args: Any, **kwargs: Any) -> Any:
+        raise audit.AuditError("Unavailable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(audit, "append_event", unavailable)
+        with pytest.raises(ledger.LedgerAuditPending):
+            ledger.set_payment_pause(
+                False, operation_id="op_pending_resume", **risk_execution_store
+            )
+        assert _ledger_state(risk_execution_store)["payment_control"]["paused"] is False
+        with pytest.raises(ledger.LedgerAuditPending):
+            ledger.execute_batch(_risk_draft(), "ex_no_pending_bypass", **risk_execution_store)
+        assert _ledger_state(risk_execution_store)["transactions"] == []
+    ledger.set_payment_pause(False, operation_id="op_pending_resume", **risk_execution_store)
+    ledger.execute_batch(_risk_draft(), "ex_after_pending_resume", **risk_execution_store)
+    assert len(_ledger_state(risk_execution_store)["transactions"]) == 1
+
+
+def test_enforcement_no_optional_otp_or_client_policy_can_enter_execution(
+    risk_execution_store: dict[str, Path],
+    risk_policy: rules.TransferPolicy,
+) -> None:
+    before = _financial_state(risk_execution_store)
+    for arguments in (
+        {"verified": True},
+        {"otp": "123456"},
+        {"policy": risk_policy},
+        {"skip_risk": True},
+    ):
+        with pytest.raises(TypeError):
+            ledger.execute_batch(
+                _risk_draft("8000.00"), "ex_no_override", **arguments, **risk_execution_store
+            )
+    assert _financial_state(risk_execution_store) == before
