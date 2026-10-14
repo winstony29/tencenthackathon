@@ -31,11 +31,13 @@ http://127.0.0.1:8000/docs for the API.
 | set | Live Jev: the real intent engine reads requests and composes the screen |
 | empty | Contract stubs (CONTRACTS §7): every request gets the same example replies |
 
-Accounts, payees and prices come from `data/bank.json`. Validation, challenge and execute
-are still stubs, so "Transfer now" stops at "The bank's confirmation has expired" and no
-money moves. Voice uses the ASR stub; type requests instead. The first "Transfer now"
-pins that browser's device key in `var/devices.json`; delete the file to use another
-browser.
+Set `AUDIT_EVIDENCE_KEY` and `AUDIT_ADMIN_TOKEN` too (see "Audit evidence" below):
+without them every audited endpoint answers 503.
+
+Accounts, payees and prices come from `data/bank.json`. Validation and the bank challenge
+are real; execute is not built yet and fails closed, so no money moves. Voice uses the ASR
+stub; type requests instead. The first "Transfer now" pins that browser's device key in
+`var/devices.json`; delete the file to use another browser.
 
 To work on the front end with live reload, run `npm run dev` in `web/` alongside the
 server and open http://127.0.0.1:3000/v5/ instead.
@@ -168,3 +170,25 @@ print(json.dumps(response.json(), indent=2))
 Add `session_id` to filter a conversation. The output contains sensitive banking context;
 do not paste it publicly. Records survive server/session restarts in ignored
 `var/evidence.sqlite3`. Retention, trust boundaries and limitations are in CONTRACTS v0.8.
+
+### Deploy publicly
+
+The server is a single-process demo. Before giving judges a public URL:
+
+1. **HTTPS only.** Browsers disable the WebCrypto signing V5 needs on plain `http://`. Put
+   it behind EdgeOne or a load balancer with a certificate, and add HSTS there.
+2. **Secrets** in the host's secret store, never in the image: `MAKERS_MODELS_KEY`,
+   `AUDIT_EVIDENCE_KEY`, `AUDIT_ADMIN_TOKEN`, `VALIDATION_RECEIPT_KEY`, `MASK_KEY`.
+3. **Validator:** `VALIDATOR_PROVIDER=compatible-api` with its own `LLM_BASE_URL`,
+   `LLM_API_KEY` and `VALIDATOR_MODEL`. Never sign a personal Codex account in on a server:
+   anonymous visitors would spend its quota.
+4. **`API_DOCS=0`** hides `/docs` and `/openapi.json`.
+5. **Real client IPs for rate limits:** run `uvicorn app.main:app --proxy-headers
+   --forwarded-allow-ips=<proxy address>`; otherwise every visitor shares one limit.
+6. **Build with `npm ci`** so the front end uses the locked dependency versions.
+7. **Device keys:** the first browser to sign owns `u_demo` until `var/devices.json` is
+   deleted. Pre-register the demo device, or keep the server private until Jayanth adds an
+   enrollment code.
+
+Limits (`app/config.py`): 256 KB JSON bodies, 2 MB audio, 40 model calls per IP per minute
+(120 for `/api/preview`), 600 a minute in total. They live in memory, so run one worker.

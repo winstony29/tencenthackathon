@@ -382,3 +382,10 @@ not its displayed wording/options. Store those when Winston asks so later checks
 Validation: 342 backend tests passed (6 skipped), 33 frontend tests and 9 browser scenarios
 passed; production build and lint passed. Live checks confirmed persisted evidence across
 restart with unchanged chain hash, protected access, and V5 balance presentation reports.
+
+## D-038 · Security pass before a public demo
+2026-10-14 · Winston · Status: decided (Winston's and shared files); notes sent for the rest
+**Decision:** Three read-only reviews (money path, AI surface, web surface) found the core intact (no money moves; drafts, receipts and masking hold) but the surroundings open to anonymous abuse. Fixed in Winston's and shared files: a request guard (security headers, 256 KB/2 MB body caps, per-IP and global limits on model-backed endpoints, `API_DOCS`), ID checks and oldest-first eviction before session state, owner-only session drops, the §8 intent audit events, a slimmer validator snapshot (balances only for accounts the draft uses, plus which spoken number each amount came from), an evidence store that keeps constant write cost, caps item and total size, keys its chain with an HMAC and is owner-only, and a Codex adapter with every remaining tool switched off.
+**Why:** The judges grade the safety design, and the demo will be on a public URL: one curl loop could fill the disk, burn the shared Jev key or lock every judge out.
+**Left to owners:** device enrollment (first registrant owns `u_demo`), one live nonce per approval and consuming it at execute, signature verification and OTP, deterministic checks in the validator so its verdict doesn't rest on the model alone, challenge lifetime (2 min vs 5 in §3.3), an upper bound on `GET /api/audit`.
+**Rejected:** Authentication for the demo (one shared demo user; out of scope before the core money path works); a CSP without `'unsafe-inline'` (the Next.js export inlines its bootstrap scripts).
