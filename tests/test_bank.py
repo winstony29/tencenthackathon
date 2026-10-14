@@ -7,6 +7,7 @@ Contract: docs/CONTRACTS.md §3.3 and §4
 
 import ast
 import base64
+import copy
 import hashlib
 import importlib
 import json
@@ -27,7 +28,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app import audit
-from app.bank import devices, ledger, readonly
+from app.bank import devices, ledger, readonly, rules
 from app.contracts import (
     Account,
     AccountsResponse,
@@ -2858,3 +2859,880 @@ def test_integration_invalid_runtime_schedule_is_not_zero_expenses(
     integrated_views["storage_path"].write_text(json.dumps(state) + "\n")
     with pytest.raises(readonly.ForecastDataError, match="unavailable"):
         _runtime_forecast()
+
+
+@pytest.fixture
+def risk_policy() -> rules.TransferPolicy:
+    """Proposed fictional values for tests only; these configure no live flow."""
+    return rules.TransferPolicy(
+        currency="SGD",
+        per_transfer_max="20000.00",
+        daily_transfer_max="20000.00",
+        step_up_above="5000.00",
+        velocity_max_transfers=5,
+        velocity_window_minutes=60,
+        daily_timezone="Asia/Singapore",
+    )
+
+
+@pytest.fixture
+def risk_state(ledger_store: dict[str, Path]) -> dict[str, Any]:
+    """A detached, explicitly initialised J-08 snapshot; no evaluator writes occur."""
+    return _ledger_state(ledger_store)
+
+
+@pytest.fixture
+def risk_now() -> datetime:
+    return datetime.fromisoformat("2026-10-14T12:00:00+08:00")
+
+
+def _risk_draft(amount: str = "100.00", **changes: Any) -> Draft:
+    return _ledger_draft(
+        _ledger_action(
+            **{
+                "amount": amount,
+                "from_account_id": "acc_5678",
+                "from_account_label": "Current …5678",
+                **changes,
+            },
+        )
+    )
+
+
+def _risk_history(
+    state: dict[str, Any],
+    *,
+    amount: str,
+    completed_at: datetime,
+    account_id: str = "acc_5678",
+    user_id: str = "u_demo",
+    execution_id: str | None = None,
+    draft: Draft | None = None,
+) -> Draft:
+    """Build committed test evidence in the actual J-08 record/cache format."""
+    user = state["users"][user_id]
+    account = next(a for a in user["accounts"] if a["account_id"] == account_id)
+    draft = draft or _ledger_draft(
+        _ledger_action(
+            from_account_id=account_id,
+            from_account_label=account["label"],
+            amount=amount,
+            currency=account["currency"],
+        ),
+        user_id=user_id,
+    )
+    reference = f"tx_{len(state['transactions']) + 1:08d}"
+    identifier = execution_id or f"ex_history_{len(state['executions']) + 1}"
+    payload = json.dumps(
+        draft.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    event = {
+        "event": "transaction_executed",
+        "data": {
+            "transaction_id": "tx_" + hashlib.sha256(identifier.encode()).hexdigest(),
+            "count": 1,
+        },
+    }
+    state["transactions"].append(
+        {
+            "reference": reference,
+            "execution_id": identifier,
+            "user_id": user_id,
+            "action_index": 0,
+            "completed_at": completed_at.isoformat(),
+            "action": draft.actions[0].model_dump(mode="json"),
+            "execution_details": {},
+        }
+    )
+    state["executions"][identifier] = {
+        "fingerprint": hashlib.sha256(payload.encode()).hexdigest(),
+        "audit_events": [event],
+        "response": {
+            "status": "executed",
+            "results": [{"action_index": 0, "reference": reference}],
+        },
+    }
+    state["next_reference"] += 1
+    return draft
+
+
+def _risk_evaluate(
+    policy: rules.TransferPolicy | None,
+    state: dict[str, Any],
+    now: datetime,
+    amount: str = "100.00",
+    *,
+    draft: Draft | None = None,
+    execution_id: str = "ex_candidate",
+) -> rules.RiskDecision:
+    return rules.evaluate_risk(
+        draft or _risk_draft(amount), policy=policy, state=state, now=now, execution_id=execution_id
+    )
+
+
+@pytest.mark.parametrize(
+    "amount,status,reason",
+    [
+        ("0.00", "reject", "invalid_amount"),
+        ("0.01", "allow", "allowed"),
+        ("4999.99", "allow", "allowed"),
+        ("5000.00", "allow", "allowed"),
+        ("5000.01", "needs_extra_check", "step_up_required"),
+        ("8000.00", "needs_extra_check", "step_up_required"),
+        ("20000.00", "needs_extra_check", "step_up_required"),
+        ("20000.01", "reject", "per_transfer_limit_exceeded"),
+        ("50000.00", "reject", "per_transfer_limit_exceeded"),
+    ],
+)
+def test_risk_transfer_and_step_up_threshold_boundaries(
+    amount: str,
+    status: str,
+    reason: str,
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    assert _risk_evaluate(risk_policy, risk_state, risk_now, amount).model_dump() == {
+        "status": status,
+        "reason": reason,
+    }
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "currency",
+        "per_transfer_max",
+        "daily_transfer_max",
+        "step_up_above",
+        "velocity_max_transfers",
+        "velocity_window_minutes",
+        "daily_timezone",
+    ],
+)
+def test_risk_policy_requires_every_field(field: str, risk_policy: rules.TransferPolicy) -> None:
+    data = risk_policy.model_dump(mode="python")
+    data.pop(field)
+    with pytest.raises(ValidationError):
+        rules.TransferPolicy.model_validate(data)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("per_transfer_max", 20000.00),
+        ("per_transfer_max", "0.00"),
+        ("daily_transfer_max", "-1.00"),
+        ("step_up_above", "NaN"),
+        ("step_up_above", "Infinity"),
+        ("step_up_above", "5000.001"),
+        ("step_up_above", "20000.00"),
+        ("daily_transfer_max", "19999.99"),
+        ("velocity_max_transfers", True),
+        ("velocity_max_transfers", "5"),
+        ("velocity_max_transfers", 0),
+        ("velocity_window_minutes", 60.0),
+        ("velocity_window_minutes", -1),
+        ("velocity_window_minutes", 10**30),
+        ("currency", "USD"),
+        ("daily_timezone", "UTC"),
+        ("verified", True),
+    ],
+)
+def test_risk_policy_rejects_invalid_configuration(
+    field: str,
+    value: Any,
+    risk_policy: rules.TransferPolicy,
+) -> None:
+    with pytest.raises(ValidationError):
+        rules.TransferPolicy.model_validate({**risk_policy.model_dump(mode="python"), field: value})
+
+
+def test_risk_missing_or_forged_policy_fails_closed(
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    assert _risk_evaluate(None, risk_state, risk_now).reason == "policy_missing"
+    for policy in (
+        {},
+        False,
+        risk_policy.model_copy(update={"per_transfer_max": Decimal("-1.00")}),
+        risk_policy.model_copy(update={"velocity_max_transfers": True}),
+    ):
+        result = _risk_evaluate(policy, risk_state, risk_now)
+        assert result.status == "reject" and result.reason == "policy_invalid"
+
+
+@pytest.mark.parametrize("amount,status", [("100.00", "allow"), ("100.01", "reject")])
+def test_risk_daily_totals_cross_accounts_with_exact_cent_boundary(
+    amount: str,
+    status: str,
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    _risk_history(
+        risk_state,
+        amount="3000.00",
+        account_id="acc_1234",
+        completed_at=risk_now - timedelta(hours=3),
+    )
+    _risk_history(risk_state, amount="16900.00", completed_at=risk_now - timedelta(hours=2))
+    result = _risk_evaluate(risk_policy, risk_state, risk_now, amount)
+    assert result.status == status
+    assert result.reason == ("allowed" if status == "allow" else "daily_limit_exceeded")
+
+
+def test_risk_daily_hard_limit_precedes_step_up(
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    _risk_history(risk_state, amount="15000.00", completed_at=risk_now - timedelta(hours=2))
+    assert (
+        _risk_evaluate(risk_policy, risk_state, risk_now, "8000.00").reason
+        == "daily_limit_exceeded"
+    )
+
+
+@pytest.mark.parametrize("count,status", [(4, "allow"), (5, "reject"), (6, "reject")])
+def test_risk_velocity_counts_successful_transfers_per_customer(
+    count: int,
+    status: str,
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    for index in range(count):
+        _risk_history(
+            risk_state,
+            amount="1.00",
+            account_id="acc_1234" if index % 2 else "acc_5678",
+            completed_at=risk_now - timedelta(minutes=index),
+        )
+    decision = _risk_evaluate(risk_policy, risk_state, risk_now)
+    assert decision.status == status
+    assert decision.reason == ("allowed" if status == "allow" else "velocity_exceeded")
+
+
+@pytest.mark.parametrize(
+    "age,status",
+    [
+        (timedelta(minutes=60), "allow"),
+        (timedelta(minutes=60) - timedelta(microseconds=1), "reject"),
+        (timedelta(0), "reject"),
+    ],
+)
+def test_risk_rolling_hour_boundaries(
+    age: timedelta,
+    status: str,
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    for _ in range(5):
+        _risk_history(risk_state, amount="1.00", completed_at=risk_now - age)
+    assert _risk_evaluate(risk_policy, risk_state, risk_now).status == status
+
+
+def test_risk_velocity_uses_elapsed_time_across_dst_offsets(
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+) -> None:
+    from zoneinfo import ZoneInfo
+
+    now = datetime(2026, 11, 1, 1, 30, tzinfo=ZoneInfo("America/New_York"), fold=1)
+    completed = datetime.fromisoformat("2026-11-01T01:15:00-05:00")
+    for _ in range(5):
+        _risk_history(risk_state, amount="1.00", completed_at=completed)
+    assert _risk_evaluate(risk_policy, risk_state, now).reason == "velocity_exceeded"
+
+
+def test_risk_daily_reset_uses_midnight_singapore_even_with_utc_input(
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+) -> None:
+    midnight = datetime.fromisoformat("2026-10-14T16:00:00+00:00")
+    _risk_history(risk_state, amount="20000.00", completed_at=midnight - timedelta(microseconds=1))
+    before = _risk_evaluate(risk_policy, risk_state, midnight - timedelta(microseconds=1))
+    assert before.reason == "daily_limit_exceeded"
+    assert _risk_evaluate(risk_policy, risk_state, midnight).status == "allow"
+    _risk_history(risk_state, amount="20000.00", completed_at=midnight)
+    assert _risk_evaluate(risk_policy, risk_state, midnight).reason == "daily_limit_exceeded"
+
+
+def test_risk_velocity_does_not_reset_at_midnight(
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+) -> None:
+    midnight = datetime.fromisoformat("2026-10-15T00:00:00+08:00")
+    for index in range(5):
+        _risk_history(
+            risk_state, amount="1.00", completed_at=midnight - timedelta(minutes=index + 1)
+        )
+    assert _risk_evaluate(risk_policy, risk_state, midnight).reason == "velocity_exceeded"
+
+
+def test_risk_ignores_client_draft_time_and_descriptive_seed_history(
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    draft = _risk_draft().model_copy(
+        update={"created_at": datetime.fromisoformat("2000-01-01T00:00:00+00:00")}
+    )
+    assert _risk_evaluate(risk_policy, risk_state, risk_now, draft=draft).status == "allow"
+    _risk_history(risk_state, amount="20000.00", completed_at=risk_now - timedelta(hours=2))
+    assert (
+        _risk_evaluate(risk_policy, risk_state, risk_now, draft=draft).reason
+        == "daily_limit_exceeded"
+    )
+
+
+def test_risk_does_not_charge_another_customers_history(
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    other = copy.deepcopy(risk_state["users"]["u_demo"])
+    other["user_id"] = "u_other"
+    identifiers = {a["account_id"]: "acc_other_" + a["account_id"] for a in other["accounts"]}
+    for account in other["accounts"]:
+        account["account_id"] = identifiers[account["account_id"]]
+    for holding in other["holdings"]:
+        holding["account_id"] = identifiers[holding["account_id"]]
+    risk_state["users"]["u_other"] = other
+    for _ in range(5):
+        _risk_history(
+            risk_state,
+            amount="20000.00",
+            user_id="u_other",
+            account_id="acc_other_acc_5678",
+            completed_at=risk_now,
+        )
+    assert _risk_evaluate(risk_policy, risk_state, risk_now).status == "allow"
+    foreign = _risk_draft(from_account_id="acc_other_acc_5678")
+    assert (
+        _risk_evaluate(risk_policy, risk_state, risk_now, draft=foreign).reason
+        == "account_not_owned"
+    )
+
+
+def test_risk_keeps_currency_totals_separate_but_counts_customer_transfer_frequency(
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    # A fictional historical USD current account; no live USD policy is enabled.
+    risk_state["users"]["u_demo"]["accounts"].append(
+        {
+            "account_id": "acc_usd_history",
+            "label": "Fictional USD current",
+            "type": "current",
+            "currency": "USD",
+            "balance": "30000.00",
+            "status": "active",
+        }
+    )
+    for _ in range(5):
+        _risk_history(
+            risk_state,
+            amount="20000.00",
+            account_id="acc_usd_history",
+            completed_at=risk_now - timedelta(hours=2),
+        )
+    assert _risk_evaluate(risk_policy, risk_state, risk_now).status == "allow"
+    for _ in range(5):
+        _risk_history(
+            risk_state, amount="1.00", account_id="acc_usd_history", completed_at=risk_now
+        )
+    assert _risk_evaluate(risk_policy, risk_state, risk_now).reason == "velocity_exceeded"
+
+
+@pytest.mark.parametrize(
+    "kyc", [None, {}, {"status": "incomplete"}, {"status": "pending"}, {"status": True}, "complete"]
+)
+def test_risk_invalid_or_missing_kyc_rejects(
+    kyc: Any, risk_policy: rules.TransferPolicy, risk_state: dict[str, Any], risk_now: datetime
+) -> None:
+    risk_state["users"]["u_demo"]["kyc"] = kyc
+    assert _risk_evaluate(risk_policy, risk_state, risk_now).reason == "kyc_incomplete"
+
+
+@pytest.mark.parametrize("status", [None, "inactive", "frozen", "closed", True])
+def test_risk_inactive_or_missing_account_status_rejects(
+    status: Any, risk_policy: rules.TransferPolicy, risk_state: dict[str, Any], risk_now: datetime
+) -> None:
+    risk_state["users"]["u_demo"]["accounts"][1]["status"] = status
+    assert _risk_evaluate(risk_policy, risk_state, risk_now).reason == "account_inactive"
+
+
+def test_risk_account_ownership_type_currency_and_label_checks(
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    assert (
+        _risk_evaluate(
+            risk_policy, risk_state, risk_now, draft=_risk_draft(from_account_id="acc_foreign")
+        ).reason
+        == "account_not_owned"
+    )
+    for field, value, reason in (
+        ("type", "investment", "account_type_invalid"),
+        ("currency", "USD", "currency_mismatch"),
+        ("label", "Wrong label", "account_label_mismatch"),
+    ):
+        changed = copy.deepcopy(risk_state)
+        changed["users"]["u_demo"]["accounts"][1][field] = value
+        assert _risk_evaluate(risk_policy, changed, risk_now).reason == reason
+    assert (
+        _risk_evaluate(
+            risk_policy,
+            risk_state,
+            risk_now,
+            draft=_risk_draft().model_copy(update={"user_id": "u_unknown"}),
+        ).reason
+        == "unknown_user"
+    )
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        _ledger_action("bill_payment"),
+        _ledger_action("stock_order"),
+        _ledger_action("fx_conversion"),
+        _ledger_action(currency="USD"),
+        _ledger_action(currency="EUR"),
+    ],
+)
+def test_risk_unsupported_policies_fail_closed(
+    action: dict[str, Any],
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    assert _risk_evaluate(
+        risk_policy, risk_state, risk_now, draft=_ledger_draft(action)
+    ).model_dump() == {"status": "reject", "reason": "policy_unsupported"}
+
+
+def test_risk_mixed_batch_cannot_silently_exempt_unsupported_action(
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    draft = _ledger_draft(_ledger_action(), _ledger_action("bill_payment"))
+    assert (
+        _risk_evaluate(risk_policy, risk_state, risk_now, draft=draft).reason
+        == "policy_unsupported"
+    )
+
+
+@pytest.mark.parametrize("collection", ["users", "transactions", "executions", "outbox"])
+def test_risk_missing_required_state_fails_closed(
+    collection: str,
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    risk_state.pop(collection)
+    assert _risk_evaluate(risk_policy, risk_state, risk_now).reason == "state_invalid"
+
+
+@pytest.mark.parametrize(
+    "collection,value",
+    [
+        ("users", []),
+        ("transactions", None),
+        ("transactions", {}),
+        ("executions", []),
+        ("outbox", None),
+    ],
+)
+def test_risk_invalid_required_state_fails_closed(
+    collection: str,
+    value: Any,
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    risk_state[collection] = value
+    assert _risk_evaluate(risk_policy, risk_state, risk_now).reason == "state_invalid"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("completed_at", "not a time"),
+        ("completed_at", "2026-10-14T11:00:00"),
+        ("execution_id", "ex_uncommitted"),
+        ("reference", "tx_forged"),
+        ("status", "pending"),
+    ],
+)
+def test_risk_invalid_or_uncommitted_history_is_not_treated_as_zero_usage(
+    field: str,
+    value: Any,
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    _risk_history(risk_state, amount="100.00", completed_at=risk_now)
+    risk_state["transactions"][0][field] = value
+    assert _risk_evaluate(risk_policy, risk_state, risk_now).reason == "state_invalid"
+
+
+@pytest.mark.parametrize("amount", ["-1.00", "NaN", 1.00, "1.001", "0.00"])
+def test_risk_invalid_committed_money_fails_closed(
+    amount: Any, risk_policy: rules.TransferPolicy, risk_state: dict[str, Any], risk_now: datetime
+) -> None:
+    _risk_history(risk_state, amount="100.00", completed_at=risk_now)
+    risk_state["transactions"][0]["action"]["amount"] = amount
+    assert _risk_evaluate(risk_policy, risk_state, risk_now).reason == "state_invalid"
+
+
+@pytest.mark.parametrize("now", [None, "2026-10-14T12:00:00+08:00", datetime(2026, 10, 14), True])
+def test_risk_requires_aware_backend_datetime(
+    now: Any, risk_policy: rules.TransferPolicy, risk_state: dict[str, Any]
+) -> None:
+    assert _risk_evaluate(risk_policy, risk_state, now).reason == "clock_invalid"
+
+
+def test_risk_future_commits_or_clock_regression_fail_closed(
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    _risk_history(risk_state, amount="100.00", completed_at=risk_now + timedelta(microseconds=1))
+    assert _risk_evaluate(risk_policy, risk_state, risk_now).reason == "clock_invalid"
+
+
+def test_risk_identical_retry_returns_already_committed_without_new_usage(
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    for _ in range(4):
+        _risk_history(risk_state, amount="4000.00", completed_at=risk_now)
+    draft = _risk_history(
+        risk_state, amount="4000.00", completed_at=risk_now, execution_id="ex_repeat"
+    )
+    before = copy.deepcopy(risk_state)
+    for _ in range(3):
+        assert _risk_evaluate(
+            risk_policy, risk_state, risk_now, draft=draft, execution_id="ex_repeat"
+        ).model_dump() == {"status": "allow", "reason": "already_committed"}
+    assert risk_state == before
+    assert _risk_evaluate(risk_policy, risk_state, risk_now).reason == "daily_limit_exceeded"
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [{"amount": "101.00"}, {"to_payee_id": "pay_8892", "to_payee_label": "John Smith …8892"}],
+)
+def test_risk_execution_identity_conflicts_bind_complete_draft(
+    changes: dict[str, Any],
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    _risk_history(risk_state, amount="100.00", completed_at=risk_now, execution_id="ex_original")
+    assert (
+        _risk_evaluate(
+            risk_policy,
+            risk_state,
+            risk_now,
+            draft=_risk_draft(**changes),
+            execution_id="ex_original",
+        ).reason
+        == "execution_conflict"
+    )
+
+
+def test_risk_precision_remains_exact_with_low_decimal_context(
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    _risk_history(risk_state, amount="19999.99", completed_at=risk_now - timedelta(hours=2))
+    with localcontext() as context:
+        context.prec = 3
+        assert _risk_evaluate(risk_policy, risk_state, risk_now, "0.01").status == "allow"
+        assert (
+            _risk_evaluate(risk_policy, risk_state, risk_now, "0.02").reason
+            == "daily_limit_exceeded"
+        )
+
+
+def test_risk_inputs_cannot_supply_otp_verification_or_bypass_flags(
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    for field, value in (("otp", "fictional-code"), ("verified", True), ("skip_risk", True)):
+        with pytest.raises(TypeError):
+            rules.evaluate_risk(
+                _risk_draft("50000.00"),
+                execution_id="ex_no_bypass",
+                policy=risk_policy,
+                state=risk_state,
+                now=risk_now,
+                **{field: value},
+            )
+    assert (
+        _risk_evaluate(risk_policy, risk_state, risk_now, "50000.00").reason
+        == "per_transfer_limit_exceeded"
+    )
+    for _ in range(3):
+        assert (
+            _risk_evaluate(risk_policy, risk_state, risk_now, "8000.00").status
+            == "needs_extra_check"
+        )
+
+
+def test_risk_revalidates_mutated_drafts_and_execution_ids(
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    draft = _risk_draft()
+    draft.actions[0].amount = 1.5
+    assert _risk_evaluate(risk_policy, risk_state, risk_now, draft=draft).reason == "draft_invalid"
+    for identifier in ("", "ex_", "unsafe", None):
+        assert (
+            _risk_evaluate(risk_policy, risk_state, risk_now, execution_id=identifier).reason
+            == "draft_invalid"
+        )
+
+
+def test_risk_evaluation_never_mutates_snapshots_or_persistent_data(
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+    ledger_store: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    before = copy.deepcopy(risk_state)
+    storage = {
+        p.name: p.read_bytes() for p in ledger_store["storage_path"].parent.iterdir() if p.is_file()
+    }
+
+    def forbidden(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("Risk evaluation cannot read files, write, execute or contact models")
+
+    monkeypatch.setattr(ledger, "execute_batch", forbidden)
+    monkeypatch.setattr(ledger, "reconcile_audit", forbidden)
+    monkeypatch.setattr(audit, "append_event", forbidden)
+    monkeypatch.setattr(readonly, "_load_database", forbidden)
+    monkeypatch.setattr(readonly, "get_ledger_snapshot", forbidden)
+    monkeypatch.setattr(Path, "read_text", forbidden)
+    monkeypatch.setattr(ledger.os, "replace", forbidden)
+    monkeypatch.setattr(ledger.os, "fsync", forbidden)
+    monkeypatch.setattr(socket, "socket", forbidden)
+    for amount in ("100.00", "8000.00", "50000.00"):
+        assert set(_risk_evaluate(risk_policy, risk_state, risk_now, amount).model_dump()) == {
+            "status",
+            "reason",
+        }
+    assert risk_state == before
+    assert {
+        p.name: p.read_bytes() for p in ledger_store["storage_path"].parent.iterdir() if p.is_file()
+    } == storage
+
+
+def test_risk_decisions_expose_only_controlled_internal_codes(
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    draft = _risk_draft().model_copy(
+        update={"transcript": "Fictional private instruction OTP-secret"}
+    )
+    result = _risk_evaluate(risk_policy, risk_state, risk_now, draft=draft)
+    assert result.model_dump() == {"status": "allow", "reason": "allowed"}
+    assert "OTP-secret" not in result.model_dump_json()
+    with pytest.raises(ValidationError):
+        result.status = "reject"
+
+
+def test_risk_module_has_no_execution_or_ai_imports() -> None:
+    source = Path(rules.__file__).read_text()
+    imports = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            imports.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            imports.extend((node.module or "") + "." + alias.name for alias in node.names)
+    assert not any(
+        name.startswith(
+            (
+                "app.bank.ledger",
+                "app.bank.gateway",
+                "app.intent",
+                "app.validation",
+                "app.llm",
+                "httpx",
+            )
+        )
+        for name in imports
+    )
+
+
+def test_risk_uses_explicit_configuration_instead_of_hardcoded_limits(
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    policy = rules.TransferPolicy.model_validate(
+        {
+            **risk_policy.model_dump(mode="python"),
+            "per_transfer_max": "10000.00",
+            "daily_transfer_max": "30000.00",
+            "step_up_above": "1000.00",
+            "velocity_max_transfers": 2,
+            "velocity_window_minutes": 15,
+        }
+    )
+    _risk_history(risk_state, amount="1.00", completed_at=risk_now - timedelta(minutes=20))
+    _risk_history(risk_state, amount="1.00", completed_at=risk_now - timedelta(minutes=1))
+    assert _risk_evaluate(policy, risk_state, risk_now, "1000.00").status == "allow"
+    assert _risk_evaluate(policy, risk_state, risk_now, "1000.01").reason == "step_up_required"
+    assert (
+        _risk_evaluate(policy, risk_state, risk_now, "10000.01").reason
+        == "per_transfer_limit_exceeded"
+    )
+    _risk_history(risk_state, amount="1.00", completed_at=risk_now)
+    assert _risk_evaluate(policy, risk_state, risk_now).reason == "velocity_exceeded"
+
+
+def test_risk_evaluator_accepts_actual_committed_j08_records_and_retry_fingerprint(
+    risk_policy: rules.TransferPolicy,
+    ledger_store: dict[str, Path],
+) -> None:
+    draft = _risk_draft()
+    ledger.execute_batch(draft, "ex_real_risk_record", **ledger_store)
+    state = _ledger_state(ledger_store)
+    now = datetime.fromisoformat(state["transactions"][0]["completed_at"]) + timedelta(seconds=1)
+    assert (
+        _risk_evaluate(
+            risk_policy, state, now, draft=draft, execution_id="ex_real_risk_record"
+        ).reason
+        == "already_committed"
+    )
+    assert _risk_evaluate(risk_policy, state, now).status == "allow"
+    assert _ledger_balance(ledger_store, "acc_5678") == "64900.00"
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"transcript": "Changed instruction"},
+        {"session_id": "s_other_session"},
+        {"created_at": datetime.fromisoformat("2000-01-01T00:00:00+00:00")},
+    ],
+)
+def test_risk_retry_binds_transcript_session_and_created_at(
+    changes: dict[str, Any],
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    original = _risk_history(
+        risk_state, amount="100.00", completed_at=risk_now, execution_id="ex_bound"
+    )
+    assert (
+        _risk_evaluate(
+            risk_policy,
+            risk_state,
+            risk_now,
+            draft=original.model_copy(update=changes),
+            execution_id="ex_bound",
+        ).reason
+        == "execution_conflict"
+    )
+
+
+def test_risk_inconsistent_retry_cache_cannot_claim_another_financial_payload(
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    original = _risk_history(
+        risk_state, amount="100.00", completed_at=risk_now, execution_id="ex_cache"
+    )
+    risk_state["transactions"][0]["action"]["amount"] = "101.00"
+    assert (
+        _risk_evaluate(
+            risk_policy, risk_state, risk_now, draft=original, execution_id="ex_cache"
+        ).reason
+        == "state_invalid"
+    )
+
+
+def test_risk_duplicate_financial_records_fail_closed_instead_of_distorting_counters(
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    _risk_history(risk_state, amount="100.00", completed_at=risk_now)
+    risk_state["transactions"].append(copy.deepcopy(risk_state["transactions"][0]))
+    assert _risk_evaluate(risk_policy, risk_state, risk_now).reason == "state_invalid"
+
+
+def test_risk_missing_account_collections_and_kyc_fail_closed(
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    risk_state["users"]["u_demo"].pop("kyc")
+    assert _risk_evaluate(risk_policy, risk_state, risk_now).reason == "kyc_incomplete"
+    risk_state["users"]["u_demo"].pop("accounts")
+    assert _risk_evaluate(risk_policy, risk_state, risk_now).reason == "state_invalid"
+
+
+def test_risk_changed_eligibility_does_not_turn_committed_retry_into_new_usage(
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    draft = _risk_history(
+        risk_state, amount="100.00", completed_at=risk_now, execution_id="ex_done"
+    )
+    risk_state["users"]["u_demo"]["kyc"]["status"] = "incomplete"
+    before = copy.deepcopy(risk_state)
+    assert (
+        _risk_evaluate(
+            risk_policy, risk_state, risk_now, draft=draft, execution_id="ex_done"
+        ).reason
+        == "already_committed"
+    )
+    assert _risk_evaluate(risk_policy, risk_state, risk_now).reason == "kyc_incomplete"
+    assert risk_state == before
+
+
+def test_risk_needs_a_new_snapshot_to_observe_a_later_commit(
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    # Phase 1 cannot make snapshot-based decisions atomic. Phase 2 owns the lock.
+    _risk_history(risk_state, amount="15000.00", completed_at=risk_now - timedelta(hours=2))
+    assert _risk_evaluate(risk_policy, risk_state, risk_now, "5000.00").status == "allow"
+    updated = copy.deepcopy(risk_state)
+    _risk_history(updated, amount="5000.00", completed_at=risk_now)
+    assert _risk_evaluate(risk_policy, updated, risk_now).reason == "daily_limit_exceeded"
+
+
+def test_risk_datetime_underflow_is_rejected_without_an_exception(
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+) -> None:
+    now = datetime.fromisoformat("0001-01-01T00:00:00+00:00")
+    assert _risk_evaluate(risk_policy, risk_state, now).reason == "clock_invalid"
