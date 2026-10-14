@@ -63,7 +63,9 @@ VALIDATOR_TIMEOUT_SECONDS = 45 if VALIDATOR_PROVIDER == "codex" else 12
 AUDIT_EVIDENCE_KEY = os.getenv("AUDIT_EVIDENCE_KEY", "")
 AUDIT_ADMIN_TOKEN = os.getenv("AUDIT_ADMIN_TOKEN", "")
 AUDIT_RETENTION_DAYS = int(os.getenv("AUDIT_RETENTION_DAYS", "7"))
-AUDIT_MAX_BYTES = 2_000_000  # Bound each JSON request/response and evidence item.
+AUDIT_MAX_BYTES = 2_000_000  # Bound each JSON request/response the audit middleware reads.
+EVIDENCE_MAX_ITEM_BYTES = 64_000  # larger evidence keeps only its size and SHA-256
+EVIDENCE_MAX_STORE_BYTES = 500_000_000  # past this, new events keep metadata only
 AUDIT_EVIDENCE_PATH = os.getenv("AUDIT_EVIDENCE_PATH", "")  # Blank uses var/evidence.sqlite3.
 
 # Request guard (app/main.py): limits for an anonymous public demo. Starting values.

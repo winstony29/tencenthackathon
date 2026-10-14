@@ -1,6 +1,8 @@
 """Persistent evidence, confidentiality, integrity and reconstruction tests."""
 
+import hashlib
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -191,3 +193,38 @@ def test_premature_evidence_deletion_is_not_labelled_expired():
         db.execute("UPDATE events SET payload=NULL")
     with pytest.raises(AuditError):
         evidence.timeline(None, 10, False)
+
+
+def test_oversized_evidence_keeps_only_its_size_and_hash(monkeypatch):
+    monkeypatch.setattr(config, "EVIDENCE_MAX_ITEM_BYTES", 100)
+    evidence.record("big", {"input": "x" * 5000})
+    (entry,) = evidence.timeline(None, 10, True)["entries"]
+    assert entry["evidence"]["oversized"] is True and entry["evidence"]["bytes"] > 5000
+
+
+def test_a_full_store_keeps_metadata_and_stays_verifiable(monkeypatch):
+    monkeypatch.setattr(config, "EVIDENCE_MAX_STORE_BYTES", 0)
+    evidence.record("first", {"important": "evidence"})
+    result = evidence.timeline(None, 10, True)
+    assert result["chain_valid"] and result["entries"][0]["evidence_state"] == "capacity"
+
+
+def test_history_cannot_be_rewritten_without_the_key():
+    evidence.record("first", {"amount": "50.00"})
+    evidence.record("second", {"amount": "60.00"})
+    with sqlite3.connect(config.AUDIT_EVIDENCE_PATH) as db:
+        (text,) = db.execute("SELECT metadata FROM events WHERE position=0").fetchone()
+        meta = json.loads(text)
+        meta["event"] = "rewritten"
+        forged = evidence.encoded(meta)
+        db.execute(
+            "UPDATE events SET metadata=?, hash=? WHERE position=0",
+            (forged.decode(), hashlib.sha256(forged).hexdigest()),
+        )
+    with pytest.raises(AuditError):
+        evidence.timeline(None, 10, False)
+
+
+def test_the_store_is_owner_only():
+    evidence.record("first", {"x": 1})
+    assert os.stat(config.AUDIT_EVIDENCE_PATH).st_mode & 0o777 == 0o600

@@ -5,7 +5,9 @@ Contract: docs/CONTRACTS.md, audit evidence extension
 """
 
 import hashlib
+import hmac
 import json
+import os
 import re
 import sqlite3
 import time
@@ -56,6 +58,12 @@ def sha(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def _link(meta: dict) -> str:
+    """Keyed chain hash: rewriting history needs the evidence key, not just file access."""
+    key = hashlib.sha256(b"dcta-evidence-chain:" + config.AUDIT_EVIDENCE_KEY.encode()).digest()
+    return hmac.new(key, encoded(meta), hashlib.sha256).hexdigest()
+
+
 def _cipher() -> Fernet:
     try:
         return Fernet(config.AUDIT_EVIDENCE_KEY.encode())
@@ -70,8 +78,9 @@ def _connect():
         if config.AUDIT_EVIDENCE_PATH
         else (Path(__file__).resolve().parents[1] / "var" / "evidence.sqlite3")
     )
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     db = sqlite3.connect(path, timeout=10)
+    os.chmod(path, 0o600)  # transcripts and bank snapshots, even encrypted, are owner-only
     db.execute("PRAGMA synchronous=FULL")
     db.execute("PRAGMA secure_delete=ON")
     db.execute("""CREATE TABLE IF NOT EXISTS events (
@@ -84,24 +93,48 @@ def _connect():
         db.close()
 
 
+def _check(meta: dict, digest: str, position: int, previous: str, empty: bool, expires: float):
+    if (
+        meta["position"] != position
+        or meta["expires_at"] != expires
+        or meta["previous_hash"] != previous
+        # Evidence may be absent only after expiry, or when capacity dropped it on write.
+        or (empty and expires > time.time() and not meta.get("dropped"))
+        or not hmac.compare_digest(_link(meta), digest)
+    ):
+        raise AuditError("Evidence timeline integrity check failed.")
+
+
 def _verified(db):
+    """Check the whole chain; reads metadata only, never the encrypted payloads."""
     previous = "0" * 64
-    rows = db.execute("SELECT position,metadata,hash,payload,expires FROM events ORDER BY position")
+    rows = db.execute(
+        "SELECT position,metadata,hash,payload IS NULL,expires FROM events ORDER BY position"
+    )
     result = []
-    for position, text, digest, payload, expires in rows:
+    for position, text, digest, empty, expires in rows:
         meta = json.loads(text)
-        if (
-            position != len(result)
-            or meta["position"] != position
-            or meta["expires_at"] != expires
-            or meta["previous_hash"] != previous
-            or (payload is None and expires > time.time())
-            or sha(encoded(meta)) != digest
-        ):
+        if position != len(result):
             raise AuditError("Evidence timeline integrity check failed.")
+        _check(meta, digest, position, previous, empty, expires)
         previous = digest
-        result.append((meta, digest, payload, expires))
+        result.append((meta, digest, not empty, expires))
     return result
+
+
+def _last(db) -> tuple[int, str]:
+    """Check only the newest link before appending; the full chain is checked on reads and
+    hourly (purge_expired), so a write costs the same however large the store grows."""
+    row = db.execute(
+        "SELECT position,metadata,hash,payload IS NULL,expires FROM events "
+        "ORDER BY position DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return 0, "0" * 64
+    position, text, digest, empty, expires = row
+    meta = json.loads(text)
+    _check(meta, digest, position, meta["previous_hash"], empty, expires)
+    return position + 1, digest
 
 
 def record(event: str, payload: dict, **links) -> str:
@@ -109,8 +142,9 @@ def record(event: str, payload: dict, **links) -> str:
     try:
         cipher = _cipher()
         body = encoded(clean(payload))
-        if len(body) > config.AUDIT_MAX_BYTES:
-            raise AuditError("Audit evidence exceeds the size limit.")
+        if len(body) > config.EVIDENCE_MAX_ITEM_BYTES:
+            # Keep proof of what arrived without letting one request store megabytes.
+            body = encoded({"oversized": True, "bytes": len(body), "sha256": sha(body)})
         binding = {**(context.get() or {}), **links}
         # Store caller-provided identifiers only inside encrypted evidence if malformed.
         binding = {
@@ -123,29 +157,33 @@ def record(event: str, payload: dict, **links) -> str:
         identifier = "ev_" + uuid.uuid4().hex
         with _connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            rows = _verified(db)
+            position, previous = _last(db)
             now = time.time()
-            db.execute(
-                "UPDATE events SET payload=NULL WHERE expires<=? AND payload IS NOT NULL", (now,)
-            )
             expires = now + max(1, config.AUDIT_RETENTION_DAYS) * 86400
+            (size,) = db.execute(
+                "SELECT page_count*page_size FROM pragma_page_count(), pragma_page_size()"
+            ).fetchone()
+            full = size > config.EVIDENCE_MAX_STORE_BYTES
             meta = {
-                "position": len(rows),
+                "position": position,
                 "event_id": identifier,
                 "event": event,
                 "time": now,
                 "expires_at": expires,
                 **binding,
                 "evidence_digest": sha(body),
-                "previous_hash": rows[-1][1] if rows else "0" * 64,
+                "previous_hash": previous,
+                # ponytail: past the cap only metadata is kept; raise the cap or ship evidence
+                # to object storage if a real deployment needs every payload.
+                **({"dropped": "capacity"} if full else {}),
             }
             db.execute(
                 "INSERT INTO events VALUES (?,?,?,?,?)",
                 (
-                    len(rows),
+                    position,
                     encoded(meta).decode(),
-                    sha(encoded(meta)),
-                    cipher.encrypt(body),
+                    _link(meta),
+                    None if full else cipher.encrypt(body),
                     expires,
                 ),
             )
@@ -166,13 +204,13 @@ def timeline(session_id: str | None, limit: int, include_evidence: bool) -> dict
                 r for r in rows if session_id is None or r[0].get("session_id") == session_id
             ]
             entries = []
-            for meta, digest, blob, _ in selected[-limit:]:
-                item = {
-                    **meta,
-                    "hash": digest,
-                    "evidence_state": "expired" if blob is None else "retained",
-                }
-                if blob is not None and include_evidence:
+            for meta, digest, retained, _ in selected[-limit:]:
+                state = "retained" if retained else meta.get("dropped") or "expired"
+                item = {**meta, "hash": digest, "evidence_state": state}
+                if retained and include_evidence:
+                    (blob,) = db.execute(
+                        "SELECT payload FROM events WHERE position=?", (meta["position"],)
+                    ).fetchone()
                     body = _cipher().decrypt(blob)
                     if sha(body) != meta["evidence_digest"]:
                         raise AuditError("Evidence digest mismatch.")
