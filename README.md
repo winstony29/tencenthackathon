@@ -147,6 +147,7 @@ never commit them or regenerate on every startup. For a fresh setup:
 from cryptography.fernet import Fernet
 from dotenv import find_dotenv, set_key
 import secrets
+
 path = find_dotenv(usecwd=True)
 # Only run for a NEW installation; replacing the key loses access to previous evidence.
 set_key(path, "AUDIT_EVIDENCE_KEY", Fernet.generate_key().decode())
@@ -158,9 +159,12 @@ Inspect the latest protected timeline from the repository directory (Windows or 
 ```python
 import httpx, json
 from app import config
-response = httpx.get("http://127.0.0.1:8001/api/audit/timeline",
+
+response = httpx.get(
+    "http://127.0.0.1:8001/api/audit/timeline",
     params={"limit": 100, "include_evidence": "true"},
-    headers={"Authorization": "Bearer " + config.AUDIT_ADMIN_TOKEN})
+    headers={"Authorization": "Bearer " + config.AUDIT_ADMIN_TOKEN},
+)
 response.raise_for_status()
 print(json.dumps(response.json(), indent=2))
 ```
@@ -168,3 +172,62 @@ print(json.dumps(response.json(), indent=2))
 Add `session_id` to filter a conversation. The output contains sensitive banking context;
 do not paste it publicly. Records survive server/session restarts in ignored
 `var/evidence.sqlite3`. Retention, trust boundaries and limitations are in CONTRACTS v0.8.
+
+
+## Local bank execution and recovery
+
+Bank execution is opt-in. Existing prompt, JEV composition, validation and read-only
+flows remain available with `BANK_EXECUTION_ENABLED=0`. Once ledger state exists,
+reads use it even when payments are disabled; corrupt state never falls back to seeds.
+
+For a supervised localhost demo, copy the bank settings from `.env.example`, set
+`BANK_EXECUTION_ENABLED=1` and `BANK_SUPERVISED_USER=u_demo`. Keep
+`VALIDATION_RECEIPT_KEY` persistent: unpadded base64url of at least 32 random bytes.
+Keep `AUDIT_EVIDENCE_KEY` unchanged so existing evidence and approvals remain readable.
+These settings are server-owned, never request parameters. Device enrollment is still
+supervised; this configuration is not customer authentication for public deployment.
+
+The committed user's `transfer_policy` supplies provisional demo limits: SGD 25,000
+per transfer, SGD 100,000 per Singapore calendar day, additional verification above
+SGD 20,000, and 10 transfers per rolling minute. A backend `BANK_TRANSFER_POLICY`
+JSON override is optional. Only single SGD transfers have an enabled risk policy;
+other action types can still be composed/validated but cannot execute. Additional
+verification remains blocked until an actual transaction-bound verifier exists.
+
+Stop the app and back up `var/` before activation or migration. For a genuinely fresh
+installation only, initialize the bank, then enable payments:
+
+```bash
+python -m app.bank.gateway initialize --confirm-fresh-install
+python -m app.bank.gateway resume
+```
+
+Initialization refuses existing ledger state or its marker. Never delete these to
+reset an error. Existing installations must retain balances, transaction identities,
+keys and audit history. Initialization starts paused. Operator controls are local
+commands, never API endpoints:
+
+```bash
+python -m app.bank.gateway pause
+python -m app.bank.gateway reconcile
+```
+
+If a request's outcome is unknown, use **Check status**: it resubmits the original
+nonce/signature and can recover a committed result after expiry. Do not create a new
+payment to retry an uncertain one. Refreshing the page loses the browser's pending
+request; investigate the server's recorded transaction before entering a new request.
+
+The ledger commits balances, execution references and pending audit events together.
+Audit delivery updates the hash-chained JSONL log and encrypted evidence timeline;
+repeated delivery is deduplicated. An audit failure after commit never rolls back or
+repeats the debit. Encrypted evidence links session, revision, draft hash and execution
+ID; the ledger is authoritative for money movement, while a browser presentation
+report remains client-reported evidence.
+
+`var/approvals.sqlite3` encrypts current validation context and coordinates corrections
+with execution across local processes. Intent conversation state is still process-local;
+use one app worker for conversational continuity. Old approval receipts are invalidated
+by this integration. Ledger/JSONL remain plaintext; protect runtime storage and backups.
+Windows uses native byte-range locks and file flushing; macOS uses flock and directory
+fsync. Process-crash recovery is tested on Windows; sudden-power-loss durability and
+macOS runtime execution still require platform validation.

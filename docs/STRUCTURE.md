@@ -220,3 +220,9 @@ V4 financial-context additions (Darren):
 - `app/audit_http.py`: bounded HTTP audit capture and protected evidence routes.
 - `tests/test_evidence.py`: persistence, redaction, retention and request timeline tests.
 - `var/evidence.sqlite3`: ignored encrypted runtime evidence and metadata chain.
+
+
+Bank integration runtime additions (git-ignored, under existing `var/`):
+- `approvals.sqlite3`: encrypted authoritative validation context and revision lease.
+- `backups/`: operator snapshots before explicit bank activation; never committed.
+Operator initialization, pause/resume and audit recovery use `app/bank/gateway.py`.

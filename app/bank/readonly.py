@@ -5,6 +5,7 @@ Diagram box: User data
 Contract: docs/CONTRACTS.md §3.3 (GET /api/accounts, GET /api/quote, readonly functions)
 """
 
+import hashlib
 import json
 import re
 from datetime import UTC, datetime, timedelta
@@ -13,11 +14,16 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
+from pydantic import TypeAdapter
 
+from app import audit
+from app.config import MAX_ACTIONS_PER_DRAFT
 from app.contracts import (
     Account,
     AccountsResponse,
+    Action,
     Biller,
+    ExecutedResponse,
     FxResponse,
     Holding,
     Payee,
@@ -25,6 +31,255 @@ from app.contracts import (
     TransactionEntry,
     UpcomingBill,
 )
+
+
+class LedgerStorageError(RuntimeError):
+    """Runtime state is unavailable; never replace it with seed balances."""
+
+
+def _ledger_digest(state: dict[str, Any]) -> str:
+    payload = {key: value for key, value in state.items() if key != "checksum"}
+    return hashlib.sha256(
+        json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        ).encode()
+    ).hexdigest()
+
+
+def _ledger_path(storage_path: Path | None) -> Path:
+    return storage_path or Path(__file__).resolve().parents[2] / "var" / "ledger.json"
+
+
+def _validate_ledger_users(users: dict[str, Any]) -> None:
+    all_accounts = set()
+    for user_id, user in users.items():
+        if user.get("user_id") != user_id:
+            raise ValueError("Invalid runtime user")
+        collections = {
+            "accounts": (Account, "account_id"),
+            "billers": (Biller, "biller_id"),
+            "payees": (Payee, "payee_id"),
+        }
+        for group, (model, identifier) in collections.items():
+            records = user[group]
+            if not isinstance(records, list) or len({r[identifier] for r in records}) != len(
+                records
+            ):
+                raise ValueError("Invalid runtime records")
+            for record in records:
+                model.model_validate({field: record[field] for field in model.model_fields})
+                if group in {"accounts", "billers"}:
+                    _forecast_money(record["balance" if group == "accounts" else "amount_due"])
+        accounts = {record["account_id"] for record in user["accounts"]}
+        if accounts & all_accounts:
+            raise ValueError("Duplicate account ownership")
+        all_accounts.update(accounts)
+        for bill in user["billers"]:
+            if bill.get("payment_state") not in {"outstanding", "paid"} or (
+                (bill["payment_state"] == "paid") != (_forecast_money(bill["amount_due"]) == 0)
+            ):
+                raise ValueError("Invalid bill settlement")
+        holdings = set()
+        for holding in user["holdings"]:
+            key = (holding["account_id"], holding["ticker"])
+            if key in holdings or key[0] not in accounts:
+                raise ValueError("Invalid holding reference")
+            holdings.add(key)
+            if type(holding["quantity"]) is not int or holding["quantity"] < 0:
+                raise ValueError("Invalid runtime holding")
+
+
+def _validate_ledger_history(state: dict[str, Any]) -> None:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for index, transaction in enumerate(state["transactions"], start=1):
+        if transaction["reference"] != f"tx_{index:08d}":
+            raise ValueError("Invalid transaction sequence")
+        _forecast_time(transaction["completed_at"])
+        TypeAdapter(Action).validate_python(transaction["action"])
+        grouped.setdefault(transaction["execution_id"], []).append(transaction)
+    if set(grouped) != set(state["executions"]):
+        raise ValueError("Missing execution or transaction")
+    expected_events = []
+    for identifier, execution in state["executions"].items():
+        if not re.fullmatch(r"ex_[A-Za-z0-9_-]{1,80}", identifier) or not re.fullmatch(
+            r"[0-9a-f]{64}", execution["fingerprint"]
+        ):
+            raise ValueError("Invalid execution identity")
+        response = ExecutedResponse.model_validate(execution["response"])
+        records = grouped[identifier]
+        if any(
+            sum(record["action"]["type"] == kind for record in records) > 1
+            for kind in {"transfer", "bill_payment", "stock_order"}
+        ):
+            raise ValueError("Duplicate customer action types")
+        if not 1 <= len(records) <= MAX_ACTIONS_PER_DRAFT or len(response.results) != len(records):
+            raise ValueError("Invalid execution results")
+        for index, (result, record) in enumerate(zip(response.results, records, strict=True)):
+            if (
+                result.action_index != index
+                or record["action_index"] != index
+                or result.reference != record["reference"]
+                or record["user_id"] not in state["users"]
+            ):
+                raise ValueError("Invalid execution reference")
+        events = execution["audit_events"]
+        correlation = "tx_" + hashlib.sha256(identifier.encode()).hexdigest()
+        if events[0] != {
+            "event": "transaction_executed",
+            "data": {"transaction_id": correlation, "count": len(records)},
+        } or len(events) != 1 + sum(r["action"]["type"] == "fx_conversion" for r in records):
+            raise ValueError("Invalid execution audit events")
+        for event in events:
+            audit._safe_data(event["data"])
+            if event["event"] not in {"transaction_executed", "fx_converted"}:
+                raise ValueError("Invalid execution event")
+        expected_events.extend(events)
+    expected_events.extend(_validate_payment_controls(state))
+    if any(event not in expected_events for event in state["outbox"]):
+        raise ValueError("Unrecognised outbox event")
+    if len({json.dumps(event, sort_keys=True) for event in state["outbox"]}) != len(
+        state["outbox"]
+    ):
+        raise ValueError("Duplicate outbox event")
+
+
+def _validate_payment_controls(state: dict[str, Any]) -> list[dict[str, Any]]:
+    # Legacy state can lack controls: the writer treats that as paused. Reads never
+    # migrate storage, repair controls or infer permission from an earlier audit.
+    if "payment_control" in state:
+        control = state["payment_control"]
+        if (
+            not isinstance(control, dict)
+            or set(control) != {"paused"}
+            or type(control["paused"]) is not bool
+        ):
+            raise ValueError("Invalid payment control state")
+    events = state.get("security_events", [])
+    if not isinstance(events, list):
+        raise ValueError("Invalid security events")
+    identities = set()
+    for event in events:
+        if not isinstance(event, dict) or set(event) != {"event", "data"}:
+            raise ValueError("Invalid security event")
+        data = event["data"]
+        audit._safe_data(data)
+        if not re.fullmatch(r"tx_[0-9a-f]{64}", data.get("transaction_id", "")):
+            raise ValueError("Invalid security event identity")
+        if event["event"] in {"kill_switch_activated", "kill_switch_deactivated"}:
+            if set(data) != {"transaction_id", "reason"} or data["reason"] != "operator_control":
+                raise ValueError("Invalid operator event")
+        elif event["event"] in {"risk_rejected", "step_up_required"}:
+            if (
+                set(data) != {"transaction_id", "reason", "count"}
+                or data["reason"]
+                not in {
+                    "payments_paused",
+                    "policy_missing",
+                    "policy_invalid",
+                    "policy_unsupported",
+                    "state_invalid",
+                    "clock_invalid",
+                    "draft_invalid",
+                    "execution_conflict",
+                    "unknown_user",
+                    "kyc_incomplete",
+                    "account_not_owned",
+                    "account_inactive",
+                    "account_type_invalid",
+                    "account_label_mismatch",
+                    "currency_mismatch",
+                    "invalid_amount",
+                    "per_transfer_limit_exceeded",
+                    "daily_limit_exceeded",
+                    "velocity_exceeded",
+                    "step_up_required",
+                }
+                or (
+                    (event["event"] == "step_up_required") != (data["reason"] == "step_up_required")
+                )
+                or not 1 <= data["count"] <= MAX_ACTIONS_PER_DRAFT
+            ):
+                raise ValueError("Invalid risk event")
+        else:
+            raise ValueError("Unsupported security event")
+        # Control retries share an identity even when the requested direction changes.
+        identity = data["transaction_id"]
+        if identity in identities:
+            raise ValueError("Duplicate security operation")
+        identities.add(identity)
+    return events
+
+
+def _read_ledger_state(path: Path) -> dict[str, Any]:
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("Duplicate runtime key")
+            result[key] = value
+        return result
+
+    try:
+        payload = path.read_text(encoding="utf-8")
+        if not payload.endswith("\n"):
+            raise ValueError("Incomplete runtime file")
+        state = json.loads(payload, object_pairs_hook=unique_object)
+        if (
+            not isinstance(state, dict)
+            or state.get("schema_version") != "1.0"
+            or state.get("checksum") != _ledger_digest(state)
+            or not isinstance(state.get("users"), dict)
+            or not isinstance(state.get("executions"), dict)
+            or not isinstance(state.get("transactions"), list)
+            or not isinstance(state.get("outbox"), list)
+            or type(state.get("next_reference")) is not int
+            or state["next_reference"] != len(state["transactions"]) + 1
+        ):
+            raise ValueError("Invalid runtime state")
+        _validate_ledger_users(state["users"])
+        _validate_ledger_history(state)
+        return state
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, IndexError, audit.AuditError):
+        raise LedgerStorageError("Banking runtime storage is missing or invalid") from None
+
+
+def get_ledger_snapshot(user_id: str, *, storage_path: Path | None = None) -> dict[str, Any] | None:
+    """Return a detached internal user snapshot, including current bills and balances.
+
+    None means neither state nor marker exists; this cannot prove a first installation
+    rather than deletion of all evidence. Public reads fail closed in that case.
+    Atomic replacement lets readers see a complete old or new state.
+    This reader does not import the ledger or return its execution/outbox metadata.
+    """
+    path = _ledger_path(storage_path)
+    try:
+        if not path.exists() and not path.with_suffix(".lock").exists():
+            return None
+    except OSError:
+        raise LedgerStorageError("Cannot inspect banking runtime storage") from None
+    users = _read_ledger_state(path)["users"]
+    if user_id not in users:
+        raise HTTPException(status_code=404, detail="User not found.")
+    return users[user_id]
+
+
+def _current_user(user_id: str) -> dict[str, Any]:
+    from app import config
+
+    try:
+        user = get_ledger_snapshot(user_id)
+        if user is None:
+            if not config.BANK_EXECUTION_ENABLED:
+                users = _load_database()["users"]
+                if user_id not in users:
+                    raise HTTPException(404, "User not found.")
+                return users[user_id]
+            raise LedgerStorageError("No established ledger state")
+        return user
+    except (LedgerStorageError, OSError, ValueError, KeyError, TypeError):
+        raise HTTPException(
+            status_code=503, detail="Banking state unavailable; operator review required."
+        ) from None
 
 
 def _load_database() -> dict[str, Any]:
@@ -41,12 +296,10 @@ def _load_database() -> dict[str, Any]:
 def get_accounts(user_id: str) -> AccountsResponse:
     """Read a user's public banking data; unknown users raise HTTP 404.
 
-    Invalid or missing seed data raises an error without substituting demo values.
+    Committed runtime state is authoritative. Missing or invalid state fails with
+    a sanitised service-unavailable error, never substituted opening balances.
     """
-    users = _load_database()["users"]
-    if user_id not in users:
-        raise HTTPException(status_code=404, detail="User not found.")
-    user = users[user_id]
+    user = _current_user(user_id)
     # Select allowed fields before validation because contract models forbid extras.
     collections = {"accounts": Account, "payees": Payee, "billers": Biller, "holdings": Holding}
     return AccountsResponse.model_validate(
@@ -327,16 +580,19 @@ def get_cashflow_forecast(
     horizon_days: int,
     proposed_amount: Decimal,
     balance_snapshot: Account | None = None,
+    runtime_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Read the demo schedule and estimate one account's hypothetical transfer impact.
+    """Read current balances and obligations, then estimate a hypothetical deduction.
 
-    J-08 callers can supply a trusted current Account snapshot matching this account
-    and currency. No ledger import, balance mutation, history replay or AI call occurs.
+    Default reads use one committed user snapshot, including current bill states.
+    Trusted internal callers can explicitly supply snapshots for isolated calculations;
+    they are not public request fields. No initialisation, writes or AI calls occur.
     """
-    users = _load_database()["users"]
-    if user_id not in users:
-        raise HTTPException(status_code=404, detail="User not found.")
-    user = users[user_id]
+    user = _current_user(user_id) if runtime_snapshot is None else runtime_snapshot
+    if runtime_snapshot is not None:
+        if runtime_snapshot.get("user_id") != user_id:
+            raise ForecastDataError("Runtime snapshot does not match the selected user")
+        user = runtime_snapshot
     accounts = {
         record["account_id"]: Account.model_validate(
             {field: record[field] for field in Account.model_fields}

@@ -5,8 +5,7 @@
   "balance_semantics": "Balances and holdings are authoritative opening snapshots. Historical transactions are descriptive only and must not be replayed.",
   "pending_decisions": [
     "Only AAPL is explicitly required by existing references. The other four USD tickers are synthetic demo selections pending Winston confirmation.",
-    "Adding a DBS stock quote requires agreement on its ticker identifier and SGD investment funding. SGD/USD conversion uses the mock rates in fx_rates (CONTRACTS §3.3).",
-    "The SGD 50,000 demo versus the D-007 placeholder SGD 20,000 daily limit requires a separate team decision. This seed defines no risk thresholds."
+    "Adding a DBS stock quote requires agreement on its ticker identifier and SGD investment funding. SGD/USD conversion uses the mock rates in fx_rates (CONTRACTS §3.3)."
   ],
   "users": {
     "u_demo": {
@@ -332,7 +331,16 @@
           "recurrence": "monthly",
           "synthetic": true
         }
-      ]
+      ],
+      "transfer_policy": {
+        "currency": "SGD",
+        "per_transfer_max": "25000.00",
+        "daily_transfer_max": "100000.00",
+        "step_up_above": "20000.00",
+        "velocity_max_transfers": 10,
+        "velocity_window_minutes": 1,
+        "daily_timezone": "Asia/Singapore"
+      }
     }
   },
   "quotes": {

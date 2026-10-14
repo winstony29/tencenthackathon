@@ -115,7 +115,8 @@ export async function preparePayment(value: Draft, signal: AbortSignal, approved
   });
 }
 export async function submitPayment(payment: Payment, otp: string | null, signal: AbortSignal) {
-  if (Date.now() >= payment.expiresAt) throw Error("Your confirmation expired. Start a new request.");
+  // The gateway may recover an already committed payment after nonce expiry.
+  // An uncommitted expired approval is rejected server-side.
   const result = await post(
     "/execute",
     executionSchema,

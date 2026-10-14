@@ -33,7 +33,9 @@ TENCENTCLOUD_SECRET_ID = os.getenv("TENCENTCLOUD_SECRET_ID", "")  # Tencent ASR 
 TENCENTCLOUD_SECRET_KEY = os.getenv("TENCENTCLOUD_SECRET_KEY", "")  # Tencent ASR secret
 TENCENTCLOUD_REGION = os.getenv("TENCENTCLOUD_REGION", "ap-singapore")  # Tencent ASR region
 
-VALIDATION_RECEIPT_KEY = os.getenv("VALIDATION_RECEIPT_KEY", "") or secrets.token_hex(32)
+VALIDATION_RECEIPT_KEY = os.getenv("VALIDATION_RECEIPT_KEY", "") or (
+    "" if os.getenv("BANK_EXECUTION_ENABLED", "0") == "1" else secrets.token_hex(32)
+)
 
 USE_FAKES = os.getenv("USE_FAKES", "0") == "1"  # True: fake Jev / LLM / ASR instead of real calls
 
@@ -65,3 +67,10 @@ AUDIT_ADMIN_TOKEN = os.getenv("AUDIT_ADMIN_TOKEN", "")
 AUDIT_RETENTION_DAYS = int(os.getenv("AUDIT_RETENTION_DAYS", "7"))
 AUDIT_MAX_BYTES = 2_000_000  # Bound each JSON request/response and evidence item.
 AUDIT_EVIDENCE_PATH = os.getenv("AUDIT_EVIDENCE_PATH", "")  # Blank uses var/evidence.sqlite3.
+
+# Bank integration is opt-in; explicit JSON policies contain backend-owned limits.
+BANK_EXECUTION_ENABLED = os.getenv("BANK_EXECUTION_ENABLED", "0") == "1"
+BANK_SUPERVISED_USER = os.getenv("BANK_SUPERVISED_USER", "")
+BANK_GATEWAY_POLICY = os.getenv("BANK_GATEWAY_POLICY", "")
+BANK_TRANSFER_POLICY = os.getenv("BANK_TRANSFER_POLICY", "")
+TRANSACTION_STATE_PATH = os.getenv("TRANSACTION_STATE_PATH", "")

@@ -75,7 +75,7 @@ IDs: `S` setup · `W` Winston · `J` Jayanth · `D` Darren · `I` integration ·
   *Done when:* tests reject a missing receipt, bad signature, reused nonce and expired nonce, and accept a good one.
 - [ ] **J-07** · Mon · `rules.py`: per-transfer limit, daily limit, velocity, KYC, extra-check threshold with OTP (values in D-007).
   *Done when:* demo command 4 returns `needs_extra_check`, and the right OTP executes it.
-- [ ] **J-08** · Mon · `ledger.py`: apply transfers, bills and stock orders; state saved in `var/`.
+- [x] **J-08** · Mon · `ledger.py`: apply transfers, bills and stock orders; state saved in `var/`.
   *Done when:* balances and holdings change correctly, and only `gateway.py` imports `ledger.py`.
 
 ### Darren: user interface

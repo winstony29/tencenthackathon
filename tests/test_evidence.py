@@ -71,11 +71,11 @@ def test_http_failures_and_otp_redaction_are_persisted(client):
     response = client.post(
         "/api/execute", json={"nonce": "n_unknown", "signature": "sig", "otp": "987654"}
     )
-    assert response.status_code == 409
+    assert response.status_code == 503
     entries = evidence.timeline(None, 10, True)["entries"]
     assert entries[0]["request_id"] == entries[-1]["request_id"]
     assert entries[0]["evidence"]["input"]["otp"] == "[REDACTED]"
-    assert entries[-1]["evidence"]["http_status"] == 409
+    assert entries[-1]["evidence"]["http_status"] == 503
 
 
 def test_storage_failure_prevents_request_processing(client, monkeypatch):

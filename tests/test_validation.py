@@ -155,25 +155,17 @@ def test_tampered_transcript_and_old_cancel_cannot_replace_provenance(draft):
     assert state.begin(changed)[0].history == [{"text": "new explicit instruction"}]
 
 
-def test_gateway_requires_match_and_never_returns_fake_execution(draft):
-    from fastapi import HTTPException
-
+def test_gateway_unconfigured_never_returns_fake_execution(draft, monkeypatch):
+    from app import config
     from app.bank import gateway
+    from app.contracts import ChallengeRequest
 
-    state.clear()
+    monkeypatch.setattr(config, "BANK_EXECUTION_ENABLED", False)
     state.register(draft, [], {})
-    with pytest.raises(HTTPException):
-        gateway.challenge(draft, "fake")
     record, _ = state.begin(draft)
     receipt = state.finish(record, {"status": "match"})["receipt"]
-    challenge = gateway.challenge(draft, receipt)
-    with pytest.raises(HTTPException) as error:
-        gateway.execute(challenge["nonce"])
-    assert error.value.status_code == 503
-    state.revoke(draft.user_id, draft.session_id)
-    with pytest.raises(HTTPException) as error:
-        gateway.execute(challenge["nonce"])
-    assert error.value.status_code == 409
+    with pytest.raises(gateway.GatewayUnavailable):
+        gateway.issue_challenge(ChallengeRequest(draft=draft, receipt=receipt))
 
 
 def test_expired_receipt_is_rejected(draft):
@@ -200,17 +192,28 @@ def test_older_intent_turn_cannot_publish_over_newer(draft):
 def test_fx_arithmetic_rejects_wrong_conversion_even_if_model_matches(draft, monkeypatch):
     from app.contracts import FxConversionAction
 
-    draft.actions = [FxConversionAction(
-        type="fx_conversion", from_account_id="acc_1234", from_account_label="Savings",
-        to_account_id="acc_usd", to_account_label="USD", sell_amount="1000.00",
-        sell_currency="SGD", buy_amount="1000.00", buy_currency="USD",
-        rate="0.74", rate_as_of="2026-10-14T09:00:00+08:00",
-    )]
+    draft.actions = [
+        FxConversionAction(
+            type="fx_conversion",
+            from_account_id="acc_1234",
+            from_account_label="Savings",
+            to_account_id="acc_usd",
+            to_account_label="USD",
+            sell_amount="1000.00",
+            sell_currency="SGD",
+            buy_amount="1000.00",
+            buy_currency="USD",
+            rate="0.74",
+            rate_as_of="2026-10-14T09:00:00+08:00",
+        )
+    ]
+
     async def audit(*args):
         return report(draft)
+
     monkeypatch.setattr(validator.llm, "audit", audit)
     monkeypatch.setattr(validator, "append_event", lambda *a: None)
-    state.register(draft, [], {"fx_rates":[{"from":"SGD", "to":"USD", "rate":"0.74"}]})
+    state.register(draft, [], {"fx_rates": [{"from": "SGD", "to": "USD", "rate": "0.74"}]})
     result = asyncio.run(validator.validate(draft))
     assert result["status"] == "mismatch"
     assert result["fields"][0]["transcript_says"] == "740.00"

@@ -5,9 +5,8 @@ Diagram box: Mock gateway, User data, Audit log
 Contract: docs/CONTRACTS.md §3.3
 """
 
-from typing import Any
-
 from fastapi import APIRouter, HTTPException, Query
+from starlette.concurrency import run_in_threadpool
 
 from app.audit import read_events
 from app.bank import gateway
@@ -25,6 +24,7 @@ from app.contracts import (
     ExecuteResponse,
     FxResponse,
     QuoteResponse,
+    RejectedResponse,
 )
 
 router = APIRouter(prefix="/api", tags=["bank"])
@@ -32,7 +32,7 @@ router = APIRouter(prefix="/api", tags=["bank"])
 
 @router.get("/accounts", response_model=AccountsResponse)
 async def accounts(user_id: str) -> AccountsResponse:
-    """List the user's public accounts, payees, billers and holdings from the seed."""
+    """List the user's public accounts, payees, billers and holdings from committed state."""
     return get_accounts(user_id)
 
 
@@ -58,15 +58,35 @@ async def register_device(request: DeviceRegisterRequest) -> DeviceRegisterRespo
 
 
 @router.post("/challenge", response_model=ChallengeResponse)
-async def challenge(request: ChallengeRequest) -> dict[str, Any]:
-    """Issue a challenge only for the current independently audited draft."""
-    return gateway.challenge(request.draft, request.receipt)
+async def challenge(request: ChallengeRequest) -> ChallengeResponse:
+    """Issue a nonce only after receipt and current trusted-context checks pass."""
+    try:
+        return await run_in_threadpool(gateway.issue_challenge, request)
+    except gateway.GatewayRejected:
+        raise HTTPException(400, "Invalid or unavailable transaction approval.") from None
+    except gateway.GatewayUnavailable:
+        raise HTTPException(
+            503, "Transaction approval unavailable; operator review required."
+        ) from None
 
 
 @router.post("/execute", response_model=ExecuteResponse)
-async def execute(request: ExecuteRequest) -> dict[str, Any]:
-    """Fail closed until signature/risk/ledger execution is connected."""
-    return gateway.execute(request.nonce)
+async def execute(request: ExecuteRequest) -> ExecuteResponse:
+    """Execute a verified approval or recover its actual previously committed result."""
+    try:
+        return await run_in_threadpool(gateway.execute, request)
+    except gateway.GatewayRejected as error:
+        if str(error) in {"bad_signature", "unknown_nonce", "nonce_used", "nonce_expired"}:
+            return RejectedResponse(
+                status="rejected",
+                reason=str(error),
+                message="This transaction approval was rejected.",
+            )
+        raise HTTPException(400, "Invalid or unavailable transaction approval.") from None
+    except gateway.GatewayUnavailable:
+        raise HTTPException(
+            503, "Transaction outcome unavailable; operator review required."
+        ) from None
 
 
 @router.get("/audit", response_model=AuditResponse)

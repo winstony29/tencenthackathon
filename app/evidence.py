@@ -104,7 +104,7 @@ def _verified(db):
     return result
 
 
-def record(event: str, payload: dict, **links) -> str:
+def record(event: str, payload: dict, *, idempotency_key: str | None = None, **links) -> str:
     """Persist before returning success; no credentials in metadata or encrypted evidence."""
     try:
         cipher = _cipher()
@@ -116,14 +116,44 @@ def record(event: str, payload: dict, **links) -> str:
         binding = {
             k: v
             for k, v in binding.items()
-            if k in {"request_id", "session_id", "draft_id", "revision", "draft_digest"}
+            if k
+            in {
+                "request_id",
+                "session_id",
+                "draft_id",
+                "revision",
+                "draft_digest",
+                "execution_id",
+                "logical_id",
+            }
             and isinstance(v, str)
             and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", v)
         }
-        identifier = "ev_" + uuid.uuid4().hex
+        identifier = "ev_" + (
+            sha(idempotency_key.encode()) if idempotency_key else uuid.uuid4().hex
+        )
         with _connect() as db:
             db.execute("BEGIN IMMEDIATE")
             rows = _verified(db)
+            if idempotency_key:
+                for meta, _, blob, _ in rows:
+                    if meta["event_id"] == identifier:
+                        if (
+                            meta["event"] != event
+                            or meta["evidence_digest"] != sha(body)
+                            or any(
+                                meta.get(key) != value
+                                for key, value in binding.items()
+                                if key != "request_id"
+                            )
+                        ):
+                            raise AuditError("Conflicting transaction evidence identity.")
+                        if (
+                            blob is not None
+                            and sha(cipher.decrypt(blob)) != meta["evidence_digest"]
+                        ):
+                            raise AuditError("Transaction evidence integrity check failed.")
+                        return identifier
             now = time.time()
             db.execute(
                 "UPDATE events SET payload=NULL WHERE expires<=? AND payload IS NOT NULL", (now,)
@@ -150,7 +180,7 @@ def record(event: str, payload: dict, **links) -> str:
                 ),
             )
         return identifier
-    except (OSError, sqlite3.Error, ValueError, KeyError, TypeError) as error:
+    except (OSError, sqlite3.Error, ValueError, KeyError, TypeError, InvalidToken) as error:
         raise AuditError("Could not persist audit evidence.") from error
 
 
@@ -190,5 +220,5 @@ def purge_expired() -> None:
             db.execute("BEGIN IMMEDIATE")
             _verified(db)
             db.execute("UPDATE events SET payload=NULL WHERE expires<=?", (time.time(),))
-    except (OSError, sqlite3.Error, ValueError, KeyError, TypeError) as error:
+    except (OSError, sqlite3.Error, ValueError, KeyError, TypeError, InvalidToken) as error:
         raise AuditError("Audit retention maintenance failed.") from error

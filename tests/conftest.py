@@ -21,7 +21,7 @@ def client() -> TestClient:
 
 
 @pytest.fixture(autouse=True)
-def _no_leftover_sessions() -> None:
+def _no_leftover_sessions(_isolated_evidence) -> None:
     # Sessions live in memory for the whole process; each test starts with none.
     session._SESSIONS.clear()
     transaction_state.clear()
@@ -150,6 +150,14 @@ def bank(monkeypatch: pytest.MonkeyPatch) -> None:
 def _isolated_evidence(tmp_path, monkeypatch):
     from cryptography.fernet import Fernet
 
-    monkeypatch.setattr(config, "AUDIT_EVIDENCE_PATH", str(tmp_path / "evidence.sqlite3"))
+    monkeypatch.setenv("BANK_EXECUTION_ENABLED", "0")
+    monkeypatch.setattr(config, "BANK_EXECUTION_ENABLED", False)
+    monkeypatch.setattr(config, "BANK_GATEWAY_POLICY", "")
+    monkeypatch.setattr(config, "BANK_TRANSFER_POLICY", "")
+    monkeypatch.setattr(config, "TRANSACTION_STATE_PATH", str(tmp_path / "approvals.sqlite3"))
+
+    monkeypatch.setattr(
+        config, "AUDIT_EVIDENCE_PATH", str(tmp_path / "evidence" / "evidence.sqlite3")
+    )
     monkeypatch.setattr(config, "AUDIT_EVIDENCE_KEY", Fernet.generate_key().decode())
     monkeypatch.setattr(config, "AUDIT_ADMIN_TOKEN", "test-audit-admin")

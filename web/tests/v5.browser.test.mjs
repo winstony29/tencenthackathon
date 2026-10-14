@@ -155,7 +155,7 @@ function understand(body, sessions) {
 async function setup(page, mode = "otp", beforeComposition = async () => {}) {
   const calls = [];
   const sessions = {};
-  let draft, publicKey, payload;
+  let draft, publicKey, payload, firstPayment;
   await page.route("**/api/understand", (route) =>
     route.fulfill({ json: understand(route.request().postDataJSON(), sessions) }),
   );
@@ -226,10 +226,12 @@ async function setup(page, mode = "otp", beforeComposition = async () => {}) {
       ),
       "signature must cover exact bank payload",
     );
-    if (mode === "lost") {
+    if (mode === "lost" && !firstPayment) {
+      firstPayment = body;
       await route.abort();
       return;
     }
+    if (mode === "lost") assert.deepEqual(body, firstPayment, "recovery must reuse the signed payment");
     await route.fulfill({
       json:
         mode === "reject"
@@ -307,7 +309,13 @@ test(
           mode === "reject" || mode === "lost",
           `${mode}: ${await page.locator(".v5-surface").getByRole("alert").first().innerText()} ${calls}`,
         );
-        if (mode === "lost") assert.ok(await page.getByRole("button", { name: "Transfer now" }).isDisabled());
+        if (mode === "lost") {
+          assert.ok(await page.getByRole("button", { name: "Cancel", exact: true }).isDisabled());
+          await page.getByRole("button", { name: "Check status", exact: true }).click();
+          await page.getByRole("heading", { name: "Request completed" }).waitFor();
+          assert.equal(calls.filter(c => c === "challenge").length, 1);
+          assert.equal(calls.filter(c => c === "execute").length, 2);
+        }
         if (mode === "mismatch") assert.deepEqual(calls, ["validate"]);
         await page.close();
       }

@@ -50,7 +50,6 @@ export function V5Payment({
     if (preview || validation.status !== "match") return;
     if (
       locked.current ||
-      uncertain ||
       result?.status === "executed" ||
       result?.status === "rejected"
     )
@@ -62,6 +61,7 @@ export function V5Payment({
     const controller = new AbortController();
     abort.current = controller;
     let executing = false;
+    let unresolved = false;
     try {
       pending.current ??= await preparePayment(draft, controller.signal, validation);
       controller.signal.throwIfAborted();
@@ -73,17 +73,19 @@ export function V5Payment({
       );
       if (!controller.signal.aborted) {
         setResult(reply);
+        setUncertain(false);
         setOtp("");
         if (reply.status !== "needs_extra_check")
           onSettled(reply.status === "executed");
       }
     } catch (e) {
       if (!controller.signal.aborted) {
+        unresolved = executing;
         setUncertain(executing);
         if (executing) onSettled(false);
         setError(
           executing
-            ? "We couldn’t confirm the outcome. Check your account before trying again."
+            ? "Outcome not confirmed. Check the status of this payment."
             : e instanceof Error
               ? e.message
               : "Unable to connect to the bank.",
@@ -93,7 +95,7 @@ export function V5Payment({
       locked.current = false;
       if (!controller.signal.aborted) {
         setBusy(false);
-        onLock(false);
+        onLock(unresolved);
       }
     }
   }
@@ -142,7 +144,7 @@ export function V5Payment({
         </label>
       )}
       <div className="v5-actions">
-        <button className="v5-secondary" onClick={onCancel} disabled={busy}>
+        <button className="v5-secondary" onClick={onCancel} disabled={busy || uncertain}>
           Cancel
         </button>
         <button
@@ -151,16 +153,17 @@ export function V5Payment({
             preview ||
             validation.status !== "match" ||
             busy ||
-            uncertain ||
             (result?.status === "needs_extra_check" && !otp.trim())
           }
           onClick={() => void send()}
         >
           {busy
             ? "Confirming…"
-            : result?.status === "needs_extra_check"
-              ? "Confirm code"
-              : label}
+            : uncertain
+              ? "Check status"
+              : result?.status === "needs_extra_check"
+                ? "Confirm code"
+                : label}
           {!busy && <LockKeyhole size={14} />}
         </button>
       </div>
