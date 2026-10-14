@@ -4,17 +4,24 @@ import Link from "next/link";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { ArrowUpRight, RotateCcw, X } from "lucide-react";
 import { V5Orb } from "@/components/v5-orb";
-import { V5Enquiry, enquirySchema, type Enquiry } from "@/components/v5-enquiry";
-import { V5Cards } from "@/components/v5-cards";
+import { answerPresentationSchema, fallbackAnswerPresentation, type AnswerPresentation } from "@/components/v5-enquiry";
+import { V5Answer, V5Cards } from "@/components/v5-cards";
 import { compose, fallback, type Composition } from "@/lib/v4-composition";
 import { contextFor } from "@/lib/v4-catalog";
 import { initialState, reducer, type Handoff, type State } from "@/lib/v4-state";
 import { post, request } from "@/lib/api";
-import { accountsSchema, quoteSchema, understandSchema, type Understand } from "@/lib/contracts";
+import {
+  accountsSchema,
+  answerSchema,
+  quoteSchema,
+  understandSchema,
+  type Answer,
+  type Understand,
+} from "@/lib/contracts";
 import "../v4/v4.css";
 import "./v5.css";
 
-type Phase = "idle" | "choose" | "clarify" | "composing" | "workspace" | "blocked";
+type Phase = "idle" | "choose" | "clarify" | "composing" | "workspace" | "answer" | "blocked";
 type Question = Extract<Understand, { status: "question" }>["question"];
 type DraftReply = Extract<Understand, { status: "draft" }>;
 const USER = "u_demo";
@@ -65,7 +72,6 @@ const titles = {
 };
 
 export default function V5() {
-  const [enquiry, setEnquiry] = useState<Enquiry | null>(null);
   const [composing, setComposing] = useState(false);
   const [phase, setPhase] = useState<Phase>("idle");
   const [state, setState] = useState<State>(initialState);
@@ -75,6 +81,8 @@ export default function V5() {
   const [bankLocked, setBankLocked] = useState(false);
   const [text, setText] = useState("");
   const [question, setQuestion] = useState<Question | null>(null);
+  const [answerView, setAnswerView] = useState<AnswerPresentation>(fallbackAnswerPresentation);
+  const [found, setFound] = useState<Answer | null>(null);
   const [stopped, setStopped] = useState({ title: "", message: "" });
   const session = useRef("");
   const current = useRef(state);
@@ -111,7 +119,6 @@ export default function V5() {
     cancel();
     update(initialState);
     setComposition(null);
-    setEnquiry(null);
     setHeard("");
     setText("");
     setQuestion(null);
@@ -172,22 +179,31 @@ export default function V5() {
         setPhase("clarify");
         return;
       }
-      if (reply.status === "enquiry") {
-        const result = await post(
-          "/presentation-v5/enquiry",
-          enquirySchema,
-          { user_id: reply.user_id, topic: reply.topic },
-          abort.signal,
-        );
-        if (version !== generation.current) return;
-        setEnquiry(result);
-        setComposition(null);
+      if (reply.status === "answer") {
+        session.current = "";
         setQuestion(null);
-        setComposing(false);
-        setPhase("workspace");
+        const known = answerSchema.safeParse(reply);
+        // A kind this UI doesn't know yet shows as unsupported (CONTRACTS §3.1 answers).
+        if (!known.success) return stop("Nothing was sent.", "I can't show that answer here yet.");
+        setFound(known.data);
+        setAnswerView(fallbackAnswerPresentation);
+        setPhase("answer");
+        // Structural metadata only; preserve Winston's exact filtered records.
+        const a = known.data;
+        const count = a.kind === "balance" ? a.accounts.length
+          : a.kind === "transactions" ? a.transactions.length
+          : a.kind === "bills" ? a.bills.length
+          : a.kind === "holdings" ? a.holdings.length
+          : a.kind === "quote" ? a.quotes.length
+          : a.kind === "payees" ? a.payees.length : 1;
+        void post("/presentation-v5/answer", answerPresentationSchema, {
+          kind: a.kind, count,
+          timeline_requested: "transcript" in turn && /\btimeline\b/i.test(turn.transcript),
+        }, abort.signal).then((view) => {
+          if (version === generation.current) setAnswerView(view);
+        }).catch(() => { /* The complete fallback answer remains usable. */ });
         return;
       }
-      setEnquiry(null);
       if (reply.status !== "draft")
         return stop(reply.status === "blocked" ? "Request stopped." : "Nothing was sent.", reply.message);
       setQuestion(null);
@@ -335,7 +351,7 @@ export default function V5() {
             )}
           </AnimatePresence>
 
-          {(phase === "clarify" || phase === "blocked" || phase === "workspace") && (
+          {(phase === "clarify" || phase === "blocked" || phase === "workspace" || phase === "answer") && (
             <motion.div
               layoutId={reduced ? undefined : "v5-surface"}
               transition={transition}
@@ -397,6 +413,7 @@ export default function V5() {
                   )}
                 </>
               )}
+              {phase === "answer" && found && <V5Answer answer={found} presentation={answerView} onDone={reset} />}
               {phase === "blocked" && (
                 <>
                   <div className="v5-result-icon">
@@ -410,7 +427,6 @@ export default function V5() {
                   </button>
                 </>
               )}
-              {phase === "workspace" && enquiry && <V5Enquiry value={enquiry} />}
               {phase === "workspace" && composition && (
                 <>
                   {state.error && <p role="alert">{state.error}</p>}

@@ -437,3 +437,17 @@ export function CashflowWaterfall({
     </figure>
   );
 }
+
+
+// Live answers retain their upstream data; these choices affect presentation only.
+export const answerPresentationSchema = z.strictObject({
+  source: z.enum(["jev", "fallback"]),
+  variant: z.enum(["list", "cards", "timeline"]),
+  detail: z.enum(["compact", "expanded"]),
+  summary: z.boolean(),
+  latency_ms: z.number().nonnegative(),
+});
+export type AnswerPresentation = z.infer<typeof answerPresentationSchema>;
+export const fallbackAnswerPresentation: AnswerPresentation = {
+  source: "fallback", variant: "list", detail: "compact", summary: false, latency_ms: 0,
+};

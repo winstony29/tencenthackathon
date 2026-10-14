@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { chromium } from "playwright";
 
-const executablePath = process.env.CHROME_PATH ?? "C:/Program Files/Google/Chrome/Application/chrome.exe";
+const executablePath = process.env.CHROME_PATH ?? (process.platform === "win32"
+  ? "C:/Program Files/Google/Chrome/Application/chrome.exe"
+  : process.platform === "darwin"
+    ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    : undefined);
 function response(body) {
   const { selected, context, questions } = body;
   return {
@@ -130,6 +134,9 @@ function understand(body, sessions) {
       meta,
     };
   if (said === "Pay my card bill and buy 100 Apple shares") return draftReply([bill, shares], said);
+  if (said === "What's my balance?")
+    return { status: "answer", kind: "balance", accounts: accounts.accounts, meta };
+  if (said === "What's my credit score?") return { status: "answer", kind: "credit_score", score: 1, meta };
   if (/ignore previous instructions/i.test(said))
     return {
       status: "blocked",
@@ -151,6 +158,9 @@ async function setup(page, mode = "otp", beforeComposition = async () => {}) {
   await page.route("**/api/understand", (route) =>
     route.fulfill({ json: understand(route.request().postDataJSON(), sessions) }),
   );
+  await page.route("**/api/presentation-v5/answer", route => route.fulfill({json: {
+    source: "jev", variant: "list", detail: "expanded", summary: false, latency_ms: 1,
+  }}));
   await page.route("**/api/accounts?*", (route) => route.fulfill({ json: accounts }));
   await page.route("**/api/presentation-v4/evaluate", async (route) => {
     await beforeComposition();
@@ -399,5 +409,65 @@ test("V5 shows resolved task before composition and disables payment until ready
     });
     assert.equal(compositions, 1);
     assert.equal(await page.getByRole("button", { name: "Transfer now" }).isEnabled(), true);
+  } finally { await browser.close(); }
+});
+test(
+  "V5 shows read-only answers with nothing to sign, and unknown kinds as unsupported",
+  { timeout: 30000 },
+  async () => {
+    const browser = await chromium.launch({ executablePath, headless: true });
+    try {
+      const page = await browser.newPage({ reducedMotion: "reduce" });
+      const calls = await setup(page);
+      for (const [text, expected] of [
+        ["What's my balance?", "Your balances"],
+        ["What's my credit score?", "Nothing was sent."],
+      ]) {
+        await page.getByRole("button", { name: "Start over", exact: true }).first().click();
+        await page.getByRole("button", { name: "Choose a banking request" }).click();
+        await page.getByLabel("What would you like to do?").fill(text);
+        await page.getByRole("button", { name: "Send request" }).click();
+        if (expected === "Your balances") {
+          await page.getByRole("region", { name: expected }).waitFor();
+          await page.getByText("S$3,200.00").waitFor();
+          assert.equal(await page.getByRole("button", { name: /now|Confirm/ }).count(), 0);
+        } else await page.getByRole("heading", { name: expected }).waitFor();
+      }
+      assert.deepEqual(calls, []);
+    } finally {
+      await browser.close();
+    }
+  },
+);
+
+
+test("V5 preserves filtered bill answers through timeline composition", {timeout: 30000}, async () => {
+  const browser = await chromium.launch({executablePath, headless: true});
+  try {
+    const page = await browser.newPage({reducedMotion: "reduce", viewport: {width: 390, height: 844}});
+    await setup(page);
+    const forbidden = [];
+    await page.route("**/api/account-insights?*", r => { forbidden.push("insights"); return r.abort(); });
+    await page.route("**/api/presentation-v5/enquiry", r => { forbidden.push("enquiry"); return r.abort(); });
+    await page.route("**/api/understand", r => r.fulfill({json: {
+      status: "answer", kind: "bills", meta,
+      bills: [{label: "Selected rent", amount: "1450.00", currency: "SGD", due_at: "2026-11-01T09:00:00+08:00",
+        account_id: "acc_1234", account_label: "Savings", recurrence: "monthly"}],
+    }}));
+    await page.route("**/api/presentation-v5/answer", async r => {
+      assert.deepEqual(r.request().postDataJSON(), {kind: "bills", count: 1, timeline_requested: true});
+      await page.getByText(/Selected rent/).waitFor(); // visible before model completion
+      await r.fulfill({json: {source: "jev", variant: "timeline", detail: "expanded", summary: false, latency_ms: 1}});
+    });
+    await page.getByRole("button", {name: "Start over", exact: true}).first().click();
+    await page.getByRole("button", {name: "Choose a banking request"}).click();
+    await page.getByLabel("What would you like to do?").fill("Show my rent as a timeline");
+    await page.getByRole("button", {name: "Send request"}).click();
+    await page.locator('.v5-answer[data-variant="timeline"]').waitFor();
+    assert.equal(await page.locator('.v5-timeline-stop').count(), 1);
+    assert.match(await page.locator('.v5-answer').innerText(), /monthly/);
+    assert.equal(await page.getByRole("button", {name: /Transfer now|Pay now|Confirm/}).count(), 0);
+    assert.deepEqual(forbidden, []);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   } finally { await browser.close(); }
 });

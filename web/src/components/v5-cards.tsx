@@ -5,7 +5,7 @@ import type { Composition } from "@/lib/v4-composition";
 import type { State } from "@/lib/v4-state";
 import { financialRows } from "@/lib/v4-financial";
 import { displayMoney, estimatedTotal, fromCurrency } from "@/lib/money";
-import { quoteSchema, type Action, type Quote } from "@/lib/contracts";
+import { quoteSchema, type Action, type Answer, type Quote } from "@/lib/contracts";
 import { request } from "@/lib/api";
 import {
   RecipientDetails,
@@ -17,6 +17,7 @@ import {
 import { AccountInsights } from "./v4-context";
 import { effective, type Event } from "@/lib/v4-state";
 import type { ReactNode } from "react";
+import { fallbackAnswerPresentation, type AnswerPresentation } from "./v5-enquiry";
 import { V5Payment } from "./v5-payment";
 
 const money = (value: string, currency: string) =>
@@ -54,7 +55,9 @@ function Task({
             ? "Currency conversion"
             : a.type === "transfer"
               ? "Transfer details"
-              : "Bill payment"
+              : a.type === "account_transfer"
+                ? "Move money"
+                : "Bill payment"
       }
     >
       {flow && a.type === "transfer" && (
@@ -81,7 +84,9 @@ function Task({
               ? "Convert currency"
               : a.type === "transfer"
                 ? "Transfer"
-                : "Bill payment"}
+                : a.type === "account_transfer"
+                  ? "Move money"
+                  : "Bill payment"}
         </span>
         <span>Not sent</span>
       </div>
@@ -121,11 +126,17 @@ function Task({
           </>
         ) : (
           <div>
-            <dt>{stock ? "Stock" : a.type === "transfer" ? "To" : "Biller"}</dt>
+            <dt>{stock ? "Stock" : a.type === "bill_payment" ? "Biller" : "To"}</dt>
             <dd>
               {a.type === "stock_order"
                 ? `${a.ticker} · ${a.company_name}`
-                : label(a.type === "transfer" ? a.to_payee_label : a.biller_label)}
+                : label(
+                    a.type === "transfer"
+                      ? a.to_payee_label
+                      : a.type === "account_transfer"
+                        ? a.to_account_label
+                        : a.biller_label,
+                  )}
             </dd>
           </div>
         )}
@@ -346,5 +357,94 @@ export function V5Cards({
         <Check size={12} /> Sandbox bank · no real money
       </p>
     </div>
+  );
+}
+
+const answerTitles: Record<Answer["kind"], string> = {
+  balance: "Your balances",
+  transactions: "Recent transactions",
+  bills: "Upcoming bills",
+  holdings: "Your shares",
+  quote: "Share price",
+  fx_rate: "Exchange rate",
+  payees: "Who you can pay",
+  help: "What I can do",
+};
+const day = (iso: string) => new Date(iso).toLocaleDateString("en-SG", { timeZone: "Asia/Singapore", day: "numeric", month: "short" });
+
+/** A read-only answer (CONTRACTS §3.1 answers): facts only, nothing to confirm or sign. */
+export function V5Answer({ answer: a, onDone, presentation = fallbackAnswerPresentation }: {
+  answer: Answer; onDone: () => void; presentation?: AnswerPresentation;
+}) {
+  const timeline = a.kind === "bills" && presentation.variant === "timeline";
+  const cards = ["balance", "holdings", "quote", "payees"].includes(a.kind) && presentation.variant === "cards";
+  const totals = new Map<string, bigint>();
+  if (presentation.summary && (a.kind === "balance" || a.kind === "holdings")) {
+    const values = a.kind === "balance" ? a.accounts.map(x => ({currency: x.currency, value: x.balance})) : a.holdings;
+    values.forEach(x => totals.set(x.currency, (totals.get(x.currency) ?? 0n) + BigInt(x.value.replace(".", ""))));
+  }
+  const rows: [string, string][] =
+    a.kind === "balance"
+      ? a.accounts.map((x) => [label(x.label), money(x.balance, x.currency)])
+      : a.kind === "transactions"
+        ? a.transactions.map((t) => [
+            `${day(t.time)} · ${t.description}`,
+            `${t.direction === "credit" ? "+" : "−"}${money(t.amount, t.currency)}`,
+          ])
+        : a.kind === "bills"
+          ? (timeline ? [...a.bills].sort((x, y) => Date.parse(x.due_at) - Date.parse(y.due_at)) : a.bills).map((b) => [
+              `${label(b.label)} · ${b.recurrence ? `${b.recurrence}, next ` : ""}due ${day(b.due_at)}`,
+              money(b.amount, b.currency),
+            ])
+          : a.kind === "holdings"
+            ? a.holdings.map((h) => [
+                `${h.ticker} · ${h.quantity} shares`,
+                `${money(h.value, h.currency)} est.`,
+              ])
+            : a.kind === "quote"
+              ? a.quotes.map((q) => [`${q.ticker} · ${q.company_name}`, money(q.price, q.currency)])
+              : a.kind === "fx_rate"
+                ? [[`1 ${a.rate.from}`, `${a.rate.rate} ${a.rate.to}`]]
+                : a.kind === "payees"
+                  ? a.payees.map((p) => [p.name, label(p.label)])
+                  : [];
+  return (
+    <section className="v5-task v5-answer" data-source={presentation.source} data-variant={timeline ? "timeline" : cards ? "cards" : "list"} aria-label={answerTitles[a.kind]}>
+      <div className="v5-task-title">
+        <span>{answerTitles[a.kind]}</span>
+        <span>Nothing to sign</span>
+      </div>
+      <p className="v5-caption">Synthetic bank data{presentation.source === "fallback" ? " - standard view" : ""}</p>
+      {[...totals].map(([currency, amount]) => <p className="v5-enquiry-number" key={currency}>
+        {money(`${amount / 100n}.${(amount % 100n).toString().padStart(2, "0")}`, currency)}
+      </p>)}
+      {a.kind === "help" ? (
+        <p>{a.message}</p>
+      ) : rows.length ? (
+        <>
+          <div className={cards ? "v5-tree v5-tree-split" : ""}>
+            {rows.slice(0, presentation.detail === "compact" ? 5 : undefined).map(([name, value], i) => (
+              <div key={i} className={`v5-enquiry-row${timeline ? " v5-timeline-stop" : ""}${cards ? " v5-tree-support" : ""}`}>
+                <span>{name}</span><strong>{value}</strong>
+              </div>
+            ))}
+          </div>
+          {presentation.detail === "compact" && rows.length > 5 && <details>
+            <summary>Show all ({rows.length})</summary>
+            {rows.slice(5).map(([name, value], i) => <div key={i} className={`v5-enquiry-row${timeline ? " v5-timeline-stop" : ""}`}>
+              <span>{name}</span><strong>{value}</strong>
+            </div>)}
+          </details>}
+        </>
+      ) : (
+        <p>Nothing to show for that.</p>
+      )}
+      {(a.kind === "holdings" || a.kind === "quote") && (
+        <p className="v5-caption">Mock prices · estimates exclude fees.</p>
+      )}
+      <button className="v4-button" onClick={onDone}>
+        New request
+      </button>
+    </section>
   );
 }

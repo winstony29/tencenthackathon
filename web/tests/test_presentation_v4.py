@@ -203,3 +203,59 @@ def test_transfer_flow_variant_not_offered_for_other_actions():
         )
         flows = [r for r in recipes(context) if r["id"].endswith("_flow")]
         assert bool(flows) == (kind == "transfer")
+
+
+@pytest.mark.parametrize(
+    "kind", ["balance", "transactions", "bills", "holdings", "quote", "fx_rate", "payees", "help"]
+)
+def test_answer_presentation_never_fetches_bank_data(monkeypatch, kind):
+    import asyncio
+
+    from web import presentation_v4 as module
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Presentation must not replace Winston's data")
+
+    monkeypatch.setattr(module, "get_account_insights", forbidden)
+    monkeypatch.setattr(module, "_client", None)
+    result = asyncio.run(
+        module.answer_presentation(
+            module.AnswerPresentationRequest(kind=kind, count=2, timeline_requested=True)
+        )
+    )
+    assert result["source"] == "fallback"
+    assert result["variant"] == ("timeline" if kind == "bills" else "list")
+    assert "data" not in result
+
+
+def test_answer_presentation_rejects_ineligible_model_choice(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock, Mock
+
+    from web import presentation_v4 as module
+
+    async def post(*args, **kwargs):
+        request = kwargs["json"]
+        assert set(request["state"]) == {"kind", "count", "timeline_requested"}
+        assert "timeline" not in request["questions"]["variant"]["criteria"]
+        answers = {
+            k: {"type": "choice", "choice": next(iter(q["criteria"])), "confidence": 1}
+            for k, q in request["questions"].items()
+        }
+        answers["variant"]["choice"] = "timeline"
+        return Mock(
+            json=lambda: {
+                "model": "jev-test",
+                "answers": answers,
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            }
+        )
+
+    client = Mock(post=AsyncMock(side_effect=post))
+    monkeypatch.setattr(module, "_client", client)
+    monkeypatch.setattr(module.config, "MAKERS_MODELS_KEY", "test")
+    result = asyncio.run(
+        module.answer_presentation(module.AnswerPresentationRequest(kind="transactions", count=2))
+    )
+    assert result["source"] == "fallback"
+    assert client.post.await_count == 1

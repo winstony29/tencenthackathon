@@ -302,3 +302,35 @@ existing selection batch. All diagrams render locally using CSS/SVG, retain read
 amounts, keep currencies separate, and add no model round trip. The gallery exposes
 the variants together for inspection. Waterfalls show estimated closing balances,
 not chronological liquidity or transaction approval.
+## D-035 · Contracts v0.6 (proposed): read-only answers, starting with balances
+2026-10-14 · Winston · Status: open (Darren and Jayanth to agree)
+**Decision:** `/api/understand` gains `status: "answer"` for questions that move no money. The first `kind` is `balance`: Jev says a balance is asked for and which account (or all); code reads the figures from `readonly.get_accounts`. An answer is never validated or signed and ends the session. A command that also moves money gets the draft instead.
+**Why:** "What's my balance?" is the most basic voice-banking request and today gets "unsupported". A separate status keeps read-only replies out of the confirm-and-sign flow, and `kind` leaves room for more read-only questions (transactions, bills, holdings) without another status.
+**Rejected:** A draft with a "balance" action (it would show a Confirm & sign button for something that moves nothing); answering in free LLM text (Jev never writes values, AGENTS §4).
+**Update (2026-10-14):** v0.6 now proposes eight read-only kinds (`balance`, `transactions`, `bills`, `holdings`, `quote`, `fx_rate`, `payees`, `help`), chosen by one Jev question (`info`) instead of a yes/no question per kind. A transactions question with no period returns the latest 5.
+
+## D-036 · Contracts v0.7 (proposed): moving money between your own accounts
+2026-10-14 · Winston · Status: open (Darren and Jayanth to agree)
+**Decision:** New action `account_transfer` for moves between the user's own accounts in one currency, shown as a **Move money** card. A move between currencies is a standalone `fx_conversion`, which also makes "convert 1,000 SGD to USD" work. Limits and the extra check for own-account moves are Jayanth's call under D-007.
+**Why:** Moving money between your own accounts is one of the most common banking requests, and `transfer` only pays payees. `fx_conversion` already describes a move between two own accounts, so reusing it avoids a second shape for the cross-currency case.
+**Rejected:** Treating own accounts as payees (they would need payee IDs, and a payee is someone else); same-currency only (leaves "move 1,000 from savings to invest" unsupported).
+
+## D-037 · Answers take filters, not more kinds
+2026-10-14 · Winston · Status: open (part of the v0.6 proposal, D-035)
+**Decision:** Read-only kinds take combinable filters that Jev picks from code-built options: transactions by account, period (including calendar months), payee, direction and order; bills by recurring or all. Bills carry `recurrence` and transactions carry `payee_id`.
+**Why:** "What are my recurring bills?" and "What did I pay Mum last month?" failed because each kind was rigid, not because they were out of scope. A few filters cover many phrasings without widening what Jev can do or letting it write any value.
+**Rejected:** One kind per phrasing (the list never ends); letting a model write the query (it could ask for data outside the user's own).
+
+
+## Integration: Winston answers and V5 composition - 14 October 2026
+
+Darren authorized merging origin/winston and reconciling the overlapping enquiry work.
+Winston owns question interpretation, filters and answer data. V5 composes the returned
+records directly; it does not replace them with a broad account-insights fetch. A single
+metadata-only JEV batch chooses eligible variants, detail and per-currency totals. All
+records remain available and failures retain the initial complete fallback. The old
+intent enquiry question/response is removed; broad analysis stays in the component gallery.
+Own-account action support from Winston is preserved across contracts, editors and signing.
+Windows file-lock/fsync adaptations remain alongside POSIX behavior. Browser tests choose
+Chrome by platform or CHROME_PATH; no OS-specific shell scripts or dependencies are added.
+Validation and execution remain stubs; this integration does not implement the audit proposal.

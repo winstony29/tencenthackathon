@@ -12,7 +12,7 @@ import { fromCurrency } from "./money";
 export const contextSchema = z.strictObject({
   objective: objectiveSchema,
   action_types: z
-    .array(z.enum(["transfer", "bill_payment", "stock_order", "fx_conversion"]))
+    .array(z.enum(["transfer", "bill_payment", "stock_order", "account_transfer", "fx_conversion"]))
     .min(1)
     .max(4),
   alternatives: z.boolean(),

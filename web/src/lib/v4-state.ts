@@ -85,6 +85,14 @@ function validHandoff(h: Handoff) {
               b.currency === a.buy_currency &&
               b.label === a.to_account_label,
           )) &&
+        (a.type !== "account_transfer" ||
+          (a.to_account_id !== a.from_account_id &&
+            accounts.accounts.some(
+              (b) =>
+                b.account_id === a.to_account_id &&
+                b.currency === a.currency &&
+                b.label === a.to_account_label,
+            ))) &&
         (a.type !== "transfer" ||
           accounts.payees.some((p) => p.payee_id === a.to_payee_id && p.label === a.to_payee_label)) &&
         (a.type !== "bill_payment" ||
@@ -103,7 +111,7 @@ function preserveEdits(state: State, draft: Draft): DraftEdits {
         ? "to_payee_id"
         : a.type === "stock_order"
           ? "ticker"
-          : a.type === "fx_conversion"
+          : a.type === "fx_conversion" || a.type === "account_transfer"
             ? "to_account_id"
             : "biller_id";
     const before = old as unknown as Record<string, unknown>,

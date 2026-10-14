@@ -11,7 +11,7 @@ export function TaskEditor({ state, dispatch, action: index = 0 }: ComponentProp
   if (index === null) return null;
   const result = effective(state),
     action = result.actions[index];
-  if (!action || action.type === "fx_conversion") return null; // V3 state refuses conversions
+  if (!action || action.type === "fx_conversion" || action.type === "account_transfer") return null; // V3 state refuses these
   const edits = state.task.edits[index] ?? {};
   const stock = action.type === "stock_order";
   const orderType = edits.order_type ?? (stock ? action.order_type : "market");
@@ -120,7 +120,7 @@ export function TransactionReview({ state, dispatch }: ComponentProps) {
     <>
       <SectionHeading eyebrow="REVIEW" title="One final check" aside={<span className="v3-tag">Demo</span>} />
       {actions.map((a, i) =>
-        a.type === "fx_conversion" ? null : ( // V3 state refuses conversions
+        a.type === "fx_conversion" || a.type === "account_transfer" ? null : ( // V3 state refuses these
           <section className="v3-review-task" key={i}>
             <h3>
               {a.type === "transfer"

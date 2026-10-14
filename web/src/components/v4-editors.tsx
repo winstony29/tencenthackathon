@@ -50,7 +50,13 @@ export function TaskEditor({ state, dispatch, action: index = 0 }: ComponentProp
   const data = state.handoff.data.accounts,
     edits = state.edits[index] ?? {},
     stock = a.type === "stock_order";
-  const Icon = stock ? TrendingUp : a.type === "transfer" ? UserRound : ReceiptText;
+  const Icon = stock
+    ? TrendingUp
+    : a.type === "transfer"
+      ? UserRound
+      : a.type === "account_transfer"
+        ? ArrowLeftRight
+        : ReceiptText;
   const edit = (field: string, value: string) => dispatch({ type: "edit", index, field, value });
   const account = data.accounts.find((b) => b.account_id === a.from_account_id);
   const orderType = edits.order_type ?? (stock ? a.order_type : "market");
@@ -63,7 +69,9 @@ export function TaskEditor({ state, dispatch, action: index = 0 }: ComponentProp
             ? `${a.side === "buy" ? "Buy" : "Sell"} ${a.ticker}`
             : a.type === "transfer"
               ? "Send money"
-              : "Pay your bill"
+              : a.type === "account_transfer"
+                ? "Move money"
+                : "Pay your bill"
         }
         aside={<Icon size={22} aria-hidden="true" />}
       />
@@ -85,8 +93,20 @@ export function TaskEditor({ state, dispatch, action: index = 0 }: ComponentProp
             <Icon size={21} />
           </span>
           <div>
-            <strong>{stock ? a.company_name : a.biller_label}</strong>
-            <span>{stock ? `${a.ticker} · ${a.currency}` : `Reference ${a.bill_reference}`}</span>
+            <strong>
+              {a.type === "stock_order"
+                ? a.company_name
+                : a.type === "account_transfer"
+                  ? `To ${a.to_account_label}`
+                  : a.biller_label}
+            </strong>
+            <span>
+              {a.type === "stock_order"
+                ? `${a.ticker} · ${a.currency}`
+                : a.type === "account_transfer"
+                  ? "Between your own accounts"
+                  : `Reference ${a.bill_reference}`}
+            </span>
           </div>
         </div>
       )}
@@ -99,19 +119,21 @@ export function TaskEditor({ state, dispatch, action: index = 0 }: ComponentProp
         error={result.errors[index]}
       />
       <div className="v4-fields">
-        <Select
-          label={`From account for task ${index + 1}`}
-          value={a.from_account_id}
-          onChange={(v) => edit("from_account_id", v)}
-        >
-          {data.accounts
-            .filter((b) => b.currency === a.currency)
-            .map((b) => (
-              <option key={b.account_id} value={b.account_id}>
-                {b.label}
-              </option>
-            ))}
-        </Select>
+        {a.type !== "account_transfer" && (
+          <Select
+            label={`From account for task ${index + 1}`}
+            value={a.from_account_id}
+            onChange={(v) => edit("from_account_id", v)}
+          >
+            {data.accounts
+              .filter((b) => b.currency === a.currency)
+              .map((b) => (
+                <option key={b.account_id} value={b.account_id}>
+                  {b.label}
+                </option>
+              ))}
+          </Select>
+        )}
         {stock && (
           <Select
             label={`Order type for task ${index + 1}`}
@@ -200,7 +222,9 @@ export function TransactionReview({ state, dispatch }: ComponentProps) {
                 ? `${a.side === "buy" ? "Buy" : "Sell"} ${a.ticker}`
                 : a.type === "transfer"
                   ? a.to_payee_label
-                  : a.biller_label}
+                  : a.type === "account_transfer"
+                    ? `Move to ${a.to_account_label}`
+                    : a.biller_label}
             </h3>
             <dl>
               <div>

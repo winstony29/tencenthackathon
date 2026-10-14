@@ -37,9 +37,9 @@ OPTIONAL = {"RecipientDetails", "StockEstimate", "FundingOptions", "AccountInsig
 class Context(BaseModel):
     model_config = ConfigDict(extra="forbid")
     objective: Literal["prepare", "assess_affordability", "simulate", "review"]
-    action_types: list[Literal["transfer", "bill_payment", "stock_order", "fx_conversion"]] = Field(
-        min_length=1, max_length=4
-    )
+    action_types: list[
+        Literal["transfer", "bill_payment", "stock_order", "account_transfer", "fx_conversion"]
+    ] = Field(min_length=1, max_length=4)
     financial_context: bool = False
     funding: Literal["sufficient", "shortfall", "unknown"] = "unknown"
     commitments: Literal["present", "none", "unknown"] = "unknown"
@@ -401,3 +401,76 @@ async def enquiry(body: EnquiryPresentationRequest) -> dict[str, Any]:
 async def account_insights(user_id: str) -> dict[str, Any]:
     """Read synthetic demo insights; same user ownership rules as /accounts."""
     return get_account_insights(user_id)
+
+
+class AnswerPresentationRequest(BaseModel):
+    """Structural answer metadata, never account values or prompt text."""
+
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal[
+        "balance", "transactions", "bills", "holdings", "quote", "fx_rate", "payees", "help"
+    ]
+    count: int = Field(ge=0, le=100000)
+    timeline_requested: bool = False
+
+
+@router.post("/presentation-v5/answer")
+async def answer_presentation(body: AnswerPresentationRequest) -> dict[str, Any]:
+    """Choose presentation without fetching or broadening Winston's answer."""
+    timeline = body.kind == "bills" and body.count > 0
+    variants = {"list": "Readable list with all records available"}
+    if body.count > 1 and body.kind in {"balance", "holdings", "quote", "payees"}:
+        variants["cards"] = "Separate cards, adapting columns to available width"
+    if timeline:
+        variants["timeline"] = "Bills arranged chronologically with recurrence labels"
+    if timeline and body.timeline_requested:
+        variants = {"timeline": variants["timeline"]}
+    questions = {
+        "variant": {
+            "type": "choice",
+            "instructions": "Choose the clearest presentation of this answer.",
+            "criteria": variants,
+        },
+        "detail": {
+            "type": "choice",
+            "instructions": "Choose initial detail; remaining records stay expandable.",
+            "criteria": {"compact": "First five records", "expanded": "All records visible"},
+        },
+    }
+    summary_allowed = body.kind in {"balance", "holdings"} and body.count > 1
+    if summary_allowed:
+        questions["summary"] = {
+            "type": "choice",
+            "instructions": "Would per-currency totals help? Never combine currencies.",
+            "criteria": {"include": "Totals above the records", "omit": "Records alone"},
+        }
+    result = {
+        "source": "fallback",
+        "variant": "timeline" if timeline and body.timeline_requested else "list",
+        "detail": "compact",
+        "summary": False,
+    }
+    started = time.perf_counter()
+    if config.MAKERS_MODELS_KEY and _client is not None:
+        try:
+            request = {
+                "model": config.MAKERS_JEV_MODEL,
+                "state": body.model_dump(),
+                "questions": questions,
+            }
+            response = await _client.post(
+                config.MAKERS_JEV_ENDPOINT,
+                headers={"Authorization": f"Bearer {config.MAKERS_MODELS_KEY}"},
+                json=request,
+            )
+            response.raise_for_status()
+            answers = parse_response(response.json(), request)["answers"]
+            result.update(
+                source="jev",
+                variant=answers["variant"]["choice"],
+                detail=answers["detail"]["choice"],
+                summary=summary_allowed and answers["summary"]["choice"] == "include",
+            )
+        except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
+            pass
+    return {**result, "latency_ms": round((time.perf_counter() - started) * 1000)}

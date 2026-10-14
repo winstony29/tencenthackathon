@@ -261,7 +261,9 @@ export function MultiSummary({ state }: ComponentProps) {
                 ? a.to_payee_label
                 : a.type === "fx_conversion"
                   ? `Convert to ${a.buy_currency}`
-                  : a.biller_label}
+                  : a.type === "account_transfer"
+                    ? a.to_account_label
+                    : a.biller_label}
           </strong>
           <b>
             {a.type === "stock_order"

@@ -1259,3 +1259,20 @@ def test_account_insights_missing_history_stays_unavailable(monkeypatch):
     data = readonly.get_account_insights("u_demo")
     assert data["transactions"] is None
     assert data["spending"] is None
+
+
+def test_transactions_and_bills_serve_read_only_answers(bank_seed: dict[str, Any]) -> None:
+    history = bank_seed["users"]["u_demo"]["transaction_history"]
+    entries = readonly.list_transactions("u_demo")
+    assert len(entries) == len(history)
+    assert entries == sorted(entries, key=lambda e: e.time, reverse=True)
+    assert all(e.account_label.endswith(e.account_id[-4:]) for e in entries)
+    bills = readonly.list_bills("u_demo")
+    assert [b.label for b in bills][0] == "DBS Credit Card …9012"
+    assert bills == sorted(bills, key=lambda b: b.due_at)
+    assert all(b.amount > 0 for b in bills)
+    assert {b.label: b.recurrence for b in bills}["DBS Credit Card …9012"] is None
+    assert any(b.recurrence == "monthly" for b in bills)
+    assert {e.transaction_id: e.payee_id for e in entries}["tx_seed_0002"] == "pay_4521"
+    with pytest.raises(HTTPException):
+        readonly.list_transactions("u_nobody")

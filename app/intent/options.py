@@ -17,7 +17,7 @@ from app.contracts import AccountsResponse, Draft, QuoteResponse
 from app.intent import shield
 from app.intent.jev import Question
 
-ACTION_TYPES = ("transfer", "bill_payment", "stock_order")
+ACTION_TYPES = ("transfer", "bill_payment", "stock_order", "account_transfer")
 
 _SMALL = {
     w: i
@@ -207,7 +207,8 @@ _ASKS_FOR = {
     "transfer": [
         (
             "yes",
-            "It asks to send or give money to a person. Paying a bill or card is not this.",
+            "It asks to send or give money to a person. Paying a bill or card, or moving "
+            "money between the user's own accounts, is not this.",
             "Yes",
         ),
         (
@@ -219,6 +220,15 @@ _ASKS_FOR = {
     "bill_payment": [
         ("yes", "It asks to pay a bill or a card balance, such as a credit card bill.", "Yes"),
         ("no", "It does not ask to pay a bill or card.", "No"),
+    ],
+    "account_transfer": [
+        (
+            "yes",
+            "It asks to move money between the user's own accounts, or to convert currency "
+            "between them; e.g. 'move some money from current to savings'.",
+            "Yes",
+        ),
+        ("no", "It does not move money between the user's own accounts.", "No"),
     ],
     "stock_order": [
         (
@@ -331,37 +341,28 @@ def build(transcript: str, data: UserData, scope: str) -> Options:
         for x in a.accounts
     ]
     default = ("default", "No account is said.", "My usual account")
+    all_accounts = ("all", "No single account is named; every account.", "All accounts")
+    no_account = ("none", "No account is said.", "None of these")
+    currencies = sorted({x.currency for x in a.accounts})
 
     spec = {
-        "enquiry": (
-            "Is this a read-only request about existing account data? Choose none if any "
-            "payment, purchase, sale, conversion, or change is requested. Overview covers "
-            "multiple read-only topics. "
-            "Do not classify hypothetical transaction affordability here.",
-            [
-                ("none", "Not a supported read-only enquiry, or includes an action.", "None"),
-                (
-                    "balances",
-                    "Current account balances or how much money the user has.",
-                    "Balances",
-                ),
-                ("bills", "Upcoming bills and scheduled expenses.", "Upcoming bills"),
-                ("transactions", "Recent account transaction history.", "Transactions"),
-                (
-                    "spending",
-                    "Spending breakdown or comparison with the previous month.",
-                    "Spending",
-                ),
-                (
-                    "overview",
-                    "Multiple read-only topics: balances, bills, spending or history.",
-                    "Overview",
-                ),
-            ],
-        ),
         "has_transfer": ("Does the text ask to send money to a person?", _ASKS_FOR["transfer"]),
         "has_bill_payment": ("Does the text ask to pay a bill or card?", _ASKS_FOR["bill_payment"]),
         "has_stock_order": ("Does the text ask to buy or sell shares?", _ASKS_FOR["stock_order"]),
+        "has_account_transfer": (
+            "Does the text ask to move money between the user's own accounts?",
+            _ASKS_FOR["account_transfer"],
+        ),
+        # Own-account moves (CONTRACTS §2.1, v0.7 proposed): no usual account; unsure asks.
+        "move_from": (
+            "Which of the user's accounts does the money leave?",
+            [*accounts, no_account],
+        ),
+        "move_to": (
+            "Which of the user's accounts does the money go into?",
+            [*accounts, no_account],
+        ),
+        "move_amount": ("How much is moved between the user's accounts?", [*amounts, no_number]),
         "several_transfers": (
             "Does the text ask for two or more separate transfers?",
             [
@@ -439,6 +440,28 @@ def build(transcript: str, data: UserData, scope: str) -> Options:
         ),
         "limit_price": ("What price limit is said for the order?", [*said_aloud, no_number]),
         "objective": ("What does the user want to do with the task?", OBJECTIVES),
+        # Read-only questions (CONTRACTS §3.1 answers). No option carries a figure (D-026).
+        "info": ("What does the user want to know, without moving any money?", INFO_KINDS),
+        "balance_account": ("Which account's balance is asked for?", [*accounts, all_accounts]),
+        "transactions_account": ("Whose account activity is asked for?", [*accounts, all_accounts]),
+        "transactions_period": ("Over what time are past transactions asked for?", PERIODS),
+        "transactions_payee": (
+            "Which person's payments are asked about?",
+            [("any", "No particular person is named.", "Anyone")]
+            + [(p.payee_id, _payee(p.name), p.label) for p in a.payees],
+        ),
+        "transactions_direction": ("Is money in or money out asked about?", DIRECTIONS),
+        "transactions_order": ("In what order are transactions wanted?", ORDERS),
+        "bills_scope": ("Which upcoming bills are asked about?", BILL_SCOPES),
+        "fx_pair": (
+            "Which exchange rate is asked for?",
+            [
+                (f"{x}-{y}", f"From {x} to {y}: how much {y} one {x} buys.", f"{x} to {y}")
+                for x in currencies
+                for y in currencies
+                if x != y
+            ],
+        ),
     }
     return Options(
         text=mask(transcript, scope),
@@ -454,6 +477,40 @@ def build(transcript: str, data: UserData, scope: str) -> Options:
         ),
     )
 
+
+# What a read-only question asks about (CONTRACTS §3.1 answers); "none" means it asks nothing.
+INFO_KINDS = [
+    ("none", "It asks to move money, or asks nothing about banking.", "None of these"),
+    ("balance", "How much money is in an account; a balance.", "My balance"),
+    ("transactions", "Past payments or money received; what was spent.", "Recent transactions"),
+    ("bills", "Bills or payments coming up; when a bill is due or what is owed.", "Upcoming bills"),
+    ("holdings", "Which shares the user owns, or what they are worth.", "My shares"),
+    ("quote", "The current price of a company's shares.", "A share price"),
+    ("fx_rate", "An exchange rate between two currencies.", "An exchange rate"),
+    ("payees", "Who the user can send money to; saved recipients.", "My payees"),
+    ("help", "What the assistant can do, or how to use it.", "What you can do"),
+]
+PERIODS = [
+    ("latest", "No time is said; the most recent ones.", "Latest"),
+    # Numbers reach Jev as stand-ins (D-026), so Jev only says a span of days or weeks is
+    # given; code reads how many from the transcript (draft.answer).
+    ("days", "This week, or a span of days or weeks such as 'the past few days'.", "Recent days"),
+    ("this_month", "This calendar month so far.", "This month"),
+    ("last_month", "The previous calendar month.", "Last month"),
+]
+DIRECTIONS = [
+    ("all", "Money in and out; no direction is said.", "All"),
+    ("out", "Money paid out or spent.", "Money out"),
+    ("in", "Money received, such as salary or interest.", "Money in"),
+]
+ORDERS = [
+    ("newest", "The most recent first; no order is said.", "Newest first"),
+    ("largest", "The biggest amounts first, e.g. the biggest spend.", "Largest first"),
+]
+BILL_SCOPES = [
+    ("all", "Every upcoming bill; no kind is said.", "All bills"),
+    ("recurring", "Only bills that repeat, such as monthly ones.", "Recurring bills"),
+]
 
 OBJECTIVES = [
     ("prepare", "Set the task up to be done; the default.", "Set it up"),
@@ -515,6 +572,13 @@ def build_followup(text: str, draft: Draft, data: UserData, scope: str) -> Optio
             if x.account_id != action.from_account_id
         ]
         spec[f"a{i}_from"] = (f"{task}, which account should it now come from?", [*accounts, KEEP])
+        if action.type == "account_transfer":
+            into = [
+                (x.account_id, f"Use the {x.label} account ({x.type}, {x.currency})", x.label)
+                for x in a.accounts
+                if x.account_id not in (action.to_account_id, action.from_account_id)
+            ]
+            spec[f"a{i}_to"] = (f"{task}, which account should it now go into?", [*into, KEEP])
         if action.type == "transfer":
             payees = [
                 (p.payee_id, _payee(p.name), p.label)
@@ -541,6 +605,8 @@ def describe(action) -> str:
         return f"transfer to {action.to_payee_label} from {action.from_account_label}"
     if action.type == "bill_payment":
         return f"pay {action.biller_label} from {action.from_account_label}"
+    if action.type == "account_transfer":
+        return f"move from {action.from_account_label} to {action.to_account_label}"
     if action.type == "fx_conversion":
         return (
             f"convert {action.sell_currency} from {action.from_account_label} "
@@ -556,6 +622,20 @@ _ASK = {
     "has_transfer": "Do you want to send money to someone?",
     "has_bill_payment": "Do you want to pay a bill?",
     "has_stock_order": "Do you want to buy or sell shares?",
+    "has_account_transfer": "Do you want to move money between your accounts?",
+    "move_from": "Which account should I move it from?",
+    "move_to": "Which account should it go into?",
+    "move_amount": "How much should I move?",
+    "to": "Which account should it go into?",
+    "info": "What would you like to know?",
+    "balance_account": "Which account?",
+    "transactions_account": "Which account?",
+    "transactions_period": "Over what time?",
+    "transactions_payee": "Who did you pay, or get money from?",
+    "transactions_direction": "Money in or money out?",
+    "transactions_order": "Newest or largest first?",
+    "bills_scope": "All bills, or only recurring ones?",
+    "fx_pair": "Which exchange rate?",
     "several_transfers": "Is this more than one transfer?",
     "recipient": "Who should get the money?",
     "transfer_amount": "How much should I send?",
