@@ -39,7 +39,7 @@ _STUB_EXECUTED = {"status": "executed", "results": [{"action_index": 0, "referen
 
 @router.get("/accounts", response_model=AccountsResponse)
 async def accounts(user_id: str) -> AccountsResponse:
-    """List the user's public accounts, payees, billers and holdings from the seed."""
+    """List the user's public accounts, payees, billers and holdings from committed state."""
     return get_accounts(user_id)
 
 
