@@ -1538,3 +1538,31 @@ def test_the_validator_gets_only_the_bank_data_the_draft_uses(client, fake_jev, 
     assert facts["quotes"] == [] and facts["accounts"]["holdings"] == []
     assert len(facts["accounts"]["payees"]) == 4  # names only, so ambiguity stays visible
     assert facts["amounts_said"]["transfer_amount"]["account_id"] == "acc_1234"
+
+
+def test_the_codex_validator_runs_with_every_tool_switched_off(monkeypatch) -> None:
+    import subprocess
+
+    from app import llm
+
+    seen = {}
+
+    def fake_run(args, **kwargs):
+        seen["args"] = args
+        raise OSError("not launched in tests")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(llm.shutil, "which", lambda name: "/usr/local/bin/codex")
+    with pytest.raises(llm.Unavailable):
+        llm._codex("system", {"x": 1})
+    flags = set(seen["args"])
+    for feature in (
+        "shell_tool",
+        "browser_use",
+        "browser_use_full_cdp_access",
+        "computer_use",
+        "plugins",
+        "hooks",
+    ):
+        assert f"features.{feature}=false" in flags
+    assert "read-only" in flags
