@@ -47,7 +47,10 @@ def start_turn(user_id: str, session_id: str):
         for key in [k for k, (_, expires) in _turns.items() if expires < now]:
             _turns.pop(key)
         if len(_turns) >= 1000 and (user_id, session_id) not in _turns:
-            raise InvalidDraft("Too many active conversations.")
+            # Evict the conversation closest to expiry: junk sessions can't lock everyone out.
+            oldest = min(_turns, key=lambda k: _turns[k][1])
+            _turns.pop(oldest)
+            revoke(*oldest)
         key = (user_id, session_id)
         token = secrets.token_hex(16)
         _turns[key] = (token, now + config.SESSION_TIMEOUT_SECONDS)

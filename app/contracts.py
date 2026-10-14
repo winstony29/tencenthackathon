@@ -189,8 +189,9 @@ class Answer(ContractModel):
 
 
 class UnderstandRequest(ContractModel):
-    user_id: str
-    session_id: str
+    # IDs carry their type prefix (§1); anything else is refused before any state is touched.
+    user_id: str = Field(pattern=r"^u_[A-Za-z0-9_]{1,64}$")
+    session_id: str = Field(pattern=r"^s_[A-Za-z0-9_-]{1,64}$")
     transcript: Text | None = None
     answer: Answer | None = None
 
