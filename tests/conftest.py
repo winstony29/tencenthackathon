@@ -8,7 +8,7 @@ Contract: none
 import pytest
 from fastapi.testclient import TestClient
 
-from app import config, main, transaction_state
+from app import audit, config, main, transaction_state
 from app.bank import readonly
 from app.contracts import AccountsResponse, FxResponse, QuoteResponse
 from app.intent import jev, session
@@ -18,6 +18,14 @@ from app.main import app
 @pytest.fixture
 def client() -> TestClient:
     return TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def audit_log(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """Intent events go to a temporary audit chain, never the real var/audit.jsonl."""
+    # app/audit.py writes next to its own package; tests/test_bank.py redirects it the same way.
+    monkeypatch.setattr(audit, "__file__", str(tmp_path / "app" / "audit.py"))
+    return tmp_path / "var" / "audit.jsonl"
 
 
 @pytest.fixture(autouse=True)
