@@ -50,7 +50,9 @@ _SAID = [
     (re.compile(r"\b[STFGM]\d{7}[A-Z]\b", re.I), "[id]"),  # Singapore NRIC / FIN
     (re.compile(r"(?i)Bearer\s+[A-Za-z0-9._~+/=-]+"), "Bearer [REDACTED]"),
 ]
-_CARD = re.compile(r"\b\d(?:[ -]?\d){12,18}\b")
+# Card layouts only: 13-19 digits in a row, groups of four, or Amex 4-6-5. Any 13 digits with
+# spaces between matched lists of small numbers ("1 2 3 ... 13") and ate them.
+_CARD = re.compile(r"\b(?:\d{13,19}|\d{4}(?:[ -]\d{4}){2}[ -]\d{1,7}|\d{4}[ -]\d{6}[ -]\d{5})\b")
 
 
 def _luhn(digits: str) -> bool:

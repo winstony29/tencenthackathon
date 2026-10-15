@@ -2175,6 +2175,9 @@ def test_typed_secrets_reach_neither_jev_nor_evidence(client, fake_jev, bank) ->
     for secret in ("hunter2", "482913", "4111 1111", "S1234567D", "sk-proj-abc"):
         assert secret not in _sent_to_jev(fake_jev) and secret not in stored, secret
     assert evidence.scrub("pay 50.00 to John") == "pay 50.00 to John"
+    assert evidence.scrub("4111111111111111 or 3782 822463 10005") == "[card] or [card]"
+    listed = " ".join(str(i) for i in range(1, 30))
+    assert evidence.scrub(listed) == listed  # small numbers in a row are not a card
 
 
 @pytest.mark.parametrize(
