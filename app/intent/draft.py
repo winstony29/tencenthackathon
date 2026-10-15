@@ -166,7 +166,7 @@ def build(
             f"I can do up to {config.MAX_ACTIONS_PER_DRAFT} steps at once. Please split it up."
         )
     return Draft(
-        draft_id=f"d_{secrets.token_hex(3)}",
+        draft_id=f"d_{secrets.token_hex(8)}",  # 24 bits collided at ~5k drafts (L16)
         user_id=user_id,
         session_id=session_id,
         transcript=transcript,

@@ -95,7 +95,7 @@ def _show_what_jev_reads() -> None:
 
 
 def _new_session() -> str:
-    return f"s_cli_{uuid.uuid4().hex[:6]}"
+    return f"s_cli_{uuid.uuid4().hex}"
 
 
 def _turn(line: str, question: dict | None) -> dict:
