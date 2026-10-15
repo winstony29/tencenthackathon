@@ -5,6 +5,7 @@ Diagram box: Speech to text, Confidence gate, Draft builder (Intent detection co
 Contract: docs/CONTRACTS.md §3.1
 """
 
+import secrets
 import time
 from collections import OrderedDict
 from decimal import Decimal
@@ -134,10 +135,15 @@ async def preview(request: PreviewRequest) -> dict[str, Any]:
     """
     if not config.MAKERS_MODELS_KEY:
         return _STUB_PREVIEW
-    # ponytail: previews carry no session, so their stand-ins are shared by everyone until restart.
-    masked = options.mask(request.text, "preview")
-    key = " ".join(masked.lower().split())
-    if len(key) < 2:
+    # A fresh scope per preview: stand-ins and name pseudonyms can't be linked across requests
+    # or people (D-039). The cache keys on the raw text, which stays in server memory.
+    scope = f"preview|{secrets.token_hex(8)}"
+    names = (
+        options.aliases(readonly.get_accounts(request.user_id), scope) if request.user_id else {}
+    )
+    masked = options.mask(request.text, scope, names)
+    key = f"{request.user_id}|" + " ".join(request.text.lower().split())
+    if len(" ".join(masked.split())) < 2:
         certain = {o: float(o == "none") for o in _PREVIEW_QUESTION.criteria}
         return {
             "intent": {"value": "none", "confidence": 1.0, "probabilities": certain},
@@ -251,7 +257,8 @@ async def _spoken_answer(
     question_id, name, offered = current.pending
     scope = f"{current.user_id}|{request.session_id}"
     question = options.spoken_reply_question(current.options, name, offered)
-    reply = await jev.ask(options.mask(request.transcript, scope), [shield.QUESTION, question])
+    masked = options.mask(request.transcript, scope, current.options.aliases)
+    reply = await jev.ask(masked, [shield.QUESTION, question])
     meta = {
         "latency_ms": round((time.monotonic() - started) * 1000),
         "model": reply.model,
@@ -321,7 +328,8 @@ async def _start_followup(current: session.Session, text: str, session_id: str) 
     current.history.append({"kind": "followup", "text": text})
     scope = f"{current.user_id}|{session_id}"
     current.options = options.build_followup(text, current.draft, current.data, scope)
-    context = {"current_tasks": [options.describe(a) for a in current.draft.actions]}
+    names = current.options.aliases
+    context = {"current_tasks": [options.describe(a, names) for a in current.draft.actions]}
     current.replies = await jev.ask_all([current.options.text], current.options.questions, context)
     current.followup, current.answers, current.asked, current.pending = text, {}, 0, None
 
