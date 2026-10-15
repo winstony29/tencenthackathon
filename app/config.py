@@ -22,6 +22,8 @@ MAKERS_JEV_TIMEOUT_SECONDS = 12  # Presentation request deadline; UI falls back 
 # HMAC key for the stand-in numbers Jev reads (D-026). A random key per process is enough,
 # because sessions live in memory; set it to keep stand-ins stable across restarts.
 MASK_KEY = os.getenv("MASK_KEY", "").encode() or secrets.token_bytes(32)
+if len(MASK_KEY) < 32:  # every stand-in and pseudonym is only as strong as this key
+    raise ValueError("MASK_KEY must be at least 32 bytes; leave it empty for a random one.")
 STAND_IN_TRIES = 50  # HMAC retries before two numbers in one text may share a stand-in (D-026)
 
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")  # OpenAI-compatible endpoint for app/llm.py (D-009)
@@ -65,7 +67,9 @@ VALIDATOR_TIMEOUT_SECONDS = 45 if VALIDATOR_PROVIDER == "codex" else 12
 AUDIT_EVIDENCE_KEY = os.getenv("AUDIT_EVIDENCE_KEY", "")
 AUDIT_ADMIN_TOKEN = os.getenv("AUDIT_ADMIN_TOKEN", "")
 AUDIT_RETENTION_DAYS = int(os.getenv("AUDIT_RETENTION_DAYS", "7"))
-AUDIT_MAX_BYTES = 2_000_000  # Bound each JSON request/response and evidence item.
+AUDIT_MAX_BYTES = 2_000_000  # Bound each JSON request/response the audit middleware reads.
+EVIDENCE_MAX_ITEM_BYTES = 64_000  # larger evidence keeps only its size and SHA-256
+EVIDENCE_MAX_STORE_BYTES = 500_000_000  # past this, new events keep metadata only
 AUDIT_EVIDENCE_PATH = os.getenv("AUDIT_EVIDENCE_PATH", "")  # Blank uses var/evidence.sqlite3.
 
 # Bank integration is opt-in; explicit JSON policies contain backend-owned limits.
@@ -77,3 +81,9 @@ TRANSACTION_STATE_PATH = os.getenv("TRANSACTION_STATE_PATH", "")
 
 # Presentation comparisons older than this remain unknown for current decisions.
 CONDITION_QUOTE_MAX_AGE_SECONDS = 60
+# Request guard (app/main.py): limits for an anonymous public demo. Starting values.
+API_DOCS = os.getenv("API_DOCS", "1") == "1"  # 0 when deployed: hides /docs and /openapi.json
+MAX_REQUEST_BYTES = 256_000  # largest JSON body any /api/ endpoint accepts
+MAX_AUDIO_BYTES = 2_000_000  # largest /api/transcribe upload (a few seconds of speech)
+RATE_PER_MINUTE = {"preview": 120, "model": 40}  # model-backed calls per client IP per minute
+RATE_GLOBAL_PER_MINUTE = 600  # model-backed calls per minute from everyone together

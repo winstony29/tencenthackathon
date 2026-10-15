@@ -104,6 +104,20 @@ def _codex(system: str, payload: dict) -> dict:
             "features.apps=false",
             "-c",
             "features.multi_agent=false",
+            # Every other tool Codex 0.143 enables by default: the audit only reads stdin.
+            *(
+                arg
+                for feature in (
+                    "browser_use",
+                    "browser_use_external",
+                    "browser_use_full_cdp_access",
+                    "computer_use",
+                    "image_generation",
+                    "plugins",
+                    "hooks",
+                )
+                for arg in ("-c", f"features.{feature}=false")
+            ),
             "-c",
             'model_reasoning_effort="low"',
         ]

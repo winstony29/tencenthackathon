@@ -1,7 +1,7 @@
 # Contracts
 
 **Purpose:** the exact data shapes and endpoints every part of the system agrees on. `app/contracts.py` implements this file as Pydantic models. If the two disagree, this file wins.
-**Owner:** Winston (keeper) · **Version:** 0.13 (structured-first presentation with selective context) · **Last updated:** 2026-10-15
+**Owner:** Winston (keeper) · **Version:** 0.14 (structured-first presentation with selective context) · **Last updated:** 2026-10-15
 
 > Changing anything here needs all three teammates to agree. Then bump the version, update `app/contracts.py` in the same commit, and add a `docs/DECISIONS.md` entry.
 
@@ -114,7 +114,7 @@ Actions can include an `fx_conversion`. Code builds it; the user never says it. 
 `source` is `jev`, `fallback` (D-005), `fake` (tests, `USE_FAKES=1`) or `none` (no model ran, e.g. `cancelled`). `phrasings` is how many texts Jev was asked about: 1 + K for `/api/understand`, 1 for `/api/preview`. `meta` feeds the latency readout and the H-01 comparison; it never changes what the UI does.
 
 **`POST /api/preview`**: a live guess of the action type while the user types. **Display only.**
-Request: `{"text": "send fifty to jo"}`
+Request: `{"text": "send fifty to jo", "user_id": "u_demo"}`. `user_id` is optional; with it, the user's payee names reach Jev only as pseudonyms (D-039), without it they pass through, so UIs send it.
 Response:
 ```json
 {"intent": {"value": "transfer", "confidence": 0.81,
@@ -373,7 +373,7 @@ Other states the UI must show: **preview** (empty card of the guessed type while
 
 ## 6. Errors
 
-Malformed requests return HTTP 400 with `{"error": {"code": "bad_request", "message": "…"}}`. Unknown user or session returns 404 with code `not_found`. Upstream failures (Jev, LLM, ASR down) return 502 with code `upstream_error`; a missing server key for a model returns 503 with the same code. Business outcomes such as `rejected` or `mismatch` return HTTP 200 with the status shown above.
+Malformed requests return HTTP 400 with `{"error": {"code": "bad_request", "message": "…"}}`. Unknown user or session returns 404 with code `not_found`. Upstream failures (Jev, LLM, ASR down) return 502 with code `upstream_error`; a missing server key for a model returns 503 with the same code. A body over the size cap (256 KB of JSON, 2 MB of audio) returns 413 `too_large`. Too many model-backed calls (`/api/understand`, `/api/preview`, `/api/presentation-*`) from one client IP, or from everyone together, return 429 `rate_limited` with a `Retry-After` header; the UI waits and lets the user try again. `/api/understand` refuses a `user_id` not shaped `u_…` or a `session_id` not shaped `s_…` (400) and an unknown user (404) before touching any state. Business outcomes such as `rejected` or `mismatch` return HTTP 200 with the status shown above.
 
 ## 7. Stubs
 
@@ -383,20 +383,20 @@ Until a real endpoint works, its router returns the example responses in this fi
 
 Intent side (`actor: "intent"`). Jayanth adds the validation and bank events here. `data` never holds keys or secrets. `/api/preview` calls are not logged: they are display only and too frequent.
 
+The audit chain (`app/audit.py`) accepts only a flat allowlist of non-sensitive fields, so intent events carry IDs, a `reason` and a `count`; transcripts, Jev's probabilities and the options offered stay in the encrypted evidence store (v0.8), linked by `session_id`. A failed audit write stops the request (503).
+
 | `event` | `data` |
 |---|---|
-| `transcribed` | `transcript`, `confidence` |
-| `shield_checked` | `session_id`, `flagged`, `p` |
-| `jev_answer` | `session_id`, `question`, `phrasings` (each: `text`, `probabilities`), `avg_p`, `spread` |
-| `gate_decision` | `session_id`, `decision` (`proceed` or `ask`), `failing_question`, `tau`, `delta` |
-| `question_asked` | `session_id`, `question_id`, `options` |
-| `answer_received` | `session_id`, `question_id`, `option_id`, `via` (`chip` or `speech`) |
-| `draft_built` | `session_id`, `draft_id` |
+| `shield_checked` | `session_id`, `reason` (`flagged` or `clear`) |
+| `gate_decision` | `session_id`, `reason` (`proceed` or `ask`) |
+| `question_asked` | `session_id`, `reason` (the question asked, e.g. `recipient`), `count` (its number) |
+| `answer_received` | `session_id`, `reason` (`chip` or `speech`) |
+| `draft_built` | `session_id`, `draft_id`, `count` (actions) |
+| `answer_given` (*v0.6, proposed*) | `session_id`, `reason` (the kind) |
 | `blocked` | `session_id`, `reason` |
 | `cancelled` | `session_id`, `reason` |
-| `answer_given` (*v0.6, proposed*) | `session_id`, `kind`, `account_ids` (never the balances) |
 
-In `jev_answer`, `phrasings[].text` is the stand-in text Jev saw, with numbers swapped for stand-ins (D-026), not the transcript. Jayanth adds `fx_converted` (actor `bank`) with `draft_id`, `sell_amount`, `sell_currency`, `buy_amount`, `buy_currency`, `rate`.
+`transcribed` waits for live ASR (W-09). Jev's answers per question are in the evidence store, as the stand-in text Jev saw, never the transcript (D-026). Jayanth adds `fx_converted` (actor `bank`) with `draft_id`, `sell_amount`, `sell_currency`, `buy_amount`, `buy_currency`, `rate`.
 
 ## 9. Timing
 
@@ -557,7 +557,7 @@ Structured secret fields (OTP, authorization, cookies, credentials, receipts, pr
 material) and configured secret values are redacted before encryption. Raw HTTP headers,
 raw audio and malformed unparsed bodies are not stored. Free text remains sensitive;
 redaction is not a guarantee of discovering every arbitrary secret a user may type.
-Transcription is currently a labelled stub event. Evidence size is capped at 2 MB per item.
+Transcription is currently a labelled stub event. Evidence over 64 KB per item keeps only its size and SHA-256; past 500 MB in total, new events keep metadata only (`evidence_state: "capacity"`). The chain hash is an HMAC keyed from `AUDIT_EVIDENCE_KEY`, so rewriting history needs the key; writes check the newest link and reads check the whole chain. The database is owner-only (0600).
 Missing encryption or storage failure stops audited requests; expired/cancelled/stale drafts
 cannot regain approval through audit replay. Confirmation attempts and unavailable bank
 execution are recorded, but no signature verification or ledger execution is implied.

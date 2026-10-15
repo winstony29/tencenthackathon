@@ -80,7 +80,7 @@ export default function BankingPage() {
     if (text.trim().length < 2 || draft || reply || busy) return;
     const controller = new AbortController();
     const timer = setTimeout(() => {
-      post("/preview", previewSchema, { text }, controller.signal)
+      post("/preview", previewSchema, { text, user_id: "u_demo" }, controller.signal)
         .then((data) => {
           if (!controller.signal.aborted) setPreview(data.intent.value);
         })

@@ -92,6 +92,8 @@ class Options:
     # The account a transfer or bill uses when none is said: the first savings account,
     # as draft._account picks it.
     usual_account: str | None = field(default=None)
+    # Keyed pseudonym for every word of the user's payee names (D-039): what Jev reads instead.
+    aliases: dict[str, str] = field(default_factory=dict)
 
 
 def parse_numbers(text: str) -> list[Number]:
@@ -163,7 +165,8 @@ def _stand_in(value: Decimal, scope: str, taken: set[int]) -> int:
         message = f"{scope}|{value.normalize()}|{attempt}".encode()
         digest = hmac.new(config.MASK_KEY, message, hashlib.sha256).digest()
         number = (10 + int.from_bytes(digest[:4], "big") % 90) * scale
-        if number not in taken:
+        # A stand-in equal to the value would show Jev the real number (1 in 90 for "50").
+        if number not in taken and number != value:
             return number
     return number
 
@@ -179,13 +182,53 @@ def stand_ins(
     return [chosen[n.value] for n in numbers]
 
 
-def mask(text: str, scope: str, reference_text: str | None = None) -> str:
-    """Swap every number said for its stand-in, so Jev reads a natural sentence but no value.
+_WORD = re.compile(r"[^\W\d_]+")
+_CONSONANTS, _VOWELS = "bdfgklmnprstvz", "aeiou"
+
+
+def aliases(accounts: AccountsResponse, scope: str) -> dict[str, str]:
+    """A keyed pseudonym for every word of the user's payee names (D-039).
+
+    HMAC-SHA256 under config.MASK_KEY of the word and the scope, spelt as three
+    consonant-vowel syllables so Jev still reads a name ("John" -> e.g. "Kavoru"). Without the
+    key no pseudonym can be worked back, even by hashing every name; the scope makes them
+    differ across conversations. Each word maps on its own, so "John Doe" and "John Smith"
+    share a first name and a bare "John" stays ambiguous, as it really is.
+    """
+    words = sorted({w.lower() for p in accounts.payees for w in _WORD.findall(p.name)})
+    taken, result = set(words), {}
+    for word in words:
+        for attempt in range(config.STAND_IN_TRIES):
+            message = f"name|{scope}|{word}|{attempt}".encode()
+            digest = hmac.new(config.MASK_KEY, message, hashlib.sha256).digest()
+            alias = "".join(_CONSONANTS[b % 14] + _VOWELS[b // 14 % 5] for b in digest[:3])
+            if alias not in taken:  # never another real name word or another pseudonym
+                break
+        taken.add(alias)
+        result[word] = alias.capitalize()
+    return result
+
+
+def aliased(text: str, names: dict[str, str]) -> str:
+    """Swap every payee name word in the text for its pseudonym."""
+    return _WORD.sub(lambda m: names.get(m.group(0).lower(), m.group(0)), text)
+
+
+def bare(label: str) -> str:
+    """A label without its last digits ("Savings …1234" -> "Savings"), for Jev."""
+    return re.sub(r"\s*…\s*\d+", "", label)
+
+
+def mask(
+    text: str, scope: str, names: dict[str, str] | None = None, reference_text: str | None = None
+) -> str:
+    """Swap every number said for its stand-in and every payee name word for its pseudonym,
+    so Jev reads a natural sentence but no value and no name.
 
     Stand-ins come from a keyed hash of the value and the scope (user and session): normally
     the same for a whole conversation, different across conversations, and impossible to work
     back without config.MASK_KEY. Digits the parser missed become "[number]", and email
-    addresses become "[email]".
+    addresses become "[email]". `names` comes from aliases().
     """
     # ponytail: number words parse_numbers doesn't know ("dozen", "couple") pass through
     # unmasked; add them to _SMALL / _SCALES if they turn up in real transcripts.
@@ -197,7 +240,7 @@ def mask(text: str, scope: str, reference_text: str | None = None) -> str:
         parts += [_hide_digits(text[last:start]), str(stand_in)]
         last = end
     parts.append(_hide_digits(text[last:]))
-    return _EMAIL.sub("[email]", "".join(parts))
+    return aliased(_EMAIL.sub("[email]", "".join(parts)), names or {})
 
 
 def _hide_digits(text: str) -> str:
@@ -236,8 +279,9 @@ _ASKS_FOR = {
         ),
         (
             "no",
-            "No instruction to move or convert money. "
-            "A question asking only for an exchange rate is no.",
+            "No instruction to move or convert money between the user's own accounts. "
+            "Paying a bill or card, buying or selling shares, sending money to a person, "
+            "or asking only for an exchange rate is no.",
             "No",
         ),
     ],
@@ -273,7 +317,7 @@ def _number_options(said: dict[str, Number], shown: list[int]) -> list[tuple[str
     return [
         (
             oid,
-            f'The number said as "{shown[i]}"' if n.span else f'The amount "{n.phrase}"',
+            f'The number said as "{shown[i]}"' if n.span else f'The amount "{bare(n.phrase)}"',
             _label(n),
         )
         for i, (oid, n) in enumerate(said.items())
@@ -289,7 +333,7 @@ def _label(n: Number) -> str:
 
 
 def _biller(name: str, label: str, only: bool) -> str:
-    return f"The {name} bill ({label})" + (", the user's only saved bill." if only else ".")
+    return f"The {name} bill ({bare(label)})" + (", the user's only saved bill." if only else ".")
 
 
 def _relative(text: str, accounts: AccountsResponse) -> list[Number]:
@@ -335,6 +379,7 @@ def build(
     the stand-in numbers; pass the user and session.
     """
     a = data.accounts
+    names = aliases(a, scope)
     parsed = parse_numbers(transcript)
     said = {f"n{i}": n for i, n in enumerate(parsed + _relative(transcript, a))}
     reference = parse_numbers(reference_text) if reference_text else None
@@ -351,7 +396,7 @@ def build(
     ]
     no_number = ("none", "No such number is said.", "None of these")
     accounts = [
-        (x.account_id, f"Use the {x.label} account ({x.type}, {x.currency})", x.label)
+        (x.account_id, f"Use the {bare(x.label)} account ({x.type}, {x.currency})", x.label)
         for x in a.accounts
     ]
     default = ("default", "No account is said.", "My usual account")
@@ -391,7 +436,7 @@ def build(
         ),
         "recipient": (
             "Who should receive the money?",
-            [(p.payee_id, _payee(p.name), p.label) for p in a.payees]
+            [(p.payee_id, _payee(aliased(p.name, names)), p.label) for p in a.payees]
             + [("none", _NO_PAYEE, "Someone else")],
         ),
         "transfer_amount": ("How much money should be sent?", [*amounts, no_number]),
@@ -462,7 +507,7 @@ def build(
         "transactions_payee": (
             "Which person's payments are asked about?",
             [("any", "No particular person is named.", "Anyone")]
-            + [(p.payee_id, _payee(p.name), p.label) for p in a.payees],
+            + [(p.payee_id, _payee(aliased(p.name, names)), p.label) for p in a.payees],
         ),
         "transactions_direction": ("Is money in or money out asked about?", DIRECTIONS),
         "transactions_order": ("In what order are transactions wanted?", ORDERS),
@@ -478,7 +523,7 @@ def build(
         ),
     }
     return Options(
-        text=mask(transcript, scope, reference_text),
+        text=mask(transcript, scope, names, reference_text=reference_text),
         # The shield question rides in the same call, so a command costs one Jev call.
         questions=[shield.QUESTION]
         + [Question(name, text, {o: c for o, c, _ in opts}) for name, (text, opts) in spec.items()],
@@ -489,6 +534,7 @@ def build(
             (x.account_id for x in a.accounts if "savings" in x.type),
             a.accounts[0].account_id if a.accounts else None,
         ),
+        aliases=names,
     )
 
 
@@ -562,6 +608,7 @@ def build_followup(text: str, draft: Draft, data: UserData, scope: str) -> Optio
     keys the stand-in numbers; pass the user and session.
     """
     a = data.accounts
+    names = aliases(a, scope)
     parsed = parse_numbers(text)
     said = {f"n{i}": n for i, n in enumerate(parsed + _relative(text, a))}
     amounts = _number_options(said, stand_ins(parsed, scope))
@@ -570,7 +617,7 @@ def build_followup(text: str, draft: Draft, data: UserData, scope: str) -> Optio
     for i, action in enumerate(draft.actions):
         if action.type == "fx_conversion":
             continue  # derived by code from the other actions, so there is nothing to ask
-        task = f"For task {i + 1} ({describe(action)})"
+        task = f"For task {i + 1} ({describe(action, names)})"
         if action.type == "stock_order":
             spec[f"a{i}_quantity"] = (
                 f"{task}, what new number of shares is said?",
@@ -586,49 +633,55 @@ def build_followup(text: str, draft: Draft, data: UserData, scope: str) -> Optio
         # The current value is left out: picking it means "keep", and offering both splits
         # Jev's probability between two options that mean the same thing.
         accounts = [
-            (x.account_id, f"Use the {x.label} account ({x.type}, {x.currency})", x.label)
+            (x.account_id, f"Use the {bare(x.label)} account ({x.type}, {x.currency})", x.label)
             for x in a.accounts
             if x.account_id != action.from_account_id
         ]
         spec[f"a{i}_from"] = (f"{task}, which account should it now come from?", [*accounts, KEEP])
         if action.type == "account_transfer":
             into = [
-                (x.account_id, f"Use the {x.label} account ({x.type}, {x.currency})", x.label)
+                (x.account_id, f"Use the {bare(x.label)} account ({x.type}, {x.currency})", x.label)
                 for x in a.accounts
                 if x.account_id not in (action.to_account_id, action.from_account_id)
             ]
             spec[f"a{i}_to"] = (f"{task}, which account should it now go into?", [*into, KEEP])
         if action.type == "transfer":
             payees = [
-                (p.payee_id, _payee(p.name), p.label)
+                (p.payee_id, _payee(aliased(p.name, names)), p.label)
                 for p in a.payees
                 if p.payee_id != action.to_payee_id
             ]
             spec[f"a{i}_recipient"] = (f"{task}, who should now receive it?", [*payees, KEEP])
     return Options(
-        text=mask(text, scope),
+        text=mask(text, scope, names),
         questions=[shield.QUESTION]
         + [Question(name, q, {o: c for o, c, _ in opts}) for name, (q, opts) in spec.items()],
         labels={name: {o: label for o, _, label in opts} for name, (_, opts) in spec.items()},
         numbers={oid: n.value for oid, n in said.items()},
         said=said,
+        aliases=names,
     )
 
 
-def describe(action) -> str:
+def describe(action, names: dict[str, str] | None = None) -> str:
     """Say one draft action in a few words, for Jev's context and follow-up questions.
 
-    Leaves out amounts and quantities: Jev only needs to tell the tasks apart.
+    Leaves out amounts, quantities and last digits, and names payees by pseudonym: Jev only
+    needs to tell the tasks apart.
     """
+
+    def say(label: str) -> str:
+        return aliased(bare(label), names or {})
+
     if action.type == "transfer":
-        return f"transfer to {action.to_payee_label} from {action.from_account_label}"
+        return f"transfer to {say(action.to_payee_label)} from {say(action.from_account_label)}"
     if action.type == "bill_payment":
-        return f"pay {action.biller_label} from {action.from_account_label}"
+        return f"pay {say(action.biller_label)} from {say(action.from_account_label)}"
     if action.type == "account_transfer":
-        return f"move from {action.from_account_label} to {action.to_account_label}"
+        return f"move from {say(action.from_account_label)} to {say(action.to_account_label)}"
     if action.type == "fx_conversion":
         return (
-            f"convert {action.sell_currency} from {action.from_account_label} "
+            f"convert {action.sell_currency} from {say(action.from_account_label)} "
             f"to {action.buy_currency}"
         )
     return f"{action.side} {action.ticker} shares"
