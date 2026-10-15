@@ -246,6 +246,32 @@ def test_history_cannot_be_rewritten_without_the_key():
         evidence.timeline(None, 10, False)
 
 
+def test_deleted_rows_are_detected_and_writes_stop(monkeypatch):
+    # M8 (15 Oct audit): deleting rows from the end, or all of them, still verified.
+    evidence.record("first", {"x": 1})
+    evidence.record("second", {"x": 2})
+    with sqlite3.connect(config.AUDIT_EVIDENCE_PATH) as db:
+        db.execute("DELETE FROM events WHERE position=1")
+    with pytest.raises(AuditError):
+        evidence.timeline(None, 10, False)
+    with sqlite3.connect(config.AUDIT_EVIDENCE_PATH) as db:
+        db.execute("DELETE FROM events")
+    with pytest.raises(AuditError):  # fail closed even though the file now looks clean
+        evidence.record("third", {})
+
+
+def test_the_evidence_key_can_rotate(monkeypatch):
+    # M15 (15 Oct audit): a new key made every audited request fail with 503.
+    from cryptography.fernet import Fernet
+
+    old = config.AUDIT_EVIDENCE_KEY
+    evidence.record("before", {"x": 1})
+    monkeypatch.setattr(config, "AUDIT_EVIDENCE_KEY", Fernet.generate_key().decode() + "," + old)
+    evidence.record("after", {"x": 2})
+    entries = evidence.timeline(None, 10, True)["entries"]
+    assert [e["evidence"]["x"] for e in entries] == [1, 2]
+
+
 def test_the_store_is_owner_only():
     evidence.record("first", {"x": 1})
     assert os.stat(config.AUDIT_EVIDENCE_PATH).st_mode & 0o777 == 0o600

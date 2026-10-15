@@ -10,13 +10,14 @@ import json
 import os
 import re
 import sqlite3
+import threading
 import time
 import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 
 from app import config
 from app.audit import AuditError
@@ -58,33 +59,64 @@ def sha(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
-def _mac(label: str, value: bytes) -> str:
-    """Keyed digest for plaintext metadata: a plain SHA-256 of a short request lets anyone
+def _keys() -> list[str]:
+    """AUDIT_EVIDENCE_KEY may list keys, newest first: "new,old". The newest encrypts and
+    signs; older ones still verify and decrypt, so a rotation is no outage (M15). A retired
+    key must stay listed while rows it signed remain. ponytail: no crypto-shredding of
+    expired payloads in backups; add per-period keys if that matters."""
+    return [k.strip() for k in config.AUDIT_EVIDENCE_KEY.split(",") if k.strip()]
+
+
+def _mac(label: str, value: bytes, key: str) -> str:
+    """Keyed digest: a plain SHA-256 of a short request in plaintext metadata lets anyone
     holding the file confirm guesses such as "send 350 to John Doe" (H6, 15 Oct audit)."""
-    key = hmac.new(config.AUDIT_EVIDENCE_KEY.encode(), label.encode(), hashlib.sha256).digest()
-    return hmac.new(key, value, hashlib.sha256).hexdigest()
+    derived = hmac.new(key.encode(), label.encode(), hashlib.sha256).digest()
+    return hmac.new(derived, value, hashlib.sha256).hexdigest()
 
 
-def _link(meta: dict) -> str:
+def _signed(label: str, value: bytes, digest: str) -> bool:
+    return any(hmac.compare_digest(_mac(label, value, k), digest) for k in _keys())
+
+
+def _link(meta: dict, key: str) -> str:
     """Keyed chain hash: rewriting history needs the evidence key, not just file access."""
-    key = hashlib.sha256(b"dcta-evidence-chain:" + config.AUDIT_EVIDENCE_KEY.encode()).digest()
-    return hmac.new(key, encoded(meta), hashlib.sha256).hexdigest()
+    derived = hashlib.sha256(b"dcta-evidence-chain:" + key.encode()).digest()
+    return hmac.new(derived, encoded(meta), hashlib.sha256).hexdigest()
 
 
-def _cipher() -> Fernet:
+def _cipher() -> MultiFernet:
     try:
-        return Fernet(config.AUDIT_EVIDENCE_KEY.encode())
+        return MultiFernet([Fernet(k.encode()) for k in _keys()])
     except (ValueError, TypeError):
         raise AuditError("Audit evidence encryption is not configured.") from None
 
 
+class _Tampered(AuditError):
+    pass
+
+
+# Per store: the next position and head hash this process wrote or verified, and stores
+# found tampered. Rows deleted from the end, or all of them, leave a chain that verifies;
+# the remembered head catches that (M8). ponytail: in memory, so a restart trusts the file
+# again; keep a keyed checkpoint outside the database if that gap matters.
+_heads: dict[str, tuple[int, str]] = {}
+_broken: set[str] = set()
+_lock = threading.Lock()  # a commit and its head update happen together
+
+
+def _path() -> Path:
+    if config.AUDIT_EVIDENCE_PATH:
+        return Path(config.AUDIT_EVIDENCE_PATH)
+    return Path(__file__).resolve().parents[1] / "var" / "evidence.sqlite3"
+
+
 @contextmanager
 def _connect():
-    path = (
-        Path(config.AUDIT_EVIDENCE_PATH)
-        if config.AUDIT_EVIDENCE_PATH
-        else (Path(__file__).resolve().parents[1] / "var" / "evidence.sqlite3")
-    )
+    path = _path()
+    if not _keys():  # without a key nothing can be checked; don't mistake that for tampering
+        raise AuditError("Audit evidence encryption is not configured.")
+    if str(path) in _broken:  # fail closed: never append to a store found tampered
+        raise _Tampered("Evidence timeline integrity check failed earlier.")
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     db = sqlite3.connect(path, timeout=10)
     os.chmod(path, 0o600)  # transcripts and bank snapshots, even encrypted, are owner-only
@@ -96,6 +128,9 @@ def _connect():
     try:
         with db:
             yield db
+    except _Tampered:
+        _broken.add(str(path))
+        raise
     finally:
         db.close()
 
@@ -107,9 +142,17 @@ def _check(meta: dict, digest: str, position: int, previous: str, empty: bool, e
         or meta["previous_hash"] != previous
         # Evidence may be absent only after expiry, or when capacity dropped it on write.
         or (empty and expires > time.time() and not meta.get("dropped"))
-        or not hmac.compare_digest(_link(meta), digest)
+        or not any(hmac.compare_digest(_link(meta, k), digest) for k in _keys())
     ):
-        raise AuditError("Evidence timeline integrity check failed.")
+        raise _Tampered("Evidence timeline integrity check failed.")
+
+
+def _head(position: int, digest: str) -> None:
+    """Refuse a chain that ends before what this process last saw; then remember its end."""
+    seen = _heads.get(str(_path()))
+    if seen is not None and seen != (position, digest):
+        raise _Tampered("Evidence timeline was truncated or rolled back.")
+    _heads[str(_path())] = (position, digest)
 
 
 def _verified(db):
@@ -122,10 +165,11 @@ def _verified(db):
     for position, text, digest, empty, expires in rows:
         meta = json.loads(text)
         if position != len(result):
-            raise AuditError("Evidence timeline integrity check failed.")
+            raise _Tampered("Evidence timeline integrity check failed.")
         _check(meta, digest, position, previous, empty, expires)
         previous = digest
         result.append((meta, digest, not empty, expires))
+    _head(len(result), previous)
     return result
 
 
@@ -137,10 +181,12 @@ def _last(db) -> tuple[int, str]:
         "ORDER BY position DESC LIMIT 1"
     ).fetchone()
     if row is None:
+        _head(0, "0" * 64)
         return 0, "0" * 64
     position, text, digest, empty, expires = row
     meta = json.loads(text)
     _check(meta, digest, position, meta["previous_hash"], empty, expires)
+    _head(position + 1, digest)
     return position + 1, digest
 
 
@@ -161,10 +207,11 @@ def record(event: str, payload: dict, **links) -> str:
             and isinstance(v, str)
             and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", v)
         }
+        key = _keys()[0]  # _cipher() has checked there is one
         if "draft_digest" in binding:
-            binding["draft_digest"] = _mac("draft-digest", binding["draft_digest"].encode())
+            binding["draft_digest"] = _mac("draft-digest", binding["draft_digest"].encode(), key)
         identifier = "ev_" + uuid.uuid4().hex
-        with _connect() as db:
+        with _lock, _connect() as db:
             db.execute("BEGIN IMMEDIATE")
             position, previous = _last(db)
             now = time.time()
@@ -180,22 +227,25 @@ def record(event: str, payload: dict, **links) -> str:
                 "time": now,
                 "expires_at": expires,
                 **binding,
-                "evidence_digest": _mac("evidence-digest", body),
+                "evidence_digest": _mac("evidence-digest", body, key),
                 "previous_hash": previous,
                 # ponytail: past the cap only metadata is kept; raise the cap or ship evidence
                 # to object storage if a real deployment needs every payload.
                 **({"dropped": "capacity"} if full else {}),
             }
+            link = _link(meta, key)
             db.execute(
                 "INSERT INTO events VALUES (?,?,?,?,?)",
                 (
                     position,
                     encoded(meta).decode(),
-                    _link(meta),
+                    link,
                     None if full else cipher.encrypt(body),
                     expires,
                 ),
             )
+            db.commit()
+            _heads[str(_path())] = (position + 1, link)  # only once committed
         return identifier
     except (OSError, sqlite3.Error, ValueError, KeyError, TypeError) as error:
         raise AuditError("Could not persist audit evidence.") from error
@@ -204,7 +254,7 @@ def record(event: str, payload: dict, **links) -> str:
 def timeline(session_id: str | None, limit: int, include_evidence: bool) -> dict:
     """Verify the chain and payload digests; expiry never silently becomes an empty record."""
     try:
-        with _connect() as db:
+        with _lock, _connect() as db:
             db.execute("BEGIN IMMEDIATE")
             rows = _verified(db)
             db.execute("UPDATE events SET payload=NULL WHERE expires<=?", (time.time(),))
@@ -221,9 +271,7 @@ def timeline(session_id: str | None, limit: int, include_evidence: bool) -> dict
                         "SELECT payload FROM events WHERE position=?", (meta["position"],)
                     ).fetchone()
                     body = _cipher().decrypt(blob)
-                    if not hmac.compare_digest(
-                        _mac("evidence-digest", body), meta["evidence_digest"]
-                    ):
+                    if not _signed("evidence-digest", body, meta["evidence_digest"]):
                         raise AuditError("Evidence digest mismatch.")
                     item["evidence"] = json.loads(body)
                 entries.append(item)
@@ -235,7 +283,7 @@ def timeline(session_id: str | None, limit: int, include_evidence: bool) -> dict
 def purge_expired() -> None:
     """Run on startup and hourly; retain integrity metadata after evidence expiry."""
     try:
-        with _connect() as db:
+        with _lock, _connect() as db:
             db.execute("BEGIN IMMEDIATE")
             _verified(db)
             db.execute("UPDATE events SET payload=NULL WHERE expires<=?", (time.time(),))
