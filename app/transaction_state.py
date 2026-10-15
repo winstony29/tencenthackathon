@@ -33,19 +33,33 @@ class Record:
     result: dict | None = None
     checking: bool = False
     started: float = 0
+    client: str = ""
 
 
 _lock = threading.RLock()
 _records: dict[tuple[str, str], Record] = {}
 _turns: dict[tuple[str, str], tuple[str, float]] = {}
 _turn: ContextVar[tuple[tuple[str, str], str] | None] = ContextVar("audit_turn", default=None)
+# The browser's server-issued client secret (HttpOnly cookie, app/main.py). A session ID is
+# chosen by the client and can leak, so each conversation belongs to the client that started it.
+client: ContextVar[str] = ContextVar("client", default="")
+_owners: dict[str, tuple[str, float]] = {}  # session_id -> (client, expires)
 
 
 def start_turn(user_id: str, session_id: str):
+    """Open a new turn; refuse a session ID that another client is using (InvalidDraft)."""
     with _lock:
         now = time.monotonic()
         for key in [k for k, (_, expires) in _turns.items() if expires < now]:
             _turns.pop(key)
+        for key in [k for k, (_, expires) in _owners.items() if expires < now]:
+            _owners.pop(key)
+        owner = _owners.get(session_id)
+        if owner is not None and not hmac.compare_digest(owner[0], client.get()):
+            raise InvalidDraft("This conversation has expired. Please start again.")
+        if len(_owners) >= 1000 and owner is None:
+            _owners.pop(min(_owners, key=lambda k: _owners[k][1]))
+        _owners[session_id] = (client.get(), now + config.SESSION_TIMEOUT_SECONDS)
         if len(_turns) >= 1000 and (user_id, session_id) not in _turns:
             # Evict the conversation closest to expiry: junk sessions can't lock everyone out.
             oldest = min(_turns, key=lambda k: _turns[k][1])
@@ -72,6 +86,7 @@ def clear():
     with _lock:
         _records.clear()
         _turns.clear()
+        _owners.clear()
         _turn.set(None)
 
 
@@ -106,6 +121,7 @@ def register(draft: Draft, history: list[dict], facts: dict):
             now + config.SESSION_TIMEOUT_SECONDS,
             copy.deepcopy(history),
             copy.deepcopy(facts),
+            client=client.get(),
         )
         evidence.record(
             "draft_registered",
@@ -124,7 +140,12 @@ def register(draft: Draft, history: list[dict], facts: dict):
 
 def _current(draft: Draft) -> Record:
     r = _records.get((draft.user_id, draft.session_id))
-    if r is None or r.expires <= time.monotonic() or r.digest != digest(draft):
+    if (
+        r is None
+        or r.expires <= time.monotonic()
+        or r.digest != digest(draft)
+        or not hmac.compare_digest(r.client, client.get())
+    ):
         raise InvalidDraft("This draft changed or expired. Request a fresh draft.")
     return r
 

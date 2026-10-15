@@ -7,6 +7,8 @@ Contract: docs/CONTRACTS.md §3 (endpoints) and §6 (errors)
 
 import asyncio
 import logging
+import re
+import secrets
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
@@ -18,7 +20,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException
 
-from app import config, evidence
+from app import config, evidence, transaction_state
 from app.audit import AuditError
 from app.audit_http import AuditMiddleware
 from app.audit_http import router as audit_router
@@ -74,6 +76,7 @@ _MODEL_PATHS = {"/api/understand": "model", "/api/preview": "preview"}
 # Rate state: tokens and last refill per (client IP, group), and every recent model call.
 RATE_BUCKETS: dict[tuple[str, str], tuple[float, float]] = {}
 RATE_WINDOW: list[float] = []
+_COOKIE = re.compile(rb"(?:^|;)\s*dcta_client=([A-Za-z0-9_-]{43})(?:;|$)")
 
 
 class _Guard:
@@ -107,14 +110,25 @@ class _Guard:
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
 
+        headers = list(_HEADERS)
+
         async def send_with_headers(message):
             if message["type"] == "http.response.start":
-                message["headers"] = list(message.get("headers", [])) + _HEADERS
+                message["headers"] = list(message.get("headers", [])) + headers
             await send(message)
 
         path = scope.get("path", "")
         if not path.startswith("/api/"):
             return await self.app(scope, receive, send_with_headers)
+        # Every browser gets a secret HttpOnly cookie; conversations belong to it (H1 in the
+        # 15 Oct audit), so a leaked session ID alone can't answer, change or sign them.
+        found = _COOKIE.search(dict(scope.get("headers", [])).get(b"cookie", b""))
+        client_id = found.group(1).decode() if found else secrets.token_urlsafe(32)
+        transaction_state.client.set(client_id)
+        if not found:
+            secure = "; Secure" if scope.get("scheme") == "https" else ""
+            cookie = f"dcta_client={client_id}; Path=/api; HttpOnly; SameSite=Strict{secure}"
+            headers.append((b"set-cookie", cookie.encode()))
         limit = config.MAX_AUDIO_BYTES if path == "/api/transcribe" else config.MAX_REQUEST_BYTES
         length = dict(scope.get("headers", [])).get(b"content-length", b"0")
         if not length.isdigit() or int(length) > limit:
