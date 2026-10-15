@@ -136,13 +136,16 @@ async def preview(request: PreviewRequest) -> dict[str, Any]:
     if not config.MAKERS_MODELS_KEY:
         return _STUB_PREVIEW
     # A fresh scope per preview: stand-ins and name pseudonyms can't be linked across requests
-    # or people (D-039). The cache keys on the raw text, which stays in server memory.
+    # or people (D-039). The cache keys on the raw text, which stays in server memory, and on
+    # the browser: a shared cache told anyone whether someone else had typed a text (H7).
     scope = f"preview|{secrets.token_hex(8)}"
     names = (
         options.aliases(readonly.get_accounts(request.user_id), scope) if request.user_id else {}
     )
     masked = options.mask(request.text, scope, names)
-    key = f"{request.user_id}|" + " ".join(request.text.lower().split())
+    key = f"{transaction_state.client.get()}|{request.user_id}|" + " ".join(
+        request.text.lower().split()
+    )
     if len(" ".join(masked.split())) < 2:
         certain = {o: float(o == "none") for o in _PREVIEW_QUESTION.criteria}
         return {

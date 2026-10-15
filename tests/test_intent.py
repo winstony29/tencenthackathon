@@ -595,6 +595,9 @@ def test_preview_guesses_the_action_type_and_caches_it(client, fake_jev) -> None
     again = client.post("/api/preview", json={"text": "Send  fifty to JO"}).json()
     assert again["intent"] == first["intent"] and again["meta"]["cached"] is True
     assert len(fake_jev.calls) == 1
+    # Another browser never learns from the cache what this one typed (H7, 15 Oct audit).
+    other = TestClient(app).post("/api/preview", json={"text": "send fifty to jo"}).json()
+    assert other["meta"]["cached"] is False and len(fake_jev.calls) == 2
 
 
 def test_preview_skips_jev_for_tiny_text(client, fake_jev) -> None:
