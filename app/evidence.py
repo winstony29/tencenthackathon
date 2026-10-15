@@ -58,6 +58,13 @@ def sha(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def _mac(label: str, value: bytes) -> str:
+    """Keyed digest for plaintext metadata: a plain SHA-256 of a short request lets anyone
+    holding the file confirm guesses such as "send 350 to John Doe" (H6, 15 Oct audit)."""
+    key = hmac.new(config.AUDIT_EVIDENCE_KEY.encode(), label.encode(), hashlib.sha256).digest()
+    return hmac.new(key, value, hashlib.sha256).hexdigest()
+
+
 def _link(meta: dict) -> str:
     """Keyed chain hash: rewriting history needs the evidence key, not just file access."""
     key = hashlib.sha256(b"dcta-evidence-chain:" + config.AUDIT_EVIDENCE_KEY.encode()).digest()
@@ -154,6 +161,8 @@ def record(event: str, payload: dict, **links) -> str:
             and isinstance(v, str)
             and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", v)
         }
+        if "draft_digest" in binding:
+            binding["draft_digest"] = _mac("draft-digest", binding["draft_digest"].encode())
         identifier = "ev_" + uuid.uuid4().hex
         with _connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -171,7 +180,7 @@ def record(event: str, payload: dict, **links) -> str:
                 "time": now,
                 "expires_at": expires,
                 **binding,
-                "evidence_digest": sha(body),
+                "evidence_digest": _mac("evidence-digest", body),
                 "previous_hash": previous,
                 # ponytail: past the cap only metadata is kept; raise the cap or ship evidence
                 # to object storage if a real deployment needs every payload.
@@ -212,7 +221,9 @@ def timeline(session_id: str | None, limit: int, include_evidence: bool) -> dict
                         "SELECT payload FROM events WHERE position=?", (meta["position"],)
                     ).fetchone()
                     body = _cipher().decrypt(blob)
-                    if sha(body) != meta["evidence_digest"]:
+                    if not hmac.compare_digest(
+                        _mac("evidence-digest", body), meta["evidence_digest"]
+                    ):
                         raise AuditError("Evidence digest mismatch.")
                     item["evidence"] = json.loads(body)
                 entries.append(item)

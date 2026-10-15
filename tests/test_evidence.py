@@ -33,6 +33,18 @@ def test_encrypted_evidence_survives_session_clear_and_redacts_secrets(monkeypat
         assert raw not in disk
 
 
+def test_plaintext_metadata_holds_no_guessable_digest():
+    # H6 (15 Oct audit): sha256(body) beside the ciphertext let a file reader confirm guesses.
+    evidence.record("first", {"transcript": "send 350 to John Doe"}, draft_digest="abc123")
+    with sqlite3.connect(config.AUDIT_EVIDENCE_PATH) as db:
+        (text,) = db.execute("SELECT metadata FROM events").fetchone()
+    body = evidence.encoded({"transcript": "send 350 to John Doe"})
+    for unkeyed in (hashlib.sha256(body).hexdigest(), hashlib.sha256(b"abc123").hexdigest()):
+        assert unkeyed not in text
+    assert "abc123" not in text
+    assert evidence.timeline(None, 10, True)["entries"][0]["evidence"]["transcript"]
+
+
 def test_metadata_and_evidence_tampering_are_detected():
     evidence.record("first", {"value": 1})
     with sqlite3.connect(config.AUDIT_EVIDENCE_PATH) as db:
