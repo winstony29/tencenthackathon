@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import re
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from decimal import Decimal
 from itertools import groupby
 
@@ -167,16 +168,18 @@ def _stand_in(value: Decimal, scope: str, taken: set[int]) -> int:
     return number
 
 
-def stand_ins(numbers: list[Number], scope: str) -> list[int]:
+def stand_ins(
+    numbers: list[Number], scope: str, reference: list[Number] | None = None
+) -> list[int]:
     """The stand-in for each number, in order: equal values share one, different values never do."""
     chosen: dict[Decimal, int] = {}
-    for n in numbers:
+    for n in [*(reference or []), *numbers]:
         if n.value not in chosen:
             chosen[n.value] = _stand_in(n.value, scope, set(chosen.values()))
     return [chosen[n.value] for n in numbers]
 
 
-def mask(text: str, scope: str) -> str:
+def mask(text: str, scope: str, reference_text: str | None = None) -> str:
     """Swap every number said for its stand-in, so Jev reads a natural sentence but no value.
 
     Stand-ins come from a keyed hash of the value and the scope (user and session): normally
@@ -188,7 +191,8 @@ def mask(text: str, scope: str) -> str:
     # unmasked; add them to _SMALL / _SCALES if they turn up in real transcripts.
     numbers = parse_numbers(text)
     parts, last = [], 0
-    for n, stand_in in zip(numbers, stand_ins(numbers, scope), strict=True):
+    reference = parse_numbers(reference_text) if reference_text else None
+    for n, stand_in in zip(numbers, stand_ins(numbers, scope, reference), strict=True):
         start, end = n.span
         parts += [_hide_digits(text[last:start]), str(stand_in)]
         last = end
@@ -321,7 +325,9 @@ def _words_value(words: list[str]) -> Decimal | None:
     return Decimal(total + current) or None
 
 
-def build(transcript: str, data: UserData, scope: str) -> Options:
+def build(
+    transcript: str, data: UserData, scope: str, reference_text: str | None = None
+) -> Options:
     """Build every question Jev answers about one command, in one batch.
 
     Values only ever come from these lists: payees, accounts, billers and tickers
@@ -331,7 +337,8 @@ def build(transcript: str, data: UserData, scope: str) -> Options:
     a = data.accounts
     parsed = parse_numbers(transcript)
     said = {f"n{i}": n for i, n in enumerate(parsed + _relative(transcript, a))}
-    amounts = _number_options(said, stand_ins(parsed, scope))
+    reference = parse_numbers(reference_text) if reference_text else None
+    amounts = _number_options(said, stand_ins(parsed, scope, reference))
     # A share count or a price is always said, never a fraction of a balance: offering
     # "the rest of the Invest balance" (25,000) for "How many shares?" could draft 25,000 shares.
     said_aloud = amounts[: len(parsed)]
@@ -471,7 +478,7 @@ def build(transcript: str, data: UserData, scope: str) -> Options:
         ),
     }
     return Options(
-        text=mask(transcript, scope),
+        text=mask(transcript, scope, reference_text),
         # The shield question rides in the same call, so a command costs one Jev call.
         questions=[shield.QUESTION]
         + [Question(name, text, {o: c for o, c, _ in opts}) for name, (text, opts) in spec.items()],
@@ -660,6 +667,8 @@ _ASK = {
     "quantity": "How many shares, or how much money?",
     "order_type": "At the market price, or only at your price?",
     "limit_price": "At what price?",
+    "plan_timing": "Check this now, or watch for it later?",
+    "condition_currency": "Which currency is the condition threshold in?",
 }
 
 
@@ -683,6 +692,8 @@ def clarify(
     ranked = (likely if enough else ranked)[: config.CLARIFY_MAX_OPTIONS]
     chips = [(o, options.labels[question][o]) for o in ranked]
     text = _ASK.get(question) or _ASK[question.split("_", 1)[1]]  # a0_amount -> amount
+    if question in {"transfer_amount", "bill_amount", "move_amount"} and chips:
+        text = f"Use {chips[0][1]}?" if len(chips) == 1 else "Which amount did you mean?"
     first_names = {label.split()[0] for _, label in chips[:2]}
     # "Which John?" only when Jev really weighed two people sharing that name.
     if question == "recipient" and enough and len(chips) > 1 and len(first_names) == 1:
@@ -714,3 +725,188 @@ def spoken_reply_question(built: Options, name: str, offered: set[str]) -> Quest
     )
     instructions = f'The user was asked "{asked}" and replied. Which option does the reply choose?'
     return Question(SPOKEN_REPLY, instructions, criteria)
+
+
+# Unrecognised conditional wording remains a non-executable plan, never a plain transfer.
+_CONDITIONAL = re.compile(r"\b(if|when|once|unless|provided(?: that)?|as long as)\b", re.I)
+_ACTION_START = re.compile(r"\b(send|transfer|pay|buy|sell|move|convert|invest)\b", re.I)
+
+
+def conditional_parts(text: str, data: UserData) -> tuple[dict, str] | None:
+    """Separate a condition from its task without allowing threshold numbers into the task.
+
+    This first evaluator understands one stock-price comparison. Other conditions remain
+    visible as text with an unknown result and cannot be registered for execution.
+    """
+    if re.match(
+        r"^what if (?:I |we )?(?:send|transfer|pay|buy|sell|move|convert|invest)\b", text, re.I
+    ):
+        return None
+    if re.match(r"^when (?:is|are|do|does|will|can|should)\b", text, re.I):
+        return None
+    marker = _CONDITIONAL.search(text)
+    if not marker:
+        return None
+    if marker.start() > 0 and _ACTION_START.search(text[: marker.start()]):
+        action, condition = text[: marker.start()].strip(" ,"), text[marker.end() :].strip(" ,.")
+    else:
+        task = _ACTION_START.search(text, marker.end())
+        action = text[task.start() :].strip() if task else ""
+        condition = text[marker.end() : task.start() if task else len(text)].strip(" ,.")
+        condition = re.sub(r"\bthen$", "", condition, flags=re.I).strip(" ,")
+    result = {"text": f"{marker.group()} {condition}" if condition else text, "state": "unknown"}
+    # Unless/compound conditions must not be silently interpreted as a simple comparison.
+    if marker.group().lower() == "unless" or _CONDITIONAL.search(action):
+        return result, ""
+    pattern = (
+        r"(.+?)\s+(?:is\s+|falls?\s+|drops?\s+|rises?\s+)?"
+        r"(below|under|above|over|at most|at least|<=|>=|<|>)\s+(.+)"
+    )
+    match = re.fullmatch(pattern, condition, re.I)
+    if not match:
+        return result, action
+    entity, comparison, amount_text = match.groups()
+    entity = re.sub(r"\b(stock|share|shares|price|of|the)\b", "", entity, flags=re.I).strip()
+    quotes = [
+        q
+        for q in data.quotes
+        if entity.casefold()
+        in {q.ticker.casefold(), q.company_name.casefold(), q.company_name.split()[0].casefold()}
+    ]
+    numbers = parse_numbers(amount_text)
+    if len(quotes) != 1 or len(numbers) != 1:
+        return result, action
+    number = numbers[0]
+    # Refuse a compound expression or unparsed qualifier after the threshold.
+    remainder = amount_text[: number.span[0]] + amount_text[number.span[1] :]
+    if not re.fullmatch(
+        r"[\s$]*(?:(?:US\$|USD|SGD|S\$|US dollars?|dollars?)[\s$]*)*", remainder, re.I
+    ):
+        return result, action
+    if number.value.as_tuple().exponent < -2:
+        return result, action
+    q = quotes[0]
+    operator = {
+        "below": "lt",
+        "under": "lt",
+        "<": "lt",
+        "above": "gt",
+        "over": "gt",
+        ">": "gt",
+        "at most": "lte",
+        "<=": "lte",
+        "at least": "gte",
+        ">=": "gte",
+    }[comparison.lower()]
+    result.update(
+        ticker=q.ticker,
+        operator=operator,
+        threshold=f"{number.value:.2f}",
+        currency=number.currency,
+        quote=q.model_dump(mode="json"),
+    )
+    age = (datetime.now(UTC) - q.as_of).total_seconds()
+    if q.currency != number.currency:
+        return result, action
+    if not 0 <= age <= config.CONDITION_QUOTE_MAX_AGE_SECONDS:
+        result["state"] = "stale"
+    else:
+        met = {
+            "lt": q.price < number.value,
+            "lte": q.price <= number.value,
+            "gt": q.price > number.value,
+            "gte": q.price >= number.value,
+        }[operator]
+        result["state"] = "met" if met else "not_met"
+    return result, action
+
+
+def presentation_intent(
+    text: str,
+    history: list[dict],
+    data: UserData,
+    scope: str,
+    tasks: list[str],
+    constraints: list[str] | None = None,
+) -> dict:
+    """Keep instruction relationships while masking values and known private entity names."""
+    private = []
+    for i, payee in enumerate(data.accounts.payees):
+        private.extend(
+            (name, f"[recipient_{i}]")
+            for name in {payee.name, payee.label, payee.name.split()[0], payee.payee_id}
+        )
+    for i, account in enumerate(data.accounts.accounts):
+        private.extend((name, f"[account_{i}]") for name in {account.label, account.account_id})
+    for i, biller in enumerate(data.accounts.billers):
+        private.extend(
+            (name, f"[biller_{i}]") for name in {biller.name, biller.label, biller.biller_id}
+        )
+
+    def clean(value: str) -> str:
+        for name, token in sorted(private, key=lambda pair: -len(pair[0])):
+            value = re.sub(
+                r"(?<!\w)" + re.escape(name) + r"(?!\w)",
+                lambda _, token=token: token,
+                value,
+                flags=re.I,
+            )
+        return mask(value, scope)
+
+    conversation = [
+        clean(str(h.get("text") or h.get("selected_label") or "")) for h in history[-20:]
+    ]
+    return {
+        "request": clean(text),
+        "conversation": conversation,
+        "tasks": tasks,
+        "constraints": [clean(c) for c in (constraints or [])],
+    }
+
+
+def condition_questions(text: str, data: UserData, scope: str, reference: str) -> list[Question]:
+    numbers = parse_numbers(text)
+    masked = mask(text, scope, reference_text=reference)
+    values = stand_ins(numbers, scope, parse_numbers(reference))
+    return [
+        Question(
+            "condition_shape",
+            "Describe the ENTIRE condition. Compound conditions, time "
+            "windows, boolean combinations and non-price requirements are unsupported. "
+            f"Condition text: {masked}",
+            {
+                "single": "Exactly one stock quote price compared to one threshold",
+                "none": "Unsupported, compound or unclear condition",
+            },
+        ),
+        Question(
+            "condition_asset",
+            "Which listed asset is the condition about?",
+            {
+                "none": "No uniquely matching asset",
+                **{q.ticker: q.company_name for q in data.quotes},
+            },
+        ),
+        Question(
+            "condition_operator",
+            "Select the exact mathematical comparison, including "
+            "whether equality counts. Do not drop any negation or qualifier.",
+            {
+                "none": "Unclear",
+                "lt": "strictly less than",
+                "lte": "less than or equal to",
+                "gt": "strictly greater than",
+                "gte": "greater than or equal to",
+                "eq": "equal to",
+                "ne": "not equal to",
+            },
+        ),
+        Question(
+            "condition_threshold",
+            "Select the condition threshold, never the transfer amount.",
+            {
+                "none": "Missing or unclear",
+                **{f"c{i}": str(values[i]) for i, n in enumerate(numbers)},
+            },
+        ),
+    ]

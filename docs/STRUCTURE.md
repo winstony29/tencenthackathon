@@ -226,3 +226,13 @@ Bank integration runtime additions (git-ignored, under existing `var/`):
 - `approvals.sqlite3`: encrypted authoritative validation context and revision lease.
 - `backups/`: operator snapshots before explicit bank activation; never committed.
 Operator initialization, pause/resume and audit recovery use `app/bank/gateway.py`.
+
+
+Intent-aware plan additions reuse existing files (D-041):
+- `app/contracts.py`: typed presentation intent, condition and non-executable plan.
+- `app/intent/options.py`, `router.py`, `session.py`: condition preservation, bounded
+  comparison, clarification and sanitized handoff. `app/intent/shield.py` distinguishes
+  user-task conditions from attempts to override system rules.
+- `web/presentation_v4.py`: capability hints and one-call plan composition.
+- `web/src/components/v5-cards.tsx`, `v5-enquiry.tsx`: granular plan renderer and
+  strict manifest coverage checks; V5 component gallery includes the plan preview.

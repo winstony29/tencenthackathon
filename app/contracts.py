@@ -139,6 +139,13 @@ class Evidence(ContractModel):
     probabilities: dict[str, Probability]
 
 
+class QuoteCondition(ContractModel):
+    ticker: str = Field(min_length=1, max_length=16)
+    operator: Literal["lt", "lte", "gt", "gte", "eq", "ne"]
+    threshold: Money
+    currency: Currency
+
+
 class Draft(ContractModel):
     draft_id: str
     user_id: str
@@ -147,6 +154,7 @@ class Draft(ContractModel):
     created_at: AwareDatetime
     actions: list[Action] = Field(min_length=1, max_length=MAX_ACTIONS_PER_DRAFT)
     evidence: list[Evidence]
+    condition: QuoteCondition | None = Field(default=None, exclude_if=lambda v: v is None)
 
 
 # §3.1 AI side
@@ -225,7 +233,51 @@ Objective = Literal["prepare", "assess_affordability", "simulate", "check_recipi
 Scenario = dict[int, dict[Literal["amount", "quantity"], str]]
 
 
+class PresentationIntent(ContractModel):
+    """Sanitized intent for presentation only; never an execution instruction."""
+
+    request: str = Field(max_length=2000)
+    conversation: list[str] = Field(default_factory=list, max_length=20)
+    tasks: list[str] = Field(default_factory=list, max_length=4)
+    constraints: list[str] = Field(default_factory=list, max_length=8)
+    coverage: Literal["complete", "partial"] = "complete"
+    gaps: list[str] = Field(default_factory=list, max_length=8)
+
+
+class PlanCondition(ContractModel):
+    text: str = Field(max_length=500)
+    ticker: str | None = None
+    operator: Literal["lt", "lte", "gt", "gte", "eq", "ne"] | None = None
+    threshold: Money | None = None
+    currency: Currency | None = None
+    quote: "QuoteResponse | None" = None
+    state: Literal["met", "not_met", "stale", "unknown"] = "unknown"
+
+
+class RequestPlan(ContractModel):
+    request: str = Field(max_length=500)
+    condition: PlanCondition
+    actions: list[Action] = Field(default_factory=list, max_length=4)
+    timing: Literal["now", "watch", "unspecified"] = "unspecified"
+    unresolved: list[str] = Field(default_factory=list, max_length=8)
+    executable: Literal[False] = False
+    limitation: str
+    intent: PresentationIntent
+
+
+class PlanPresentationRequest(ContractModel):
+    plan: RequestPlan
+    viewport: Literal["mobile", "desktop"] = "desktop"
+
+
+class PlanResponse(ContractModel):
+    status: Literal["plan"]
+    plan: RequestPlan
+    meta: Meta
+
+
 class DraftResponse(ContractModel):
+    presentation: PresentationIntent | None = None
     status: Literal["draft"]
     draft: Draft
     objective: Objective
@@ -289,6 +341,7 @@ class HoldingValue(ContractModel):
 
 
 class _Answer(ContractModel):
+    presentation: PresentationIntent | None = None
     status: Literal["answer"]
     meta: Meta
 
@@ -349,6 +402,7 @@ AnswerResponse = Annotated[
 UnderstandResponse = Annotated[
     QuestionResponse
     | DraftResponse
+    | PlanResponse
     | AnswerResponse
     | BlockedResponse
     | UnsupportedResponse
@@ -547,7 +601,11 @@ class ErrorResponse(ContractModel):
 
 class EnquiryPresentationRequest(ContractModel):
     user_id: str = Field(min_length=1, max_length=128)
-    topic: Literal["balances", "bills", "transactions", "spending", "overview"]
+    topic: Literal["balances", "bills", "transactions", "spending", "overview", "request"]
+    request: str = Field(default="", max_length=2000)
+    conversation: list[str] = Field(default_factory=list, max_length=20)
+    winston: PresentationIntent | None = None
+    outcome: Literal["draft", "answer", "plan", "unsupported"] = "unsupported"
 
 
 class PresentationEvidenceRequest(ContractModel):

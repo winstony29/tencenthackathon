@@ -1,10 +1,12 @@
 ﻿"use client";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { LayoutGroup } from "motion/react";
-import { V5Enquiry, enquirySchema, type Enquiry } from "@/components/v5-enquiry";
+import { V5Enquiry, enquirySchema, fallbackPlanView, type Enquiry } from "@/components/v5-enquiry";
 import { request } from "@/lib/api";
-import { V5Cards } from "@/components/v5-cards";
+import type { RequestPlan } from "@/lib/contracts";
+import { V5Cards, V5Plan } from "@/components/v5-cards";
 import { V5Orb } from "@/components/v5-orb";
 import { demoHandoff } from "@/lib/v4-demo";
 import { initialState, reducer } from "@/lib/v4-state";
@@ -12,6 +14,17 @@ import { contextFor } from "@/lib/v4-catalog";
 import { fallback, accept } from "@/lib/v4-composition";
 import "../../v4/v4.css";
 import "../v5.css";
+const conditionalSample: RequestPlan = {
+  request: "If AAPL is below US$300, send John Doe S$50",
+  condition: {text: "If AAPL is below US$300", ticker: "AAPL", operator: "lt", threshold: "300.00",
+    currency: "USD", state: "stale", quote: {ticker: "AAPL", company_name: "Apple Inc.", price: "227.50",
+    currency: "USD", as_of: "2026-10-12T09:30:00+08:00"}},
+  actions: [{type: "transfer", from_account_id: "acc_1234", from_account_label: "Savings ..1234",
+    to_payee_id: "pay_4521", to_payee_label: "John Doe ..4521", amount: "50.00", currency: "SGD"}],
+  timing: "now", unresolved: [], executable: false,
+  limitation: "Conditional payments aren't available yet. Nothing will be sent.",
+  intent: {coverage: "complete", gaps: [], request: "Conditional transfer", conversation: [], tasks: ["transfer"], constraints: ["stock_price"]},
+};
 const examples = [
   "Transfer",
   "Transfer flow",
@@ -76,6 +89,7 @@ function Sample({ name }: { name: (typeof examples)[number] }) {
   );
 }
 export default function Components() {
+  const router = useRouter();
   const [insights, setInsights] = useState<Enquiry | null>(null);
   const [error, setError] = useState("");
   async function loadInsights() {
@@ -145,6 +159,9 @@ export default function Components() {
             <V5Enquiry value={insights} />
           </div>
         )}
+      </section>
+      <section aria-label="Conditional components" className="v5-gallery-card">
+        <V5Plan plan={conditionalSample} view={fallbackPlanView(1, true)} onDone={() => router.push("/v5/")} />
       </section>
       <section className="v5-gallery-orbs" aria-label="Orb states">
         <div>

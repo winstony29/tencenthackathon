@@ -218,3 +218,22 @@ def test_fx_arithmetic_rejects_wrong_conversion_even_if_model_matches(draft, mon
     assert result["status"] == "mismatch"
     assert result["fields"][0]["transcript_says"] == "740.00"
     assert "receipt" not in result
+
+
+def test_condition_fields_are_audited_without_rechecking_price(draft, monkeypatch):
+    from app.bank import readonly
+    from app.contracts import QuoteCondition
+
+    conditional = draft.model_copy(
+        update={
+            "condition": QuoteCondition(
+                ticker="AAPL", operator="lt", threshold="300.00", currency="USD"
+            )
+        }
+    )
+    assert "condition.operator" in validator.fields(conditional)
+    assert "condition.threshold" in validator.fields(conditional)
+    monkeypatch.setattr(readonly, "evaluate_condition", lambda _: {"state": "stale"})
+    assert validator.arithmetic(conditional, {}) == []
+    assert "condition" not in draft.model_dump(mode="json")
+    assert "condition" in conditional.model_dump(mode="json")

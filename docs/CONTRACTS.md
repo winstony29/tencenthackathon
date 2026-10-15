@@ -1,7 +1,7 @@
 # Contracts
 
 **Purpose:** the exact data shapes and endpoints every part of the system agrees on. `app/contracts.py` implements this file as Pydantic models. If the two disagree, this file wins.
-**Owner:** Winston (keeper) · **Version:** 0.8 (audit evidence extension; prior 0.6/0.7 integration included) · **Last updated:** 2026-10-14
+**Owner:** Winston (keeper) · **Version:** 0.13 (structured-first presentation with selective context) · **Last updated:** 2026-10-15
 
 > Changing anything here needs all three teammates to agree. Then bump the version, update `app/contracts.py` in the same commit, and add a `docs/DECISIONS.md` entry.
 
@@ -564,3 +564,133 @@ execution are recorded, but no signature verification or ledger execution is imp
 SQLite is local storage with serialized writes; this remains a demo architecture, not a
 production distributed audit service. Windows was exercised; macOS uses the same SQLite/
 Fernet code but has not been runtime-tested here.
+
+
+## 13. Intent-aware presentation and conditional plans (v0.9)
+
+`/api/understand` may return `status: "plan"`, with `plan` and the usual `meta`.
+A plan is display-only: it has no draft ID, cannot be validated or signed, and is
+never registered in authoritative transaction state. A new turn still revokes the
+previous draft. A plan creates no payment or monitoring job. Resolved immediate conditions may instead return a signed-condition draft, as described below.
+
+`plan` contains:
+- `request`: the original instruction (or the latest conditional follow-up).
+- `condition`: `text`, nullable `ticker`, `operator` (`lt/lte/gt/gte/eq/ne`), `threshold`
+  (money string), `currency`, `quote` (the existing QuoteResponse), and `state`
+  (`met/not_met/stale/unknown`). Only one fully parsed stock-price comparison is
+  evaluated in this slice. Unknown and compound conditions retain their text.
+- `actions`: zero to four existing Action objects, for display only.
+- `timing`: `now/watch/unspecified`. Winston asks the existing question/answer loop
+  when a resolved action has no explicit timing. Recipient ambiguity is resolved
+  before presentation. Unbuildable portions are listed in `unresolved`.
+- `executable`: always false; `limitation`: code-owned explanation.
+- `intent`: the privacy-filtered PresentationIntent described below.
+
+Threshold numbers are extracted separately from action amounts. Existing currency
+rules apply: unqualified dollars mean SGD, even for a USD-priced security. No FX
+conversion is inferred for a comparison. A mismatched currency prompts for clarification before an executable draft can be prepared.
+Quotes older than CONDITION_QUOTE_MAX_AGE_SECONDS (60 seconds), or from the future,
+produce `stale`. Comparison status is presentation evidence, never authorization.
+
+Draft and read-only answer responses add nullable `presentation`:
+`{request, conversation, tasks, constraints}`. This preserves sanitized wording,
+relevant turns and task types; numbers use stand-ins and known payee/account/biller
+identities are replaced with references. Exact financial values stay in the task
+and bank records. These fields carry user data, not instructions to obey.
+
+`POST /api/presentation-v5/plan` accepts `{plan, viewport: "mobile"|"desktop"}`.
+It returns `{source: "jev"|"fallback", layout: "stacked"|"flow", nodes}`. Each node
+has `component`, `binding` and `variant`. Allowed nodes are Condition, QuoteMetric,
+Relationship, PlannedAction and AvailabilityNotice. The condition, relationship,
+each action exactly once, and availability notice are mandatory and ordered.
+Only QuoteMetric may be omitted. Bindings refer to `condition`, a zero-based action
+index, or `plan`; they cannot carry invented values. The client checks coverage and
+variants independently and retains the complete fallback when choices fail.
+
+The composer receives sanitized intent, structural facts, timestamp validity,
+viewport, eligible components and server-owned bank capability hints. One model
+call chooses variants and layout; code binds actual values and enforces coverage.
+Existing V4 evaluation context and V5 answer requests accept optional `intent`.
+Capability hints never authorize payment: scheduled payment and price monitoring remain unavailable. Immediate quote conditions require the checks below. Single-SGD-transfer execution still needs
+validation, signature and all bank checks.
+
+This extends presentation vocabulary; it does not enable arbitrary banking APIs,
+generate UI code, or claim every natural-language condition can be evaluated.
+
+
+### Request-aware enquiry composition
+
+`POST /api/presentation-v5/enquiry` also accepts `topic: "request"` with `request`
+(max 2000 characters), `conversation` (max 20 strings), optional `winston`
+(PresentationIntent), and `outcome` (draft, answer, plan, unsupported).
+The server masks the request/history using known account and recipient identities.
+JEV chooses from available read-only components across topics, including timestamped
+QuoteList data. Financial values bind to bank reads, never model-written values.
+The response uses the existing enquiry tree with optional `data.quotes`.
+There is no coverage verdict or payment gate from UI composition.
+
+V5 embeds this request as optional `context_request` in its existing
+`/presentation-v4/evaluate`, `/presentation-v5/answer`, or `/presentation-v5/plan`
+call. The server appends prefixed component choices to the same native JEV request
+and returns the validated context tree as optional `context_view`. No extra model
+call is added. Multi-phase V4 composition includes context selection in its first
+phase only. Unsupported Winston responses use the enquiry endpoint as their only
+UI composer; blocked and clarification responses do not enter it.
+
+The original request and conversation are masked on the server before JEV sees
+them. Original financial records remain bound locally. Composition failures use
+the existing fallback. Validation, signature and bank checks remain authoritative;
+conditional plans retain their existing non-executable status.
+
+
+### Immediate quote conditions (v0.12)
+
+A resolved `Draft` may include `condition: {ticker, operator, threshold, currency}`.
+Operators are `lt/lte/gt/gte/eq/ne`; threshold is a decimal money string. The field
+is omitted entirely on ordinary drafts, preserving their existing signed encoding.
+Winston selects the asset, comparison and numeric candidate in its existing native
+request. Deterministic code compares a matching, fresh bank quote using Decimal.
+Only a met, single comparison with resolved actions and immediate timing becomes
+a draft. Unsupported/compound conditions, stale data and unmet comparisons remain
+non-executable plans. This does not create a watcher or scheduled payment.
+
+The validator audits the predicate against the instruction and supplied data.
+The predicate is covered by the receipt, canonical draft and customer signature.
+The gateway reads and checks the quote before issuing a challenge and again before
+new execution. A failed check rejects the request without debiting. Exact committed
+retries return the original receipt without reevaluating or repeating the payment.
+The UI displays the condition and quote timestamp, polls the quote, and disables
+confirmation when it is no longer met; backend enforcement remains authoritative.
+
+Stored bank snapshots are not a live market feed. Stale snapshots need replacement
+by a genuine fresh data source; their timestamps must not be refreshed artificially.
+
+
+### Demo condition policy (supersedes v0.12 freshness and recheck rules)
+
+The virtual bank's stored quote is authoritative for this demo regardless of age.
+Winston evaluates the resolved predicate once while preparing the draft. Missing
+or wrong-currency quotes and false conditions cannot prepare a conditional draft.
+The predicate remains signed and its meaning is independently validated, but its
+price is not polled or re-evaluated by validation, challenge or execution. The UI
+says "Condition met when prepared". Confirmation remains a separate user action;
+normal bank limits, signature checks and idempotency remain enforced. This is a
+preparation-time demo condition, not a live-market conditional order.
+
+
+### Structured-first presentation (v0.13)
+
+PresentationIntent adds `coverage: complete|partial` (default complete) and `gaps`
+(default empty). Winston asks a capability-coverage question in its existing model
+batch, then checks which confidently selected tasks/information are absent from the
+actual output. A specific gap enables broader composition; weak coverage evidence
+alone does not trigger clarification or reinterpretation. This is presentation
+metadata, never permission to execute or a replacement for the independent validator.
+
+Complete outputs use structured tasks and banking context. Their original prompt and
+history are omitted from the UI model state. Partial outputs with nonempty gaps may
+include a masked `context_request` in the existing UI request. The server enforces
+this gate too. Unsupported results retain a read-only enquiry fallback. Question
+responses remain in Winston's existing clarification loop; no UI composition starts
+until that loop returns a result. No extra model round trip is introduced. Existing
+card deduplication and the two-supplementary-card limit remain in force.

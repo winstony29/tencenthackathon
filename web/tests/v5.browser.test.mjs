@@ -248,7 +248,7 @@ async function setup(page, mode = "otp", beforeComposition = async () => {}) {
   await page.getByRole("button", { name: "Choose a banking request" }).click();
   await page.getByRole("button", { name: "Send $50 to John", exact: true }).click();
   assert.equal(calls.length, 0);
-  await page.getByRole("button", { name: /John Doe/ }).click();
+  await page.getByRole("button", { name: /^JD John Doe/ }).click();
   await page.waitForSelector('.v5-card-content[data-source="jev"]');
   return calls;
 }
@@ -462,14 +462,18 @@ test("V5 preserves filtered bill answers through timeline composition", {timeout
     await setup(page);
     const forbidden = [];
     await page.route("**/api/account-insights?*", r => { forbidden.push("insights"); return r.abort(); });
-    await page.route("**/api/presentation-v5/enquiry", r => { forbidden.push("enquiry"); return r.abort(); });
+    await page.route("**/api/presentation-v5/enquiry", r => { assert.equal(r.request().postDataJSON().topic, "request"); return r.abort(); });
     await page.route("**/api/understand", r => r.fulfill({json: {
       status: "answer", kind: "bills", meta,
       bills: [{label: "Selected rent", amount: "1450.00", currency: "SGD", due_at: "2026-11-01T09:00:00+08:00",
         account_id: "acc_1234", account_label: "Savings", recurrence: "monthly"}],
     }}));
     await page.route("**/api/presentation-v5/answer", async r => {
-      assert.deepEqual(r.request().postDataJSON(), {kind: "bills", count: 1, timeline_requested: true});
+      const input = r.request().postDataJSON();
+      assert.equal(input.kind, "bills");
+      assert.equal(input.count, 1);
+      assert.equal(input.timeline_requested, true);
+      assert.equal(input.context_request, undefined); // Covered answer stays on the structured path.
       await page.getByText(/Selected rent/).waitFor(); // visible before model completion
       await r.fulfill({json: {source: "jev", variant: "timeline", detail: "expanded", summary: false, latency_ms: 1}});
     });
@@ -521,5 +525,132 @@ test("pending and unavailable audits cannot authorize; a late result cannot rest
     await page.getByRole("button", {name:"Retry check"}).waitFor();
     assert.equal(await page.getByRole("button", {name:"Transfer now"}).isDisabled(),true);
     assert.ok(calls.every(c => c === "validate"));
+  } finally {await browser.close();}
+});
+
+
+for (const width of [390, 1024, 1440]) {
+  test(`conditional plan preserves meaning and never offers payment at ${width}px`, {timeout: 30000}, async () => {
+    const browser = await chromium.launch({executablePath, headless: true});
+    try {
+      const page = await browser.newPage({viewport: {width, height: 1000}, reducedMotion: "reduce"});
+      const forbidden = [];
+      await page.route("**/api/validate", r => {forbidden.push("validate"); return r.abort();});
+      await page.route("**/api/execute", r => {forbidden.push("execute"); return r.abort();});
+      await page.route("**/api/audit/presentation", r => r.fulfill({status: 204}));
+      const plan = {
+        request: "If AAPL is below US$300, send John Doe S$50",
+        condition: {text: "If AAPL is below US$300", ticker: "AAPL", operator: "lt", threshold: "300.00", currency: "USD",
+          state: "stale", quote: {ticker: "AAPL", company_name: "Apple Inc.", price: "227.50", currency: "USD", as_of: "2026-10-12T09:30:00+08:00"}},
+        actions: [{...transfer, amount: "50.00"}], timing: "now", unresolved: [], executable: false,
+        limitation: "Conditional payments aren't available yet. Nothing will be sent.",
+        intent: {request: "If AAPL is below a threshold send an amount to [recipient]", conversation: [], tasks: ["transfer"], constraints: ["stock_price"]},
+      };
+      await page.route("**/api/understand", r => r.fulfill({json: {status: "plan", plan, meta}}));
+      await page.route("**/api/presentation-v5/plan", async r => {
+        assert.equal(r.request().postDataJSON().plan.executable, false);
+        await page.getByRole("region", {name: "Condition", exact: true}).waitFor();
+        // A malformed selection must keep the full fallback plan.
+        await r.fulfill({json: {source: "jev", layout: "flow", nodes: []}});
+      });
+      await page.goto(`${process.env.APP_URL ?? "http://127.0.0.1:3000"}/v5/`);
+      await page.getByRole("button", {name: "Choose a banking request"}).click();
+      await page.getByLabel("What would you like to do?").fill(plan.request);
+      await page.getByRole("button", {name: "Send request"}).click();
+      await page.getByText("Quote needs updating", {exact: true}).waitFor();
+      assert.match(await page.locator('.v5-plan').innerText(), /US\$300/);
+      assert.match(await page.locator('.v5-plan').innerText(), /S\$50/);
+      assert.match(await page.locator('.v5-plan').innerText(), /Nothing will be sent/);
+      assert.equal(await page.getByRole("button", {name: /Transfer now|Confirm|Pay now/}).count(), 0);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+      assert.deepEqual(forbidden, []);
+      await page.screenshot({path: `${tmpdir()}/jev-conditional-${width}.png`, fullPage: true});
+    } finally { await browser.close(); }
+  });
+}
+
+
+test("one UI call adds context without a coverage payment gate", {timeout: 30000}, async () => {
+  const browser = await chromium.launch({executablePath, headless: true});
+  try {
+    const page = await browser.newPage({viewport: {width: 390, height: 900}, reducedMotion: "reduce"});
+    const calls = await setup(page, "success");
+    await page.getByText("Request checked", {exact: true}).waitFor();
+    await page.getByRole("button", {name: "Start over", exact: true}).first().click();
+    await page.route("**/api/understand", r => {
+      const result = understand({...r.request().postDataJSON(), answer: {option_id: "pay_4521"}}, {});
+      const extra = /spending/.test(r.request().postDataJSON().transcript ?? "");
+      result.presentation = {request: "Transfer", conversation: [], tasks: ["transfer"], constraints: [], coverage: extra ? "partial" : "complete", gaps: extra ? ["spending"] : []};
+      return r.fulfill({json: result});
+    });
+    let compositions = 0;
+    const enquiries = [];
+    await page.route("**/api/presentation-v5/enquiry", r => { enquiries.push(1); return r.abort(); });
+    await page.route("**/api/presentation-v4/evaluate", r => {
+      compositions++;
+      const input = r.request().postDataJSON();
+      assert.match(input.context_request.request, /spending/);
+      assert.equal(input.context_request.outcome, "draft");
+      return r.fulfill({json: {...response(input), context_view: {
+        topic: "request", source: "jev", latency_ms: 1,
+        data: {source: "synthetic", as_of: "2026-10-14T00:00:00Z", accounts: [], transactions: null, spending: [], forecasts: []},
+        spec: {root: "workspace", elements: {
+          workspace: {type: "EnquiryWorkspace", variant: "focus", children: ["context"]},
+          context: {type: "PeriodComparison", variant: "compact", children: []},
+        }},
+      }}});
+    });
+    await page.getByRole("button", {name: "Choose a banking request"}).click();
+    await page.getByLabel("What would you like to do?").fill("Send John S$50 and show monthly spending");
+    await page.getByRole("button", {name: "Send request"}).click();
+    await page.getByRole("heading", {name: "Month comparison"}).waitFor();
+    await page.getByText("Request checked", {exact: true}).waitFor();
+    await page.waitForFunction(() => [...document.querySelectorAll("button")].some(b => b.textContent.includes("Transfer now") && !b.disabled));
+    assert.equal(await page.getByText(/Part of your request still needs checking/).count(), 0);
+    assert.equal(compositions, 1);
+    assert.deepEqual(enquiries, []);
+    // A gateway failure falls back to the ordinary task UI, not a payment veto.
+    await page.getByRole("button", {name: "Start over", exact: true}).first().click();
+    await page.route("**/api/presentation-v4/evaluate", r => {
+      assert.ok(!r.request().postDataJSON().context_request);
+      return r.fulfill({status: 502, json: {detail: "Unavailable"}});
+    });
+    await page.getByRole("button", {name: "Choose a banking request"}).click();
+    await page.getByLabel("What would you like to do?").fill("Send John S$50");
+    await page.getByRole("button", {name: "Send request"}).click();
+    await page.getByText("Request checked", {exact: true}).waitFor();
+    await page.waitForFunction(() => [...document.querySelectorAll("button")].some(b => b.textContent.includes("Transfer now") && !b.disabled));
+    assert.equal(await page.getByText(/Part of your request still needs checking/).count(), 0);
+    assert.deepEqual(enquiries, []);
+
+    assert.ok(!calls.includes("execute"));
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  } finally {await browser.close();}
+});
+
+
+test("demo condition stays prepared without polling price", {timeout: 30000}, async () => {
+  const browser = await chromium.launch({executablePath, headless: true});
+  try {
+    const page = await browser.newPage({reducedMotion: "reduce", viewport: {width:390,height:900}});
+    await setup(page, "success");
+    await page.getByRole("button", {name: "Start over", exact: true}).first().click();
+    let price = "250.00";
+    await page.route("**/api/quote?*", r => r.fulfill({json: {ticker:"MSFT", company_name:"Microsoft", price, currency:"USD", as_of:new Date().toISOString()}}));
+    await page.route("**/api/understand", r => {
+      const result = understand({...r.request().postDataJSON(), answer: {option_id:"pay_4521"}}, {});
+      result.draft.condition = {ticker:"MSFT", operator:"lt", threshold:"300.00", currency:"USD"};
+      return r.fulfill({json:result});
+    });
+    await page.getByRole("button", {name:"Choose a banking request"}).click();
+    await page.getByLabel("What would you like to do?").fill("If Microsoft is under US$300, send John S$50 now");
+    await page.getByRole("button", {name:"Send request"}).click();
+    await page.getByText("Condition met when prepared", {exact:true}).waitFor();
+    await page.waitForFunction(() => [...document.querySelectorAll("button")].some(b => b.textContent.includes("Transfer now") && !b.disabled));
+    price = "350.00";
+    await page.waitForTimeout(11000);
+    assert.equal(await page.getByRole("button", {name:"Transfer now"}).isDisabled(), false);
+    await page.getByText("Condition met when prepared", {exact:true}).waitFor();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   } finally {await browser.close();}
 });

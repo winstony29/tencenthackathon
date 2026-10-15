@@ -1,6 +1,6 @@
 import { financialSchema } from "./v4-financial";
 import { z } from "zod";
-import { accountsSchema, draftSchema, quoteSchema, type Draft } from "./contracts";
+import { accountsSchema, draftSchema, quoteSchema, presentationIntentSchema, type Draft } from "./contracts";
 import { editedActions, updateEdit, type DraftEdits } from "./draft-editor";
 import { fromCurrency } from "./money";
 
@@ -8,6 +8,7 @@ export const objectiveSchema = z.enum(["prepare", "assess_affordability", "simul
 export type Objective = z.infer<typeof objectiveSchema>;
 export const handoffSchema = z.strictObject({
   draft: draftSchema,
+  intent: presentationIntentSchema.nullable().optional(),
   objective: objectiveSchema,
   data: z.strictObject({
     accounts: accountsSchema,

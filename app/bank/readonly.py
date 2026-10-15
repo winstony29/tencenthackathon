@@ -27,6 +27,7 @@ from app.contracts import (
     FxResponse,
     Holding,
     Payee,
+    QuoteCondition,
     QuoteResponse,
     TransactionEntry,
     UpcomingBill,
@@ -774,3 +775,24 @@ def list_bills(user_id: str) -> list[UpcomingBill]:
         if r.get("kind") == "expense" and r.get("state") not in ("paid", "cancelled")
     ]
     return sorted(bills, key=lambda b: b.due_at)
+
+
+def evaluate_condition(condition: QuoteCondition, quote: QuoteResponse | None = None) -> dict:
+    """Evaluate a bound predicate, never model-written values or a cached UI verdict."""
+    try:
+        quote = quote or get_quote(condition.ticker)
+    except (HTTPException, LookupError, ValueError):
+        return {"state": "unknown", "quote": None}
+    result = {"state": "unknown", "quote": quote.model_dump(mode="json")}
+    if quote.ticker != condition.ticker or quote.currency != condition.currency:
+        return result
+    price, threshold = quote.price, condition.threshold
+    met = {
+        "lt": price < threshold,
+        "lte": price <= threshold,
+        "gt": price > threshold,
+        "gte": price >= threshold,
+        "eq": price == threshold,
+        "ne": price != threshold,
+    }[condition.operator]
+    return {**result, "state": "met" if met else "not_met"}

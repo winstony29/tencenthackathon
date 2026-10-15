@@ -35,6 +35,12 @@ and corrections. Hypothetical questions do not authorize changes. Clarification 
 and labels are user selections, not model recommendations. Scope each answer to the recorded
 question: 'no' to has_account_transfer rejects moving between OWN accounts, not a separate
 transfer to a saved payee. It is not a blanket cancellation. Check missing/extra actions and order.
+If a condition is supplied, independently verify its asset, operator, threshold and currency
+against the whole instruction and clarifications. It is a signed dependency enforced by the
+demo preparation step, not an extra action. Audit the predicate against the instruction;
+do not recheck its price or timestamp. Any missing condition, compound clause or unsupported
+timing must
+fail coverage even when a simple condition was supplied. Do not approve monitoring or schedules.
 Independently resolve beneficiaries, source/destination accounts, currencies, asset class,
 buy/sell, quantity, order type and limit price. Re-derive relative amounts (including 'the rest'
 after preceding actions), FX amounts (round down to cents), and whole-share budget quantities
@@ -66,6 +72,10 @@ def fields(draft: Draft) -> dict[str, str]:
     for i, action in enumerate(draft.actions):
         result.update(
             {f"actions[{i}].{k}": str(v) for k, v in action.model_dump(mode="json").items()}
+        )
+    if draft.condition is not None:
+        result.update(
+            {f"condition.{k}": str(v) for k, v in draft.condition.model_dump(mode="json").items()}
         )
     return result
 
@@ -123,6 +133,9 @@ async def validate(draft: Draft) -> dict:
             "history": record.history,
             "actions": [a.model_dump(mode="json") for a in record.draft.actions],
             "bank_snapshot": record.facts,
+            "condition": record.draft.condition.model_dump(mode="json")
+            if record.draft.condition
+            else None,
             "required_fields": list(values),
         }
         links = {

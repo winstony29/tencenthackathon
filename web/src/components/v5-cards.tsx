@@ -5,7 +5,7 @@ import type { Composition } from "@/lib/v4-composition";
 import type { State } from "@/lib/v4-state";
 import { financialRows } from "@/lib/v4-financial";
 import { displayMoney, estimatedTotal, fromCurrency } from "@/lib/money";
-import { quoteSchema, validationSchema, type Validation, type Action, type Answer, type Quote } from "@/lib/contracts";
+import { quoteSchema, validationSchema, type Validation, type Action, type Answer, type Quote, type RequestPlan } from "@/lib/contracts";
 import { post, request } from "@/lib/api";
 import {
   RecipientDetails,
@@ -17,7 +17,7 @@ import {
 import { AccountInsights } from "./v4-context";
 import { effective, type Event } from "@/lib/v4-state";
 import type { ReactNode } from "react";
-import { fallbackAnswerPresentation, type AnswerPresentation } from "./v5-enquiry";
+import { fallbackAnswerPresentation, acceptPlanView, fallbackPlanView, type PlanView, type AnswerPresentation } from "./v5-enquiry";
 import { V5Payment } from "./v5-payment";
 
 const money = (value: string, currency: string) =>
@@ -206,13 +206,15 @@ export function V5Cards({
   const h = state.handoff!;
   const [quotes, setQuotes] = useState<Record<string, Quote>>(h.data.quotes);
   const [locked, setLocked] = useState(false);
+  const condition = h.draft.condition;
+  const conditionQuote = condition ? h.data.quotes[condition.ticker] : undefined;
   const [settled, setSettled] = useState(false);
   const [completed, setCompleted] = useState(false);
   useEffect(() => {
     if (preview) return;
     const controller = new AbortController();
     const tickers = [
-      ...new Set(h.draft.actions.flatMap((a) => (a.type === "stock_order" ? [a.ticker] : []))),
+      ...new Set([...h.draft.actions.flatMap((a) => (a.type === "stock_order" ? [a.ticker] : []))]),
     ];
     async function refresh() {
       for (const ticker of tickers) {
@@ -223,9 +225,9 @@ export function V5Cards({
           if (
             !controller.signal.aborted &&
             q.ticker === ticker &&
-            h.draft.actions.some(
+            (h.draft.actions.some(
               (a) => a.type === "stock_order" && a.ticker === ticker && a.currency === q.currency,
-            )
+            ))
           )
             setQuotes((prev) => ({ ...prev, [ticker]: q }));
         } catch {
@@ -355,6 +357,13 @@ export function V5Cards({
   }
   return (
     <div className="v5-card-content" data-source={composition.source}>
+      {condition && !completed && <section className="v5-tree-support" aria-label="Transfer condition">
+        <p className="v5-caption">Only if</p>
+        <h2>{condition.ticker} {{lt: "is below", lte: "is at most", gt: "is above", gte: "is at least", eq: "equals", ne: "does not equal"}[condition.operator]} {money(condition.threshold, condition.currency)}</h2>
+        <p role="status">Condition met when prepared</p>
+        {conditionQuote && <p className="v5-caption">{money(conditionQuote.price, conditionQuote.currency)} ? {new Date(conditionQuote.as_of).toLocaleString("en-SG")}</p>}
+        <p className="v5-caption">Checked against the virtual bank when prepared.</p>
+      </section>}
       {composing && (
         <p className="v5-caption" role="status">
           Preparing your view?
@@ -494,4 +503,44 @@ export function V5Answer({ answer: a, onDone, presentation = fallbackAnswerPrese
       </button>
     </section>
   );
+}
+
+
+export function V5Plan({plan, view, onDone}: {plan: RequestPlan; view: PlanView; onDone: () => void}) {
+  let checked: PlanView;
+  try { checked = acceptPlanView(view, plan.actions.length, !!plan.condition.quote); }
+  catch { checked = fallbackPlanView(plan.actions.length, !!plan.condition.quote); }
+  const c = plan.condition;
+  const status = {met: "Met at quoted price", not_met: "Not met at quoted price", stale: "Quote needs updating", unknown: "Not evaluated"}[c.state];
+  const comparison = c.operator ? {lt: "below", lte: "at or below", gt: "above", gte: "at or above", eq: "equal to", ne: "not equal to"}[c.operator] : "";
+  return <div className={`v5-plan is-${checked.layout}`} aria-label="Conditional request">
+    <header className="v5-plan-heading"><p className="v5-card-label">Your conditional request</p>
+      <h2>First this. Then that.</h2></header>
+    {checked.nodes.map(n => {
+      const key = `${n.component}:${n.binding}`;
+      if (n.component === "Condition") return <section className={`v5-condition is-${n.variant}`} key={key} aria-label="Condition">
+        <span className="v5-card-label">{c.operator ? "Only if" : "Condition"}</span>
+        <h3>{c.ticker && c.threshold && c.currency ? <>{c.ticker} is {comparison} <strong>{money(c.threshold, c.currency)}</strong></> : c.text}</h3>
+        <span className="v5-condition-state" data-state={c.state}>{status}</span>
+        {c.quote && c.currency && c.quote.currency !== c.currency && <p>The quote and threshold use different currencies.</p>}
+      </section>;
+      if (n.component === "QuoteMetric" && c.quote) return <section className={`v5-quote-metric is-${n.variant}`} key={key} aria-label="Quoted stock price">
+        <span>{c.quote.ticker} <small>quoted price</small></span><strong>{money(c.quote.price, c.quote.currency)}</strong>
+        <time dateTime={c.quote.as_of}>{new Date(c.quote.as_of).toLocaleString("en-SG", {dateStyle: "medium", timeStyle: "short"})}</time>
+      </section>;
+      if (n.component === "Relationship") return <div className="v5-plan-connector" key={key}>
+        <span aria-hidden="true">↓</span><span>{!c.operator ? "Requested dependency" : n.variant === "steps" ? "2. Then, only if the condition is met" : "Then, only if met"}</span>
+      </div>;
+      if (n.component === "PlannedAction") return <div className="v5-planned-action" key={key}>
+        <Task action={plan.actions[Number(n.binding)]} compact={n.variant === "compact"} />
+      </div>;
+      if (n.component === "AvailabilityNotice") return <section className="v5-plan-availability" key={key} role="status">
+        <p>{plan.limitation}</p>
+        {plan.unresolved.length > 0 && <ul>{plan.unresolved.map((u, i) => <li key={i}>{u}</li>)}</ul>}
+      </section>;
+      return null;
+    })}
+    <details className="v5-plan-original"><summary>Original request</summary><p>{plan.request}</p></details>
+    <button className="v4-button secondary" onClick={onDone}>New request</button>
+  </div>;
 }

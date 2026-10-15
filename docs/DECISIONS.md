@@ -418,3 +418,119 @@ this demo. Public account response shapes remain unchanged. Broader action polic
 real OTP and customer authentication are not silently enabled. No external settlement
 is introduced. Fresh ledger initialization is explicit; existing ledger state is
 never automatically reseeded. See README for activation and recovery.
+
+
+## D-041: Preserve constrained intent in non-executable UI plans
+
+14 October 2026. Darren approved an additive Winston-to-JEV presentation handoff.
+Winston retains conditions and timing, resolves task entities, and returns a plan
+instead of registering an unconditional draft. A semantic constraint question joins
+the existing intent batch; lexical conditional wording is also preserved even if
+that question misses it. A bounded parser evaluates one stock-price comparison;
+other expressions remain visible and unevaluated. This is not a general rule engine.
+
+The UI composer receives sanitized original wording and conversation, alongside
+structural context and server-owned capability hints. Five granular plan blocks
+reuse existing action summaries. JEV chooses variants in one presentation call;
+code guarantees condition/action coverage and binds values. The plan remains useful
+when the model is unavailable, but has no transfer button or execution receipt.
+Ordinary transfers, simulations and read-only answers keep their existing paths.
+Future conditional execution requires signed condition semantics, authoritative
+fresh-data evaluation and a bank policy; monitoring additionally requires durable
+jobs, expiry and cancellation. None is implied by this presentation change.
+
+
+Live verification of D-041: the first synthetic conditional request exposed a
+shield false positive (injection probability 0.71). Clarified the shield's wording
+that user-task conditions are not themselves rule overrides, preserving the attack
+criteria, phrase backstop and block threshold. The approved repeated request returned
+`plan` (injection probability 0.01), kept threshold USD300 and transfer SGD50 separate,
+and correctly marked the old quote stale. UI composition returned `source: jev`
+with comparison, compact quote, connector and full action variants in one call.
+Observed durations: intent 1.319s; composition 1.562s. These are single observations,
+not performance guarantees. Bank execution was disabled and evidence storage isolated.
+
+
+## D-042: Request-aware context without a new planner (14 October 2026)
+
+Use the existing enquiry composer for the original instruction, conversation and
+Winston's represented tasks together. Offer all data-eligible read-only components
+rather than narrowing them to Winston's topic. Reuse the existing renderer and
+masking; no new dependencies or free-form generated financial values.
+One additional composition call checks coverage and selects context. Missing or
+uncertain execution requirements pause the UI, while the existing validator and
+bank remain the authorization boundary. This does not implement custom bank
+operations, condition evaluation or monitoring. Legacy topic-based enquiry callers
+retain their required component coverage.
+
+Verification: 795 backend tests passed (6 skipped), 34 frontend unit tests and
+13 V5 browser journeys passed; production build, lint and Ruff checks passed.
+An isolated live call with the approved synthetic Apple-price instruction and a
+transfer-only Winston handoff selected QuoteList and returned unresolved coverage
+in 3172 ms. No bank execution occurred. This is one observation, not a latency guarantee.
+
+
+## D-043: Fold context choices into existing composition (15 October 2026)
+
+Supersedes D-042's extra coverage call and UI payment gate. Append the masked
+original request, conversation, Winston context and optional read-only component
+choices to the existing native UI request. Separate the returned choices in code;
+reuse the checked enquiry renderer. No extra network or model phase is required.
+Unsupported outputs keep a single enquiry composer because they have no task UI
+call. Composition errors fall back without changing normal payment authorization.
+Conditional plans and the existing validator/bank checks retain their boundaries.
+
+Verification: the isolated live synthetic conditional request used exactly one
+native gateway call (jev-1.13.0, 2037 ms), returned QuoteList with the task choices,
+and contained no coverage verdict. Execution was disabled. Thirteen browser tests
+passed, including extra context in one response and successful validator-controlled
+transfer availability after forced composition failure. Build, lint and 34 frontend
+unit tests passed. This timing is a single observation.
+
+
+## D-044: Bind immediate quote conditions to signed drafts (15 October 2026)
+
+Use a small typed quote predicate with six comparison operators and any listed
+security. Select its fields in the existing Winston request, evaluate with Decimal,
+and retain the predicate through validation, signing and bank execution. Fresh,
+matching-currency evidence is required at preparation, challenge and execution.
+No extra model phase or background monitoring is introduced. Conditional plans
+remain non-executable when unresolved, unmet, stale or deferred. The UI reflects
+the same condition, refreshes its quote and never grants execution authority.
+Tests exercise multiple securities, wording, all operators, exact boundaries,
+currency clarification, stale/future data, changed prices and idempotent retries.
+
+
+## D-045: Evaluate demo conditions once against virtual bank state
+
+At Darren's request, supersede D-044's quote expiry and execution-time rechecks.
+Use the virtual bank's stored price at preparation, retain the signed predicate,
+and allow normal explicit confirmation without further price checks. Do not poll
+condition quotes. Keep semantic validation and bank authorization unchanged.
+A price change after preparation does not cancel this demo draft.
+
+
+## D-046: Default to structured output, expand only for identified gaps
+
+Following reliability regressions reported by Darren, gate broad UI context on
+explicit partial coverage. Add a coverage question to Winston's current batch and
+reconcile selected requirements with the actual output. Complete outputs omit the
+original instruction from UI model state. Weak coverage evidence never asks the
+user a question; ordinary field ambiguity stays with Winston. Preserve supported
+conditional drafts, validator checks, and existing fallback behavior. Test ordinary
+and partial requests, prior clarification answers, and server-side context gating.
+
+
+## D-047: Clarify relevant uncertainty (16 October 2026)
+
+Task classification uses the base confidence threshold. An uncertain negative action
+category does not interrupt a different confidently selected task when its textual
+cues are absent; positive or genuinely competing interpretations still ask. This is
+a conservative English cue check, not a replacement language parser. Resolve monetary
+exposure per action: its selected amount, the bill amount due, or stock quantity times
+its quote. Never use an unrelated condition threshold or share count as money.
+For a single money task with a single literal candidate, amount extraction uses the
+base interpretation threshold; higher-value recipient/source checks remain strict.
+Remaining single-candidate uncertainty asks for confirmation, not a missing amount.
+Regression tests cover the reported irrelevant-category and repeated-amount cases,
+competing amounts, recipients, explicit own-account moves and stock exposure.

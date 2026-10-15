@@ -77,7 +77,12 @@ export const objectiveSchema = z.enum([
   "review",
 ]);
 // Reject unknown draft fields rather than silently dropping part of a transaction.
+export const quoteConditionSchema = z.strictObject({
+  ticker: z.string().min(1).max(16), operator: z.enum(["lt", "lte", "gt", "gte", "eq", "ne"]),
+  threshold: money, currency,
+});
 export const draftSchema = z.strictObject({
+  condition: quoteConditionSchema.optional(),
   draft_id: z.string(),
   user_id: z.string(),
   session_id: z.string(),
@@ -86,9 +91,33 @@ export const draftSchema = z.strictObject({
   actions: z.array(actionSchema).min(1).max(4),
   evidence: z.array(evidence),
 });
+export const presentationIntentSchema = z.strictObject({
+  request: z.string().max(2000), conversation: z.array(z.string()).max(20),
+  tasks: z.array(z.string()).max(4), constraints: z.array(z.string()).max(8),
+  coverage: z.enum(["complete", "partial"]).default("complete"),
+  gaps: z.array(z.string()).max(8).default([]),
+});
+export const requestPlanSchema = z.strictObject({
+  request: z.string().max(500),
+  condition: z.strictObject({
+    text: z.string().max(500), ticker: z.string().nullable(),
+    operator: z.enum(["lt", "lte", "gt", "gte", "eq", "ne"]).nullable(),
+    threshold: money.nullable(), currency: currency.nullable(),
+    quote: z.strictObject({ticker: z.string(), company_name: z.string(), price: money,
+      currency, as_of: z.iso.datetime({offset: true})}).nullable(),
+    state: z.enum(["met", "not_met", "stale", "unknown"]),
+  }),
+  actions: z.array(actionSchema).max(4), timing: z.enum(["now", "watch", "unspecified"]),
+  unresolved: z.array(z.string()).max(8), executable: z.literal(false),
+  limitation: z.string(), intent: presentationIntentSchema,
+});
+export type RequestPlan = z.infer<typeof requestPlanSchema>;
+
 export const understandSchema = z.discriminatedUnion("status", [
+  z.strictObject({status: z.literal("plan"), plan: requestPlanSchema, meta: metaSchema}),
   z.strictObject({
     status: z.literal("draft"),
+    presentation: presentationIntentSchema.nullable().optional(),
     draft: draftSchema,
     objective: objectiveSchema,
     // Hypothetical values for `simulate`, by action index; never validated, signed or executed.
@@ -170,7 +199,7 @@ export type Quote = z.infer<typeof quoteSchema>;
 export type Validation = z.infer<typeof validationSchema>;
 export type Answer = z.infer<typeof answerSchema>;
 
-const answer = { status: z.literal("answer"), meta: metaSchema };
+const answer = { status: z.literal("answer"), meta: metaSchema, presentation: presentationIntentSchema.nullable().optional() };
 const time = z.iso.datetime({ offset: true });
 // CONTRACTS §3.1 answers (v0.6, proposed): read-only replies; nothing here can be signed.
 export const answerSchema = z.discriminatedUnion("kind", [

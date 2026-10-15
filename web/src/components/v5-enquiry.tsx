@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import { z } from "zod";
+import { quoteSchema } from "@/lib/contracts";
 import { displayMoney } from "@/lib/money";
 const money = z.string().regex(/^-?\d+\.\d{2}$/);
 const period = z.object({ from: z.string(), through: z.string(), total: money, count: z.number().int() });
@@ -25,6 +26,7 @@ const forecast = z.union([
   }),
 ]);
 const component = z.enum([
+  "QuoteList",
   "EnquiryWorkspace",
   "BalanceSummary",
   "AccountList",
@@ -36,10 +38,11 @@ const component = z.enum([
 ]);
 export const enquirySchema = z
   .object({
-    topic: z.enum(["balances", "bills", "transactions", "spending", "overview"]),
+    topic: z.enum(["balances", "bills", "transactions", "spending", "overview", "request"]),
     source: z.enum(["jev", "fallback"]),
     latency_ms: z.number(),
     data: z.object({
+      quotes: z.array(quoteSchema).optional(),
       source: z.literal("synthetic"),
       as_of: z.string(),
       accounts: z.array(
@@ -79,6 +82,7 @@ export const enquirySchema = z
     const ids = root?.children ?? [];
     const types = ids.map((id) => value.spec.elements[id]?.type);
     const required = {
+      request: [],
       balances: ["BalanceSummary", "AccountList"],
       bills: ["UpcomingBills", "CashflowSummary"],
       transactions: ["TransactionList"],
@@ -89,7 +93,7 @@ export const enquirySchema = z
       !root ||
       root.type !== "EnquiryWorkspace" ||
       !["focus", "split"].includes(root.variant) ||
-      ids.length > 7 ||
+      ids.length > 8 ||
       new Set(ids).size !== ids.length ||
       new Set(types).size !== types.length ||
       required.some((t) => !types.includes(t as (typeof types)[number])) ||
@@ -120,6 +124,7 @@ const decimal = (n: bigint) =>
 const date = (s: string) =>
   new Date(s).toLocaleDateString("en-SG", { timeZone: "Asia/Singapore", day: "numeric", month: "short" });
 const names = {
+  QuoteList: "Stock quotes",
   BalanceSummary: "Your balances",
   AccountList: "Your accounts",
   UpcomingBills: "Upcoming bills",
@@ -139,6 +144,11 @@ export function V5Enquiry({ value }: { value: Enquiry }) {
     root = value.spec.elements[value.spec.root];
   function content(type: z.infer<typeof component>, expanded: boolean, variant: string) {
     switch (type) {
+      case "QuoteList": return <>{data.quotes?.map(q => <div key={q.ticker} className="v5-enquiry-row">
+        <span>{q.ticker}<small className="v5-caption">{date(q.as_of)}</small></span>
+        <strong>{displayMoney(q.price, q.currency)}</strong>
+      </div>)}</>;
+
       case "BalanceSummary": {
         const totals = new Map<string, bigint>();
         data.accounts.forEach((a) =>
@@ -368,10 +378,12 @@ export function V5Enquiry({ value }: { value: Enquiry }) {
           );
         })}
       </div>
-      <p className="v5-caption">
-        History contains sample records, not a complete bank statement. Transfers and investments may be
-        included in outflows.
-      </p>
+      {root.children.some(id => ["TransactionList", "SpendingBreakdown", "PeriodComparison"].includes(value.spec.elements[id].type)) && (
+        <p className="v5-caption">
+          History contains sample records, not a complete bank statement. Transfers and investments may be
+          included in outflows.
+        </p>
+      )}
     </div>
   );
 }
@@ -441,6 +453,7 @@ export function CashflowWaterfall({
 
 // Live answers retain their upstream data; these choices affect presentation only.
 export const answerPresentationSchema = z.strictObject({
+  context_view: enquirySchema.optional(),
   source: z.enum(["jev", "fallback"]),
   variant: z.enum(["list", "cards", "timeline"]),
   detail: z.enum(["compact", "expanded"]),
@@ -451,3 +464,42 @@ export type AnswerPresentation = z.infer<typeof answerPresentationSchema>;
 export const fallbackAnswerPresentation: AnswerPresentation = {
   source: "fallback", variant: "list", detail: "compact", summary: false, latency_ms: 0,
 };
+
+
+// A manifest can choose presentation, but cannot remove a condition, action or limitation.
+export const planViewSchema = z.strictObject({
+  context_view: enquirySchema.optional(),
+  source: z.enum(["jev", "fallback"]), layout: z.enum(["stacked", "flow"]),
+  nodes: z.array(z.strictObject({
+    component: z.enum(["Condition", "QuoteMetric", "Relationship", "PlannedAction", "AvailabilityNotice"]),
+    binding: z.string(), variant: z.string(),
+  })).max(8),
+});
+export type PlanView = z.infer<typeof planViewSchema>;
+export function fallbackPlanView(actionCount: number, hasQuote: boolean): PlanView {
+  return {source: "fallback", layout: "stacked", nodes: [
+    {component: "Condition", binding: "condition", variant: "comparison"},
+    ...(hasQuote ? [{component: "QuoteMetric" as const, binding: "condition", variant: "compact"}] : []),
+    {component: "Relationship", binding: "condition", variant: "connector"},
+    ...Array.from({length: actionCount}, (_, i) => ({component: "PlannedAction" as const, binding: String(i), variant: "compact"})),
+    {component: "AvailabilityNotice", binding: "plan", variant: "default"},
+  ]};
+}
+export function acceptPlanView(value: unknown, actionCount: number, hasQuote: boolean): PlanView {
+  const view = planViewSchema.parse(value);
+  const variants = {Condition: ["sentence", "comparison"], QuoteMetric: ["compact", "prominent"],
+    Relationship: ["connector", "steps"], PlannedAction: ["full", "compact"], AvailabilityNotice: ["default"]};
+  const required = fallbackPlanView(actionCount, false).nodes.map(n => `${n.component}:${n.binding}`);
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  for (const n of view.nodes) {
+    const key = `${n.component}:${n.binding}`;
+    if (!variants[n.component].includes(n.variant) || seen.has(key)) throw Error("Invalid plan component.");
+    if (n.component === "QuoteMetric") {
+      if (!hasQuote || n.binding !== "condition" || ordered.length !== 1) throw Error("Invalid quote binding.");
+    } else ordered.push(key);
+    seen.add(key);
+  }
+  if (JSON.stringify(ordered) !== JSON.stringify(required)) throw Error("Plan meaning or coverage changed.");
+  return view;
+}

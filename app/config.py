@@ -74,3 +74,6 @@ BANK_SUPERVISED_USER = os.getenv("BANK_SUPERVISED_USER", "")
 BANK_GATEWAY_POLICY = os.getenv("BANK_GATEWAY_POLICY", "")
 BANK_TRANSFER_POLICY = os.getenv("BANK_TRANSFER_POLICY", "")
 TRANSACTION_STATE_PATH = os.getenv("TRANSACTION_STATE_PATH", "")
+
+# Presentation comparisons older than this remain unknown for current decisions.
+CONDITION_QUOTE_MAX_AGE_SECONDS = 60

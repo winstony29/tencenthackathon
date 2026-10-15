@@ -5,8 +5,10 @@ Diagram box: Speech to text, Confidence gate, Draft builder (Intent detection co
 Contract: docs/CONTRACTS.md §3.1
 """
 
+import re
 import time
 from collections import OrderedDict
+from dataclasses import replace
 from decimal import Decimal
 from typing import Any
 
@@ -16,9 +18,12 @@ from app import config, evidence, transaction_state
 from app.bank import readonly
 from app.contracts import (
     NONE_OPTION_ID,
+    Action,
     Answer,
     PreviewRequest,
     PreviewResponse,
+    QuoteCondition,
+    RequestPlan,
     TranscribeResponse,
     UnderstandRequest,
     UnderstandResponse,
@@ -200,6 +205,10 @@ async def understand(request: UnderstandRequest) -> dict[str, Any]:
     except transaction_state.InvalidDraft as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
     if not _live():
+        if request.transcript and options._CONDITIONAL.search(request.transcript):
+            raise HTTPException(
+                503, "Intent service unavailable. No conditional task was prepared."
+            )
         return _stub_understand(request)
     started = time.monotonic()
     if request.transcript is not None:
@@ -212,7 +221,10 @@ async def understand(request: UnderstandRequest) -> dict[str, Any]:
             if finished is not None:
                 return finished
         else:
-            if current and current.draft:
+            conditional = (
+                options.conditional_parts(request.transcript, current.data) if current else None
+            )
+            if current and current.draft and not (conditional and conditional[1]):
                 await _start_followup(current, request.transcript, request.session_id)
             else:
                 current = await _start(request.user_id, request.transcript, request.session_id)
@@ -259,6 +271,21 @@ async def _spoken_answer(
         return _blocked(reply.model, started)
     p = gate.pick([reply], question.name)
     if not gate.trusted(p, _amount(current)):
+        if name in {"plan_timing", "condition_currency"}:
+            return {
+                "status": "question",
+                "question": {
+                    "question_id": question_id,
+                    "text": options._ASK[name],
+                    "options": [
+                        {"option_id": k, "label": v}
+                        for k, v in current.options.labels[name].items()
+                    ],
+                    "allow_none": True,
+                },
+                "evidence": [],
+                "meta": meta,
+            }
         again = gate.Decision({name: gate.pick(current.replies, name)}, ask=name)
         return _ask(request, current, again, meta) or _unsupported(_HELP, meta)
     if p.option == options.NEW_REQUEST:
@@ -286,7 +313,23 @@ async def _start(user_id: str, transcript: str, session_id: str) -> session.Sess
         data = options.UserData(readonly.get_accounts(user_id), readonly.list_quotes())
     except LookupError as error:
         raise HTTPException(404, "Unknown user.") from error
-    built = options.build(transcript, data, f"{user_id}|{session_id}")
+    conditional = options.conditional_parts(transcript, data)
+    action_text = conditional[1] if conditional else transcript
+    # Match the full instruction's stand-ins even when threshold and amount hashes collide.
+    built = options.build(action_text, data, f"{user_id}|{session_id}", reference_text=transcript)
+    built = replace(
+        built,
+        text=options.mask(transcript, f"{user_id}|{session_id}"),
+        questions=built.questions
+        + [_CONSTRAINT_QUESTION, _COVERAGE_QUESTION]
+        + (
+            options.condition_questions(
+                conditional[0]["text"], data, f"{user_id}|{session_id}", transcript
+            )
+            if conditional
+            else []
+        ),
+    )
     evidence.record(
         "intent_context",
         {
@@ -308,6 +351,8 @@ async def _start(user_id: str, transcript: str, session_id: str) -> session.Sess
         data,
         replies,
         history=[{"kind": "instruction", "text": transcript}],
+        condition=conditional[0] if conditional else None,
+        action_text=action_text,
     )
 
 
@@ -315,23 +360,49 @@ async def _start_followup(current: session.Session, text: str, session_id: str) 
     current.history.append({"kind": "followup", "text": text})
     scope = f"{current.user_id}|{session_id}"
     current.options = options.build_followup(text, current.draft, current.data, scope)
+    current.options = replace(
+        current.options,
+        questions=current.options.questions + [_CONSTRAINT_QUESTION, _COVERAGE_QUESTION],
+    )
+    conditional = options.conditional_parts(text, current.data)
+    current.condition = conditional[0] if conditional else None
+    if conditional:
+        current.options = replace(
+            current.options,
+            questions=current.options.questions
+            + options.condition_questions(conditional[0]["text"], current.data, scope, text),
+        )
     context = {"current_tasks": [options.describe(a) for a in current.draft.actions]}
     current.replies = await jev.ask_all([current.options.text], current.options.questions, context)
     current.followup, current.answers, current.asked, current.pending = text, {}, 0, None
 
 
 def _amount(current: session.Session) -> Decimal:
-    # ponytail: the largest number said stands in for the amount when choosing tau; the exact
-    # amount needs the picks this decision is still making.
-    return max(current.options.numbers.values(), default=Decimal(0))
+    # Non-transaction classification must not use an unrelated threshold or share count.
+    if current.draft:
+        values = []
+        for action in current.draft.actions:
+            if hasattr(action, "amount"):
+                values.append(action.amount)
+            elif action.type == "stock_order":
+                quote = next((q for q in current.data.quotes if q.ticker == action.ticker), None)
+                if quote:
+                    values.append(quote.price * action.quantity)
+        return max(values, default=Decimal(0))
+    return Decimal(0)
 
 
 def _command_step(
     request: UnderstandRequest, current: session.Session, meta: dict
 ) -> dict[str, Any]:
+    _preserve_constraints(current)
+    if current.condition is not None and not current.action_text:
+        return _plan(request, current, [], meta, ["The requested action needs clarification."])
     # Only a confidently read-only command may bypass transaction field resolution.
-    decision = gate.decide(current.replies, current.answers, _amount(current), current.options)
-    if not (decision.ask or decision.missing or decision.actions):
+    decision = gate.decide(
+        current.replies, current.answers, _amount(current), current.options, current.data
+    )
+    if current.condition is None and not (decision.ask or decision.missing or decision.actions):
         answered = _answer_step(request, current, meta)
         if answered:
             return answered
@@ -341,6 +412,8 @@ def _command_step(
             return question
         decision = gate.Decision(decision.picks, decision.actions, missing=decision.ask)
     if decision.missing or not decision.actions:
+        if current.condition is not None:
+            return _plan(request, current, [], meta, [_MISSING.get(decision.missing, _HELP)])
         session.drop(request.session_id)
         return _unsupported(_MISSING.get(decision.missing, _HELP), meta)
     try:
@@ -353,6 +426,8 @@ def _command_step(
             current.data,
         )
     except draft.Unbuildable as error:
+        if current.condition is not None:
+            return _plan(request, current, [], meta, [str(error)])
         session.drop(request.session_id)
         return _unsupported(str(error), meta)
     # The objective only shapes the screen on a first command, so an unsure one means "prepare".
@@ -396,19 +471,32 @@ def _answer_step(request: UnderstandRequest, current: session.Session, meta: dic
     try:
         payload = draft.answer(kind, picks, current.data, current.user_id, current.transcript)
     except draft.Unbuildable as error:
+        if current.condition is not None:
+            return _plan(request, current, [], meta, [str(error)])
         session.drop(request.session_id)
         return _unsupported(str(error), meta)
     except readonly.ForecastDataError:
         session.drop(request.session_id)
         return _unsupported("I can't read your upcoming bills right now.", meta)
     session.drop(request.session_id)
-    return {"status": "answer", "kind": kind, **payload, "meta": meta}
+    return {
+        "status": "answer",
+        "kind": kind,
+        **payload,
+        "meta": meta,
+        "presentation": _presentation(current, request.session_id, [kind]),
+    }
 
 
 async def _followup_step(
     request: UnderstandRequest, current: session.Session, started: float
 ) -> dict[str, Any]:
     meta = _meta(current, started)
+    _preserve_constraints(current)
+    if current.condition is not None:
+        if options._ACTION_START.search(current.followup):
+            return _plan(request, current, [], meta, ["The revised action needs clarification."])
+        return _plan(request, current, current.draft.actions, meta, [])
     first = gate.decide_each(current.replies, current.answers, _amount(current), ["objective"])
     if first.ask:
         return _ask(request, current, first, meta) or _unsupported(_HELP, meta)
@@ -416,7 +504,7 @@ async def _followup_step(
     if objective == "new_task":
         fresh = await _start(current.user_id, current.followup, request.session_id)
         return _command_step(request, fresh, _meta(fresh, started))
-    skip = {"objective", shield.QUESTION.name}
+    skip = {"objective", shield.QUESTION.name, "execution_constraint", "request_coverage"}
     names = [q.name for q in current.options.questions if q.name not in skip]
     rest = gate.decide_each(current.replies, current.answers, _amount(current), names)
     if rest.ask:
@@ -471,6 +559,8 @@ def _ask(
 
 
 def _keep_draft(request, current, built, objective, scenario, meta) -> dict[str, Any]:
+    if current.condition is not None and built.condition is None:
+        return _plan(request, current, built.actions, meta, [], built=built)
     # The session stays open after a draft so follow-up turns can amend it (CONTRACTS §3.1).
     facts = {
         "accounts": current.data.accounts.model_dump(mode="json"),
@@ -498,6 +588,7 @@ def _keep_draft(request, current, built, objective, scenario, meta) -> dict[str,
         "draft": built,
         "objective": objective,
         "scenario": scenario,
+        "presentation": _presentation(current, request.session_id, [a.type for a in built.actions]),
         "meta": meta,
     }
 
@@ -559,3 +650,202 @@ def _stub_understand(request: UnderstandRequest) -> dict[str, Any]:
     if request.answer.option_id == NONE_OPTION_ID:
         return _STUB_CANCELLED
     return _STUB_DRAFT
+
+
+_CONSTRAINT_QUESTION = jev.Question(
+    "execution_constraint",
+    "Does the instruction restrict when or whether a task may happen? Preserve every condition. "
+    "A question about affordability alone is not a conditional instruction.",
+    {
+        "no": "Ordinary immediate task or read-only question, no execution condition.",
+        "conditional": "Task depends on a fact, event or threshold, including implicit conditions.",
+        "deferred": "Task must happen later, on a schedule, or automatically in the future.",
+    },
+)
+
+
+def _preserve_constraints(current: session.Session) -> None:
+    if current.condition is not None:
+        return
+    p = gate.pick(current.replies, "execution_constraint")
+    if p.option != "no" or not gate.trusted(p, _amount(current)):
+        current.condition = {"text": current.followup or current.transcript, "state": "unknown"}
+        current.action_text = ""
+
+
+_COVERAGE_QUESTION = jev.Question(
+    "request_coverage",
+    "Does the request need information beyond the structured capabilities? Supported: "
+    "transfers, bills, stock orders, own-account moves, FX; balances, transactions, upcoming "
+    "bills, holdings, quotes, FX rates, payees; single immediate stock-price conditions. "
+    "Missing amounts, ambiguous recipients and ordinary amendments are NOT extra UI needs. "
+    "Do not mark partial merely because a field needs clarification.",
+    {
+        "complete": "The request fits these structured capabilities.",
+        "spending": "Also needs spending analysis or month-to-month comparisons.",
+        "cashflow": "Also needs future cashflow or scheduled-income analysis.",
+        "other": "An explicit requirement lies outside these structured capabilities.",
+    },
+)
+
+
+def _presentation(current: session.Session, session_id: str, tasks: list[str]) -> dict:
+    result = options.presentation_intent(
+        current.transcript,
+        current.history,
+        current.data,
+        f"{current.user_id}|{session_id}",
+        tasks,
+        [current.condition["text"]] if current.condition else [],
+    )
+    gaps = []
+    if all("request_coverage" in r.answers for r in current.replies):
+        coverage = gate.pick(current.replies, "request_coverage")
+        if coverage.option != "complete" and gate.trusted(coverage, Decimal("0")):
+            gaps.append(coverage.option)
+    # Compare independently selected requirements with the output actually produced.
+    for action in options.ACTION_TYPES:
+        name = f"has_{action}"
+        if action not in tasks and all(name in r.answers for r in current.replies):
+            pick = gate.pick(current.replies, name)
+            if pick.option == "yes" and gate.trusted(pick, Decimal("0")):
+                gaps.append(action)
+    if all("info" in r.answers for r in current.replies):
+        pick = gate.pick(current.replies, "info")
+        if pick.option not in {"none", "help", *tasks} and gate.trusted(pick, Decimal("0")):
+            # The condition card already represents its quote dependency.
+            if not (pick.option == "quote" and current.condition):
+                gaps.append(pick.option)
+    return {**result, "coverage": "partial" if gaps else "complete", "gaps": gaps[:8]}
+
+
+def _plan(
+    request: UnderstandRequest,
+    current: session.Session,
+    actions: list[Action],
+    meta: dict[str, Any],
+    unresolved: list[str],
+    built=None,
+) -> dict:
+    """Only a met, current predicate can be attached to a signable draft."""
+    text = current.followup or current.transcript
+    condition = dict(current.condition)
+    names = ["condition_shape", "condition_asset", "condition_operator", "condition_threshold"]
+    if all(name in current.replies[0].answers for name in names):
+        picks = [gate.pick(current.replies, name) for name in names]
+        numbers = options.parse_numbers(condition["text"])
+        condition = {"text": condition["text"], "state": "unknown"}
+        if (
+            all(gate.trusted(p, _amount(current)) and p.option != "none" for p in picks)
+            and picks[0].option == "single"
+            and len(numbers) == 1
+            and numbers[0].value.as_tuple().exponent >= -2
+            and picks[3].option == "c0"
+        ):
+            condition.update(
+                ticker=picks[1].option,
+                operator=picks[2].option,
+                threshold=f"{numbers[0].value:.2f}",
+                currency=numbers[0].currency,
+            )
+    if "condition_currency" in current.answers:
+        condition["currency"] = current.answers["condition_currency"]
+    if all(condition.get(k) is not None for k in ["ticker", "operator", "threshold", "currency"]):
+        predicate = QuoteCondition.model_validate(
+            {k: condition[k] for k in ["ticker", "operator", "threshold", "currency"]}
+        )
+        condition.update(readonly.evaluate_condition(predicate))
+    current.condition = condition
+    quote = condition.get("quote")
+    if (
+        quote
+        and quote["currency"] != condition.get("currency")
+        and "condition_currency" not in current.answers
+    ):
+        labels = {"USD": "US dollars (USD)", "SGD": "Singapore dollars (SGD)"}
+        name = "condition_currency"
+        current.options.labels[name] = labels
+        if not any(q.name == name for q in current.options.questions):
+            current.options.questions.append(jev.Question(name, options._ASK[name], labels))
+        current.pending = ("q_condition_currency", name, set(labels))
+        current.history.append(
+            {
+                "kind": "question",
+                "question_id": "q_condition_currency",
+                "question": name,
+                "text": options._ASK[name],
+            }
+        )
+        session.save(request.session_id, current)
+        return {
+            "status": "question",
+            "question": {
+                "question_id": "q_condition_currency",
+                "text": options._ASK[name],
+                "options": [{"option_id": k, "label": v} for k, v in labels.items()],
+                "allow_none": True,
+            },
+            "evidence": [],
+            "meta": meta,
+        }
+    timing = current.answers.get("plan_timing")
+    if not timing and re.search(r"\b(watch|monitor|later|automatically)\b", text, re.I):
+        timing = "watch"
+    if not timing and re.search(r"\b(now|immediately)\b", text, re.I):
+        timing = "now"
+    if not timing and actions:
+        labels = {"now": "Check now", "watch": "Watch for it later"}
+        current.options.labels["plan_timing"] = labels
+        if not any(q.name == "plan_timing" for q in current.options.questions):
+            current.options.questions.append(
+                jev.Question("plan_timing", "When should this be checked?", labels)
+            )
+        current.pending = ("q_plan_timing", "plan_timing", set(labels))
+        current.history.append(
+            {
+                "kind": "question",
+                "question_id": "q_plan_timing",
+                "question": "plan_timing",
+                "text": "Check this now, or watch for it later?",
+            }
+        )
+        session.save(request.session_id, current)
+        return {
+            "status": "question",
+            "question": {
+                "question_id": "q_plan_timing",
+                "text": "Check this now, or watch for it later?",
+                "options": [{"option_id": k, "label": v} for k, v in labels.items()],
+                "allow_none": True,
+            },
+            "evidence": [],
+            "meta": meta,
+        }
+    if timing == "now" and condition.get("state") == "met" and actions and not unresolved:
+        candidate = built or current.draft
+        if candidate is not None:
+            candidate = candidate.model_copy(update={"condition": predicate, "actions": actions})
+            return _keep_draft(request, current, candidate, "prepare", None, meta)
+    limitation = (
+        "Automatic conditional transfers aren't available. Nothing is scheduled."
+        if timing == "watch"
+        else {
+            "not_met": "Condition not met. Nothing will be sent.",
+            "stale": "A fresh quote is needed before you can transfer.",
+            "unknown": "The condition needs clarification or matching currency data.",
+        }.get(condition.get("state"), "This request cannot be prepared yet.")
+    )
+    plan = {
+        "request": text,
+        "condition": current.condition,
+        "actions": actions,
+        "timing": timing or "unspecified",
+        "unresolved": unresolved,
+        "executable": False,
+        "limitation": limitation,
+        "intent": _presentation(current, request.session_id, [a.type for a in actions]),
+    }
+    plan = RequestPlan.model_validate(plan).model_dump(mode="json")
+    session.drop(request.session_id)
+    evidence.record("intent_plan", {"plan": plan}, session_id=request.session_id)
+    return {"status": "plan", "plan": plan, "meta": meta}

@@ -4,24 +4,26 @@ import Link from "next/link";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { ArrowUpRight, RotateCcw, X } from "lucide-react";
 import { V5Orb } from "@/components/v5-orb";
-import { answerPresentationSchema, fallbackAnswerPresentation, type AnswerPresentation } from "@/components/v5-enquiry";
-import { V5Answer, V5Cards } from "@/components/v5-cards";
+import { V5Enquiry, enquirySchema, type Enquiry, answerPresentationSchema, fallbackAnswerPresentation, planViewSchema, fallbackPlanView, acceptPlanView, type PlanView, type AnswerPresentation } from "@/components/v5-enquiry";
+import { V5Answer, V5Cards, V5Plan } from "@/components/v5-cards";
 import { compose, fallback, type Composition } from "@/lib/v4-composition";
 import { contextFor } from "@/lib/v4-catalog";
 import { initialState, reducer, type Handoff, type State } from "@/lib/v4-state";
 import { post, request, reportPresentation } from "@/lib/api";
 import {
   accountsSchema,
+  presentationIntentSchema,
   answerSchema,
   quoteSchema,
   understandSchema,
   type Answer,
   type Understand,
+  type RequestPlan,
 } from "@/lib/contracts";
 import "../v4/v4.css";
 import "./v5.css";
 
-type Phase = "idle" | "choose" | "clarify" | "composing" | "workspace" | "answer" | "blocked";
+type Phase = "idle" | "choose" | "clarify" | "composing" | "workspace" | "answer" | "plan" | "blocked";
 type Question = Extract<Understand, { status: "question" }>["question"];
 type DraftReply = Extract<Understand, { status: "draft" }>;
 const USER = "u_demo";
@@ -45,7 +47,7 @@ const requests = [
 // The UI's handoff is the engine's draft plus the bank's read-only accounts and quotes.
 async function handoffFor(reply: DraftReply, signal: AbortSignal): Promise<Handoff> {
   const { draft } = reply;
-  const tickers = [...new Set(draft.actions.flatMap((a) => (a.type === "stock_order" ? [a.ticker] : [])))];
+  const tickers = [...new Set([...draft.actions.flatMap((a) => (a.type === "stock_order" ? [a.ticker] : [])), ...(draft.condition ? [draft.condition.ticker] : [])])];
   const [accounts, entries] = await Promise.all([
     request(`/accounts?user_id=${encodeURIComponent(draft.user_id)}`, accountsSchema, { signal }),
     Promise.all(
@@ -58,6 +60,7 @@ async function handoffFor(reply: DraftReply, signal: AbortSignal): Promise<Hando
   const quotes = Object.fromEntries(entries);
   return {
     draft,
+    intent: reply.presentation,
     // V5's catalog has no recipient-check layout; prepare carries the recipient details.
     objective: reply.objective === "check_recipient" ? "prepare" : reply.objective,
     data: { accounts, quotes, source: "supplied" },
@@ -72,6 +75,8 @@ const titles = {
 };
 
 export default function V5() {
+  const [extra, setExtra] = useState<Enquiry | null>(null);
+  const turns = useRef<string[]>([]);
   const [composing, setComposing] = useState(false);
   const [phase, setPhase] = useState<Phase>("idle");
   const [state, setState] = useState<State>(initialState);
@@ -82,6 +87,8 @@ export default function V5() {
   const [text, setText] = useState("");
   const [question, setQuestion] = useState<Question | null>(null);
   const [answerView, setAnswerView] = useState<AnswerPresentation>(fallbackAnswerPresentation);
+  const [plan, setPlan] = useState<RequestPlan | null>(null);
+  const [planView, setPlanView] = useState<PlanView>(fallbackPlanView(0, false));
   const [found, setFound] = useState<Answer | null>(null);
   const [stopped, setStopped] = useState({ title: "", message: "" });
   const session = useRef("");
@@ -124,10 +131,13 @@ export default function V5() {
     setHeard("");
     setText("");
     setQuestion(null);
+    setPlan(null);
+    setExtra(null);
+    turns.current = [];
     session.current = "";
     setPhase("idle");
   }
-  async function present(next: State) {
+  async function present(next: State, contextRequest?: Record<string, unknown>) {
     cancel();
     if (!next.handoff || next.error) return;
     const version = generation.current;
@@ -142,7 +152,7 @@ export default function V5() {
     try {
       result = await compose(ctx, abort.signal, () => {
         if (version === generation.current) setStage((n) => n + 1);
-      }, next.handoff.draft.session_id);
+      }, next.handoff.draft.session_id, contextRequest);
     } catch {
       result = fallback(ctx);
     }
@@ -157,6 +167,7 @@ export default function V5() {
     if (version !== generation.current) return;
     setComposing(false);
     setComposition(result);
+    setExtra(result.calls.find(c => c.context_view)?.context_view ?? null);
     setPhase("workspace");
   }
   function stop(title: string, message: string) {
@@ -175,6 +186,9 @@ export default function V5() {
     controller.current = abort;
     if (!session.current) session.current = `s_${crypto.randomUUID().replaceAll("-", "")}`;
     setStage(0);
+    setExtra(null);
+    if ("transcript" in turn) turns.current = [...turns.current, turn.transcript].slice(-20);
+    else if (question) turns.current = [...turns.current, question.text, question.options.find(o => o.option_id === turn.answer.option_id)?.label ?? ""].slice(-20);
     setPhase("composing");
     try {
       const reply = await post(
@@ -187,6 +201,44 @@ export default function V5() {
       if (reply.status === "question") {
         setQuestion(reply.question);
         setPhase("clarify");
+        return;
+      }
+      const parsedIntent = presentationIntentSchema.safeParse(reply.status === "plan" ? reply.plan.intent
+        : "presentation" in reply ? reply.presentation : null);
+      const intent = parsedIntent.success ? parsedIntent.data : null;
+      const contextRequest = reply.status === "unsupported" ||
+        (intent?.coverage === "partial" && intent.gaps.length > 0) ? {
+        user_id: USER, topic: "request", request: turns.current[0] ?? heard,
+        conversation: turns.current, outcome: reply.status,
+        winston: reply.status === "plan" ? reply.plan.intent
+          : "presentation" in reply ? reply.presentation : null,
+      } : undefined;
+      if (reply.status === "unsupported") {
+        stop("Nothing was sent.", reply.message);
+        void post("/presentation-v5/enquiry", enquirySchema, contextRequest, abort.signal).then(view => {
+          if (version === generation.current) setExtra(view);
+        }).catch(() => {});
+        return;
+      }
+      if (reply.status === "plan") {
+        const planSession = session.current;
+        session.current = "";
+        setQuestion(null);
+        setPlan(reply.plan);
+        const local = fallbackPlanView(reply.plan.actions.length, !!reply.plan.condition.quote);
+        setPlanView(local);
+        setPhase("plan");
+        void reportPresentation(planSession, undefined, {plan: reply.plan, view: local}, "fallback").catch(() => {});
+        void post("/presentation-v5/plan", planViewSchema, {
+          context_request: contextRequest,
+          plan: reply.plan, viewport: window.matchMedia("(max-width: 700px)").matches ? "mobile" : "desktop",
+        }, abort.signal, planSession).then(view => {
+          if (version !== generation.current) return;
+          const checked = acceptPlanView(view, reply.plan.actions.length, !!reply.plan.condition.quote);
+          setPlanView(checked);
+          setExtra(checked.context_view ?? null);
+          void reportPresentation(planSession, undefined, {plan: reply.plan, view: checked}, checked.source).catch(() => {});
+        }).catch(() => { /* Keep the complete local plan visible. */ });
         return;
       }
       if (reply.status === "answer") {
@@ -210,11 +262,12 @@ export default function V5() {
           : a.kind === "quote" ? a.quotes.length
           : a.kind === "payees" ? a.payees.length : 1;
         void post("/presentation-v5/answer", answerPresentationSchema, {
-          kind: a.kind, count,
+          kind: a.kind, count, intent: a.presentation, context_request: contextRequest,
           timeline_requested: "transcript" in turn && /\btimeline\b/i.test(turn.transcript),
         }, abort.signal, answerSession).then((view) => {
           if (version === generation.current) {
             setAnswerView(view);
+            setExtra(view.context_view ?? null);
             void reportPresentation(answerSession, undefined, {answer: a, view}, view.source)
               .catch(() => {});
           }
@@ -233,7 +286,7 @@ export default function V5() {
       });
       if (next.error) return stop("Something doesn’t add up.", next.error);
       update(next);
-      void present(next);
+      void present(next, contextRequest);
     } catch (e) {
       if (version !== generation.current) return;
       stop("Something went wrong.", e instanceof Error ? e.message : "Please try again.");
@@ -246,6 +299,7 @@ export default function V5() {
     if (phase !== "clarify") {
       session.current = "";
       update(initialState);
+      turns.current = [];
       setHeard(transcript);
     }
     setText("");
@@ -267,7 +321,7 @@ export default function V5() {
               ? "Demo complete"
               : phase === "workspace"
                 ? "Workspace ready"
-                : "Ready";
+                : phase === "plan" ? "Plan only" : "Ready";
 
   return (
     <div className="v4-shell v5-shell" data-phase={phase}>
@@ -368,7 +422,7 @@ export default function V5() {
             )}
           </AnimatePresence>
 
-          {(phase === "clarify" || phase === "blocked" || phase === "workspace" || phase === "answer") && (
+          {(phase === "clarify" || phase === "blocked" || phase === "workspace" || phase === "answer" || phase === "plan") && (
             <motion.div
               layoutId={reduced ? undefined : "v5-surface"}
               transition={transition}
@@ -430,6 +484,8 @@ export default function V5() {
                   )}
                 </>
               )}
+              {extra && extra.spec.elements[extra.spec.root].children.length > 0 && <V5Enquiry value={extra} />}
+              {phase === "plan" && plan && <V5Plan plan={plan} view={planView} onDone={reset} />}
               {phase === "answer" && found && <V5Answer answer={found} presentation={answerView} onDone={reset} />}
               {phase === "blocked" && (
                 <>

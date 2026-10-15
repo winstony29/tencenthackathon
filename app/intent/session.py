@@ -29,6 +29,8 @@ class Session:
     followup: str | None = None  # the follow-up turn being worked on, if any
 
     history: list[dict] = field(default_factory=list)
+    condition: dict | None = None
+    action_text: str | None = None
 
     def record(self, answer: Answer) -> None:
         """Store the user's answer to the open question; refuse answers to anything else."""

@@ -6344,3 +6344,101 @@ def test_combined_reconciliation_does_not_take_retry_request_identity(combined_b
         )
         == 1
     )
+
+
+@pytest.mark.parametrize(
+    "operator,below,equal,above",
+    [
+        ("lt", "met", "not_met", "not_met"),
+        ("lte", "met", "met", "not_met"),
+        ("gt", "not_met", "not_met", "met"),
+        ("gte", "not_met", "met", "met"),
+        ("eq", "not_met", "met", "not_met"),
+        ("ne", "met", "not_met", "met"),
+    ],
+)
+def test_quote_condition_decimal_comparisons(operator, below, equal, above):
+    from datetime import UTC
+
+    from app.contracts import QuoteCondition
+
+    predicate = QuoteCondition(ticker="MSFT", operator=operator, threshold="300.00", currency="USD")
+    for price, expected in [("299.99", below), ("300.00", equal), ("300.01", above)]:
+        quote = QuoteResponse(
+            ticker="MSFT",
+            company_name="Microsoft",
+            price=price,
+            currency="USD",
+            as_of=datetime.now(UTC),
+        )
+        assert readonly.evaluate_condition(predicate, quote)["state"] == expected
+    assert (
+        readonly.evaluate_condition(predicate, quote.model_copy(update={"currency": "SGD"}))[
+            "state"
+        ]
+        == "unknown"
+    )
+    assert (
+        readonly.evaluate_condition(
+            predicate, quote.model_copy(update={"as_of": datetime.now(UTC) - timedelta(minutes=2)})
+        )["state"]
+        == above
+    )
+    assert (
+        readonly.evaluate_condition(
+            predicate, quote.model_copy(update={"as_of": datetime.now(UTC) + timedelta(minutes=2)})
+        )["state"]
+        == above
+    )
+
+
+def test_demo_gateway_does_not_recheck_condition_and_retries_never_redebit(
+    gateway_environment, monkeypatch
+):
+    from datetime import UTC
+
+    from app.contracts import QuoteCondition
+
+    env = gateway_environment
+    quote = QuoteResponse(
+        ticker="MSFT",
+        company_name="Microsoft",
+        price="250.00",
+        currency="USD",
+        as_of=datetime.now(UTC),
+    )
+    monkeypatch.setattr(readonly, "get_quote", lambda _: quote)
+    draft = _risk_draft("500.00").model_copy(
+        update={
+            "condition": QuoteCondition(
+                ticker="MSFT", operator="lt", threshold="300.00", currency="USD"
+            )
+        }
+    )
+    _, _, payment = _gateway_challenge(env, draft)
+    quote = quote.model_copy(update={"price": Decimal("350.00")})
+    result = gateway.execute(payment, **env.paths)
+    assert result.status == "executed"
+    quote = quote.model_copy(update={"price": Decimal("350.00")})
+    assert gateway.execute(payment, **env.paths) == result
+    assert len(_ledger_state(env.ledger_paths)["transactions"]) == 1
+
+
+def test_demo_gateway_does_not_read_quote_at_confirmation(gateway_environment, monkeypatch):
+    from app.contracts import QuoteCondition
+
+    env = gateway_environment
+
+    def unexpected_read(*args):
+        raise AssertionError("Condition must not be checked again")
+
+    monkeypatch.setattr(readonly, "evaluate_condition", unexpected_read)
+    draft = _risk_draft("500.00").model_copy(
+        update={
+            "condition": QuoteCondition(
+                ticker="AAPL", operator="lt", threshold="300.00", currency="USD"
+            )
+        }
+    )
+    _gateway_challenge(env, draft)
+    assert len(_ledger_state(env.ledger_paths)["transactions"]) == 0

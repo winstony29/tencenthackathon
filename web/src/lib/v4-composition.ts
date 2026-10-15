@@ -4,6 +4,7 @@ import { indexTree } from "../../vendor/json-render/experimental-composition-tre
 import type { Spec } from "../../vendor/json-render/types";
 import { catalog, prompts, recipes, specSchema, type Context, type Recipe } from "./v4-catalog";
 import { post } from "./api";
+import { enquirySchema } from "../components/v5-enquiry";
 
 export type Node = {
   id: string;
@@ -25,6 +26,7 @@ const answer = z.strictObject({
   confidence: z.number().min(0).max(1),
 });
 export const evaluationSchema = z.strictObject({
+  context_view: enquirySchema.optional(),
   answers: z.record(z.string(), answer),
   model: z.string(),
   latency_ms: z.number().nonnegative(),
@@ -252,6 +254,7 @@ export async function compose(
   signal: AbortSignal,
   onCall?: () => void,
   auditSession?: string,
+  contextRequest?: Record<string, unknown>,
 ): Promise<Composition> {
   const calls: Evaluation[] = [],
     offered = recipes(context),
@@ -263,7 +266,7 @@ export async function compose(
       const result = await post(
         "/presentation-v4/evaluate",
         evaluationSchema,
-        { context, selected: [], questions: selectionQuestions(context) },
+        { context, selected: [], questions: selectionQuestions(context), context_request: contextRequest },
         signal,
         auditSession,
       );
@@ -302,6 +305,7 @@ export async function compose(
           {
             context,
             selected,
+            ...(!selected.length ? {context_request: contextRequest} : {}),
             questions: Object.fromEntries(
               Object.entries(questions).map(([k, q]) => [k, Object.keys(q.criteria)]),
             ),
