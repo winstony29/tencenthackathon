@@ -20,7 +20,13 @@ from fastapi.testclient import TestClient
 
 from app import audit, config, transaction_state
 from app.bank import readonly
-from app.contracts import AccountsResponse, Draft, TransactionEntry, UpcomingBill
+from app.contracts import (
+    AccountsResponse,
+    AccountTransferAction,
+    Draft,
+    TransactionEntry,
+    UpcomingBill,
+)
 from app.intent import draft, gate, jev, options, session, shield
 from app.main import app
 from tests.conftest import BANK, QUOTES
@@ -1669,6 +1675,45 @@ def test_each_preview_gets_its_own_scope(client, fake_jev, monkeypatch) -> None:
     client.post("/api/preview", json={"text": "send 500 to someone"})
     client.post("/api/preview", json={"text": "pay 500 now"})
     assert len(scopes) == 2 and scopes[0] != scopes[1]
+
+
+def test_everyday_words_in_payee_names_keep_their_meaning(mask_key) -> None:
+    # M9 (15 Oct audit): payee "Bill Lee" turned "credit card bill" into a name.
+    bank = BANK.model_copy(deep=True)
+    bank.payees[0].name, bank.payees[1].name = "Bill Lee", "Mark Savings"
+    names = options.aliases(bank, "u_demo|s_1")
+    assert options.mask("pay my credit card bill", "s", names) == "pay my credit card bill"
+    assert "savings" in options.mask("move it from savings", "s", names)
+    assert "lee" not in options.mask("send it to bill lee", "s", names).lower()
+    move = AccountTransferAction(
+        type="account_transfer",
+        from_account_id="acc_1234",
+        from_account_label="Savings …1234",
+        to_account_id="acc_5678",
+        to_account_label="Current …5678",
+        amount="100.00",
+        currency="SGD",
+    )
+    assert options.describe(move, names) == "move from Savings to Current"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "send 50 to Jöhn Döe",
+        "send 50 to Jo\u0308hn Do\u0308e",
+        "send 50 to Jоhn Dоe",  # Cyrillic о
+        "send 50 to johndoe",
+        "pay meiling back",
+        "pay TANMEILING",
+        "use https://pay.me/johnsmith",
+    ],
+)
+def test_names_in_disguise_are_still_masked(mask_key, text: str) -> None:
+    # M10 (15 Oct audit): accents, look-alike letters, joined names and links reached Jev.
+    masked = options.mask(text, "s", options.aliases(BANK, "u_demo|s_1"))
+    folded = options._fold(masked)
+    assert not any(w in folded for w in ("john", "doe", "smith", "mei", "ling", "tan")), masked
 
 
 @pytest.mark.parametrize(

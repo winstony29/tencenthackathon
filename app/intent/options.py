@@ -8,6 +8,7 @@ Contract: none; user data comes from app/bank/readonly.py (CONTRACTS §3.3)
 import hashlib
 import hmac
 import re
+import unicodedata
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from itertools import groupby
@@ -59,6 +60,7 @@ _FRACTION = re.compile(r"\b(" + "|".join(_FRACTIONS) + r")\b")
 # Matched on the original text (not text.lower()) so spans index the text mask() rewrites.
 _TOKEN = re.compile(r"(\d[\d,]*(?:\.\d+)?)(k|m)?\b|[a-z]+", re.IGNORECASE)
 _EMAIL = re.compile(r"\S+@\S+")
+_URL = re.compile(r"\b(?:https?://|www\.)\S+", re.IGNORECASE)
 _USD_BEFORE = re.compile(r"(?:\bus\$|\busd)\s*$", re.IGNORECASE)
 _USD_AFTER = re.compile(r"^\s*(?:usd\b|us\s*dollars?\b|us\$)", re.IGNORECASE)
 
@@ -179,8 +181,25 @@ def stand_ins(numbers: list[Number], scope: str) -> list[int]:
     return [chosen[n.value] for n in numbers]
 
 
-_WORD = re.compile(r"[^\W\d_]+")
+# A word, keeping combining accents ("Jo\u0308hn") inside it.
+_WORD = re.compile(r"[^\W\d_](?:[^\W\d_]|[\u0300-\u036f])*")
 _CONSONANTS, _VOWELS = "bdfgklmnprstvz", "aeiou"
+# Words that are also everyday or banking words keep their spelling even in a payee's name:
+# payee "Bill Lee" turned "pay my credit card bill" into "pay my credit card Mefuva" (M9,
+# 15 Oct audit). The cost: such a name word ("Mark", "Grace") reaches Jev as itself.
+_COMMON = frozenset(
+    "bill bills card cards savings saving current account will mark may june april august "
+    "rose grace hope joy faith penny rich cash chase gold sky summer sunny pay bank fund "
+    "the and to from my of a an i me for in on at by with it is".split()
+)
+# Latin look-alikes from Cyrillic and Greek, so "Jоhn" with a Cyrillic "о" still reads as John.
+_CONFUSABLES = str.maketrans("аеорсухіјѕԁһӏԛԝαεικνοτυχ", "aeopcyxijsdhlqwaeikvotux")
+
+
+def _fold(word: str) -> str:
+    """The form a name word is looked up by: no accents, no case, no look-alike letters (M10)."""
+    plain = "".join(c for c in unicodedata.normalize("NFKD", word) if not unicodedata.combining(c))
+    return plain.casefold().translate(_CONFUSABLES)
 
 
 def aliases(accounts: AccountsResponse, scope: str) -> dict[str, str]:
@@ -190,9 +209,11 @@ def aliases(accounts: AccountsResponse, scope: str) -> dict[str, str]:
     consonant-vowel syllables so Jev still reads a name ("John" -> e.g. "Kavoru"). Without the
     key no pseudonym can be worked back, even by hashing every name; the scope makes them
     differ across conversations. Each word maps on its own, so "John Doe" and "John Smith"
-    share a first name and a bare "John" stays ambiguous, as it really is.
+    share a first name and a bare "John" stays ambiguous, as it really is. A name run together
+    ("johndoe", "meiling") maps to its pseudonyms run together.
     """
-    words = sorted({w.lower() for p in accounts.payees for w in _WORD.findall(p.name)})
+    names = [[_fold(w) for w in _WORD.findall(p.name)] for p in accounts.payees]
+    words = sorted({w for name in names for w in name} - _COMMON)
     taken, result = set(words), {}
     for word in words:
         for attempt in range(config.STAND_IN_TRIES):
@@ -203,12 +224,17 @@ def aliases(accounts: AccountsResponse, scope: str) -> dict[str, str]:
                 break
         taken.add(alias)
         result[word] = alias.capitalize()
+    for name in names:
+        for i in range(len(name)):
+            for j in range(i + 2, len(name) + 1):
+                joined = "".join(result.get(w, w) for w in name[i:j]).capitalize()
+                result.setdefault("".join(name[i:j]), joined)
     return result
 
 
 def aliased(text: str, names: dict[str, str]) -> str:
     """Swap every payee name word in the text for its pseudonym."""
-    return _WORD.sub(lambda m: names.get(m.group(0).lower(), m.group(0)), text)
+    return _WORD.sub(lambda m: names.get(_fold(m.group(0)), m.group(0)), text)
 
 
 def bare(label: str) -> str:
@@ -222,8 +248,8 @@ def mask(text: str, scope: str, names: dict[str, str] | None = None) -> str:
 
     Stand-ins come from a keyed hash of the value and the scope (user and session): normally
     the same for a whole conversation, different across conversations, and impossible to work
-    back without config.MASK_KEY. Digits the parser missed become "[number]", and email
-    addresses become "[email]". `names` comes from aliases().
+    back without config.MASK_KEY. Digits the parser missed become "[number]", links become
+    "[link]" and email addresses "[email]". `names` comes from aliases().
     """
     # ponytail: number words parse_numbers doesn't know ("dozen", "couple") pass through
     # unmasked; add them to _SMALL / _SCALES if they turn up in real transcripts.
@@ -234,7 +260,8 @@ def mask(text: str, scope: str, names: dict[str, str] | None = None) -> str:
         parts += [_hide_digits(text[last:start]), str(stand_in)]
         last = end
     parts.append(_hide_digits(text[last:]))
-    return aliased(_EMAIL.sub("[email]", "".join(parts)), names or {})
+    text = _EMAIL.sub("[email]", _URL.sub("[link]", "".join(parts)))
+    return aliased(text, names or {})
 
 
 def _hide_digits(text: str) -> str:
@@ -658,21 +685,19 @@ def describe(action, names: dict[str, str] | None = None) -> str:
     """Say one draft action in a few words, for Jev's context and follow-up questions.
 
     Leaves out amounts, quantities and last digits, and names payees by pseudonym: Jev only
-    needs to tell the tasks apart.
+    needs to tell the tasks apart. Account and biller labels are never aliased (M9).
     """
 
-    def say(label: str) -> str:
-        return aliased(bare(label), names or {})
-
     if action.type == "transfer":
-        return f"transfer to {say(action.to_payee_label)} from {say(action.from_account_label)}"
+        payee = aliased(bare(action.to_payee_label), names or {})
+        return f"transfer to {payee} from {bare(action.from_account_label)}"
     if action.type == "bill_payment":
-        return f"pay {say(action.biller_label)} from {say(action.from_account_label)}"
+        return f"pay {bare(action.biller_label)} from {bare(action.from_account_label)}"
     if action.type == "account_transfer":
-        return f"move from {say(action.from_account_label)} to {say(action.to_account_label)}"
+        return f"move from {bare(action.from_account_label)} to {bare(action.to_account_label)}"
     if action.type == "fx_conversion":
         return (
-            f"convert {action.sell_currency} from {say(action.from_account_label)} "
+            f"convert {action.sell_currency} from {bare(action.from_account_label)} "
             f"to {action.buy_currency}"
         )
     return f"{action.side} {action.ticker} shares"
