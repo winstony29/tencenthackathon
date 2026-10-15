@@ -75,6 +75,7 @@ AUDIT_EVIDENCE_PATH = os.getenv("AUDIT_EVIDENCE_PATH", "")  # Blank uses var/evi
 API_DOCS = os.getenv("API_DOCS", "1") == "1"  # 0 when deployed: hides /docs and /openapi.json
 MAX_REQUEST_BYTES = 256_000  # largest JSON body any /api/ endpoint accepts
 MAX_AUDIO_BYTES = 2_000_000  # largest /api/transcribe upload (a few seconds of speech)
+MAX_MANIFEST_BYTES = 16_000  # largest manifest /api/audit/presentation stores
 # Calls per client IP per minute, by group (app/main.py _RATE_GROUPS). "validate" allows the
 # UI's 500 ms polling while a check runs; a draft revision still costs at most one model call.
 RATE_PER_MINUTE = {"preview": 120, "model": 40, "validate": 120, "write": 60, "read": 120}

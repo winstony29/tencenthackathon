@@ -106,6 +106,15 @@ def test_client_manifest_is_explicitly_untrusted_and_bound_to_session(client):
     assert report["evidence"]["manifest"] == {"root": "transfer"}
 
 
+def test_presentation_reports_are_small_and_stored_once(client):
+    big = {"session_id": "s_ui", "manifest": {"x": "y" * 20_000}, "source": "jev"}
+    assert client.post("/api/audit/presentation", json=big).status_code == 400
+    small = {**big, "manifest": {"root": "transfer"}}
+    assert client.post("/api/audit/presentation", json=small).status_code == 200
+    rows = evidence.timeline("s_ui", 10, False)["entries"]
+    assert [r["event"] for r in rows] == ["presentation_client_reported"]
+
+
 def test_size_limit_and_no_plaintext_headers(client, monkeypatch):
     monkeypatch.setattr(config, "AUDIT_MAX_BYTES", 100)
     response = client.post("/api/understand", content="x" * 101)

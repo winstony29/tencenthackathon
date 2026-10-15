@@ -61,8 +61,7 @@ _PATHS = {
     "/api/accounts",
     "/api/quote",
     "/api/fx",
-    "/api/audit/presentation",
-}
+}  # /api/audit/presentation records its own event; capturing it here stored it twice (H3)
 
 
 class AuditMiddleware:
