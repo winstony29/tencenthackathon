@@ -1671,17 +1671,31 @@ def test_each_preview_gets_its_own_scope(client, fake_jev, monkeypatch) -> None:
     assert len(scopes) == 2 and scopes[0] != scopes[1]
 
 
-def test_a_weak_mask_key_is_refused() -> None:
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"MASK_KEY": "short"},
+        {"MASK_KEY": "a" * 32},
+        {"VALIDATION_RECEIPT_KEY": "dcta"},
+        {"AUDIT_ADMIN_TOKEN": "dcta" * 10},
+        {
+            "MASK_KEY": "k" + "0123456789abcdef" * 2,
+            "AUDIT_ADMIN_TOKEN": "k" + "0123456789abcdef" * 2,
+        },
+    ],
+)
+def test_weak_or_reused_keys_are_refused(env) -> None:
     import subprocess
     import sys
 
     result = subprocess.run(
         [sys.executable, "-c", "import app.config"],
-        env={**os.environ, "MASK_KEY": "short"},
+        env={**os.environ, **env},
         capture_output=True,
         text=True,
     )
-    assert result.returncode != 0 and "at least 32 bytes" in result.stderr
+    assert result.returncode != 0
+    assert "at least 32 bytes" in result.stderr or "different value" in result.stderr
 
 
 def test_a_stand_in_never_equals_the_number_said(mask_key) -> None:
