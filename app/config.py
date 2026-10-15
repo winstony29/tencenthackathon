@@ -60,6 +60,7 @@ AUDIT_DEFAULT_LIMIT = 50  # entries GET /api/audit returns when no limit is give
 VALIDATOR_PROVIDER = os.getenv("VALIDATOR_PROVIDER", "codex")  # local demo, or compatible-api
 VALIDATOR_CODEX_MODEL = os.getenv("VALIDATOR_CODEX_MODEL", "")  # blank uses CLI default
 VALIDATOR_TIMEOUT_SECONDS = 45 if VALIDATOR_PROVIDER == "codex" else 12
+VALIDATOR_RETRY_SECONDS = 10  # an "unavailable" check is reused this long before a model rerun
 
 # Persistent audit evidence; key/token must survive restart and stay outside source control.
 AUDIT_EVIDENCE_KEY = os.getenv("AUDIT_EVIDENCE_KEY", "")
@@ -74,5 +75,9 @@ AUDIT_EVIDENCE_PATH = os.getenv("AUDIT_EVIDENCE_PATH", "")  # Blank uses var/evi
 API_DOCS = os.getenv("API_DOCS", "1") == "1"  # 0 when deployed: hides /docs and /openapi.json
 MAX_REQUEST_BYTES = 256_000  # largest JSON body any /api/ endpoint accepts
 MAX_AUDIO_BYTES = 2_000_000  # largest /api/transcribe upload (a few seconds of speech)
-RATE_PER_MINUTE = {"preview": 120, "model": 40}  # model-backed calls per client IP per minute
-RATE_GLOBAL_PER_MINUTE = 600  # model-backed calls per minute from everyone together
+# Calls per client IP per minute, by group (app/main.py _RATE_GROUPS). "validate" allows the
+# UI's 500 ms polling while a check runs; a draft revision still costs at most one model call.
+RATE_PER_MINUTE = {"preview": 120, "model": 40, "validate": 120, "write": 60, "read": 120}
+# Groups that spend a model or ASR key also share one budget across every client. Each group
+# has its own, so a flood of previews can't stop commands.
+RATE_GLOBAL_PER_MINUTE = {"preview": 600, "model": 600}

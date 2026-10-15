@@ -33,6 +33,7 @@ class Record:
     result: dict | None = None
     checking: bool = False
     started: float = 0
+    checked: float = 0
     client: str = ""
 
 
@@ -153,11 +154,16 @@ def _current(draft: Draft) -> Record:
 def begin(draft: Draft) -> tuple[Record, dict | None]:
     with _lock:
         r = _current(draft)
-        if r.result and r.result["status"] != "unavailable":
+        now = time.monotonic()
+        # Retrying "unavailable" reruns the model, so retries wait (M3, 15 Oct audit).
+        if r.result and (
+            r.result["status"] != "unavailable" or now - r.checked < config.VALIDATOR_RETRY_SECONDS
+        ):
             return r, copy.deepcopy(r.result)
-        if r.checking:
+        # A check that crashed never calls finish(); after its deadline a retry may run (M2).
+        if r.checking and now - r.started < config.VALIDATOR_TIMEOUT_SECONDS + 5:
             return r, {"status": "pending", "message": "Checking your request."}
-        r.checking, r.started = True, time.monotonic()
+        r.checking, r.started = True, now
         return r, None
 
 
@@ -182,7 +188,7 @@ def finish(r: Record, result: dict) -> dict:
                 draft_digest=r.digest,
             )
             return {"status": "stale", "message": "This draft changed or expired."}
-        r.checking = False
+        r.checking, r.checked = False, time.monotonic()
         result = copy.deepcopy(result)
         if result["status"] == "match":
             result["receipt"] = _receipt(r)

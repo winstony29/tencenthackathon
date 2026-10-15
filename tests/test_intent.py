@@ -1466,8 +1466,26 @@ def test_model_calls_are_rate_limited_per_client(client, monkeypatch) -> None:
     assert codes == [200, 200, 200, 429, 429]
     limited = client.post("/api/preview", json={"text": "s"})
     assert limited.json()["error"]["code"] == "rate_limited" and limited.headers["retry-after"]
-    # Free endpoints are not limited.
+    # Each group has its own bucket.
     assert client.get("/api/fx", params={"from": "SGD", "to": "USD"}).status_code == 200
+
+
+def test_a_preview_flood_cannot_use_up_the_command_budget(monkeypatch) -> None:
+    # H2/M5 (15 Oct audit): one shared global window let previews lock everyone out of
+    # /api/understand, and clearing every bucket at 10,000 clients reset exhausted ones.
+    from app.main import RATE_BUCKETS, _Guard, _rate_key
+
+    monkeypatch.setitem(config.RATE_GLOBAL_PER_MINUTE, "preview", 5)
+    monkeypatch.setitem(config.RATE_PER_MINUTE, "model", 1)
+    assert all(_Guard._allowed(f"10.0.0.{i}", "preview") for i in range(5))
+    assert not _Guard._allowed("10.0.1.1", "preview")
+    assert _Guard._allowed("10.0.1.1", "model")
+    assert not _Guard._allowed("10.0.1.1", "model")
+    RATE_BUCKETS.update({(f"idle{i}", "read"): (120, -1000.0) for i in range(10_001)})
+    _Guard._allowed("10.0.2.1", "read")
+    assert ("10.0.1.1", "model") in RATE_BUCKETS and ("idle0", "read") not in RATE_BUCKETS
+    assert _rate_key("2001:db8::1") == _rate_key("2001:db8::ffff") != _rate_key("2001:db9::1")
+    assert _rate_key("10.0.0.1") == "10.0.0.1"
 
 
 # --- session flood, IDs, ownership and intent audit events ---
