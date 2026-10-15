@@ -91,7 +91,7 @@ EVIDENCE_MAX_STORE_BYTES = 500_000_000  # past this, new events keep metadata on
 AUDIT_EVIDENCE_PATH = os.getenv("AUDIT_EVIDENCE_PATH", "")  # Blank uses var/evidence.sqlite3.
 
 # Request guard (app/main.py): limits for an anonymous public demo. Starting values.
-API_DOCS = os.getenv("API_DOCS", "1") == "1"  # 0 when deployed: hides /docs and /openapi.json
+API_DOCS = os.getenv("API_DOCS", "0") == "1"  # 1 locally shows /docs and /openapi.json (L10)
 MAX_REQUEST_BYTES = 256_000  # largest JSON body any /api/ endpoint accepts
 MAX_AUDIO_BYTES = 2_000_000  # largest /api/transcribe upload (a few seconds of speech)
 MAX_MANIFEST_BYTES = 16_000  # largest manifest /api/audit/presentation stores

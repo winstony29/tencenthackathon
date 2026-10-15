@@ -127,10 +127,27 @@ def test_presentation_reports_are_small_and_stored_once(client):
     assert [r["event"] for r in rows] == ["presentation_client_reported"]
 
 
+def test_odd_bodies_are_400_and_previews_are_not_kept(client):
+    # L5, L6, L9, L13 (15 Oct audit): deep JSON or NaN gave 500/503, previews were stored.
+    headers = {"content-type": "application/json"}
+    deep = client.post("/api/understand", content="[" * 100_000, headers=headers)
+    nan = '{"user_id": "u_demo", "session_id": "s_x", "transcript": NaN}'
+    assert (
+        deep.status_code
+        == client.post("/api/understand", content=nan, headers=headers).status_code
+        == 400
+    )
+    assert deep.json()["error"]["code"] == "bad_request"
+    preview = client.post("/api/preview", json={"text": "send fifty"})
+    assert preview.headers["cache-control"] == "no-store"
+    rows = evidence.timeline(None, 100, False)["entries"]
+    assert not any("preview" in json.dumps(r) for r in rows)
+
+
 def test_size_limit_and_no_plaintext_headers(client, monkeypatch):
     monkeypatch.setattr(config, "AUDIT_MAX_BYTES", 100)
     response = client.post("/api/understand", content="x" * 101)
-    assert response.status_code == 413
+    assert response.status_code == 413 and response.json()["error"]["code"] == "too_large"
 
 
 def test_request_history_and_bank_snapshot_reconstruct_after_expiry(client, fake_jev, bank):

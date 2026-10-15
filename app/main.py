@@ -128,13 +128,17 @@ class _Guard:
             return await self.app(scope, receive, send)
 
         headers = list(_HEADERS)
+        path = scope.get("path", "")
 
         async def send_with_headers(message):
             if message["type"] == "http.response.start":
                 message["headers"] = list(message.get("headers", [])) + headers
+                if path.startswith("/api/") and not any(
+                    k.lower() == b"cache-control" for k, _ in message["headers"]
+                ):  # bank data and errors are never cached (L9)
+                    message["headers"].append((b"cache-control", b"no-store"))
             await send(message)
 
-        path = scope.get("path", "")
         if not path.startswith("/api/"):
             return await self.app(scope, receive, send_with_headers)
         # Every browser gets a secret HttpOnly cookie; conversations belong to it (H1 in the

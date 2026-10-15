@@ -158,8 +158,11 @@ def _connect():
     if str(path) in _broken:  # fail closed: never append to a store found tampered
         raise _Tampered("Evidence timeline integrity check failed earlier.")
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # Transcripts and bank snapshots, even encrypted, are owner-only: create the file 0600
+    # before SQLite can create it under the umask (L15), and tighten an older file.
+    os.close(os.open(path, os.O_CREAT | os.O_WRONLY, 0o600))
+    os.chmod(path, 0o600)
     db = sqlite3.connect(path, timeout=10)
-    os.chmod(path, 0o600)  # transcripts and bank snapshots, even encrypted, are owner-only
     db.execute("PRAGMA synchronous=FULL")
     db.execute("PRAGMA secure_delete=ON")
     db.execute("""CREATE TABLE IF NOT EXISTS events (

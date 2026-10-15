@@ -50,9 +50,9 @@ async def presentation(body: PresentationEvidenceRequest):
     return {"status": "recorded"}
 
 
+# /api/preview is left out: previews are display only and must not be kept (CONTRACTS §8, L13).
 _PATHS = {
     "/api/understand",
-    "/api/preview",
     "/api/validate",
     "/api/validation/cancel",
     "/api/challenge",
@@ -62,6 +62,10 @@ _PATHS = {
     "/api/quote",
     "/api/fx",
 }  # /api/audit/presentation records its own event; capturing it here stored it twice (H3)
+
+
+def _no_constant(name: str):
+    raise ValueError(f"{name} is not JSON")  # NaN and Infinity can't be stored as evidence
 
 
 class AuditMiddleware:
@@ -84,14 +88,14 @@ class AuditMiddleware:
                     return
                 body.extend(message.get("body", b""))
                 if len(body) > config.AUDIT_MAX_BYTES:
-                    return await JSONResponse({"error": {"message": "Request too large."}}, 413)(
-                        scope, receive, send
-                    )
+                    return await JSONResponse(
+                        {"error": {"code": "too_large", "message": "Request too large."}}, 413
+                    )(scope, receive, send)
                 if not message.get("more_body"):
                     break
             try:
-                data = json.loads(body) if body else {}
-            except ValueError:
+                data = json.loads(body, parse_constant=_no_constant) if body else {}
+            except (ValueError, RecursionError):  # also NaN (L6) and deep nesting (L5)
                 # Do not persist unparsed bodies: they may contain secret fields.
                 data = {"malformed_json": True}
             headers = dict(scope.get("headers", []))
@@ -165,7 +169,13 @@ class AuditMiddleware:
             raise
         except AuditError:
             await JSONResponse(
-                {"error": {"message": "Audit storage unavailable. Request stopped."}}, 503
+                {
+                    "error": {
+                        "code": "upstream_error",
+                        "message": "Audit storage unavailable. Request stopped.",
+                    }
+                },
+                503,
             )(scope, receive, send)
         except Exception as error:
             try:
