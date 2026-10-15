@@ -24,9 +24,49 @@ from app.audit import AuditError
 
 context: ContextVar[dict | None] = ContextVar("audit_context", default=None)
 _SECRET = re.compile(
-    r"authorization|cookie|password|secret|api.?key|private.?key|otp|receipt|token|credential|^d$|^p$|^q$|^dp$|^dq$|^qi$",
+    r"authorization|cookie|password|secret|api.?key|private.?key|otp|receipt|token|credential"
+    r"|cvv|card.?number|nric|signature|nonce|^pin$|^pass$|^pwd$|^key$"
+    r"|^d$|^p$|^q$|^dp$|^dq$|^qi$",
     re.I,
 )
+# Secrets people type or say, replaced wherever text goes: Jev, the validator and evidence
+# (M11, 15 Oct audit). Amounts and names are masked separately (app/intent/options.py).
+_SAID = [
+    (
+        re.compile(
+            r"\b(password|passcode|passwd|pwd|pin|otp|one[- ]time (?:password|code|pin)"
+            r"|verification code|security code|cvv|cvc)(\s*(?:is|was|=|:)?\s*)\S+",
+            re.I,
+        ),
+        r"\1\2[secret]",
+    ),
+    (
+        re.compile(
+            r"\b(?:sk-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}"
+            r"|eyJ[\w-]+\.[\w-]+\.[\w-]+)"
+        ),
+        "[secret]",
+    ),
+    (re.compile(r"\b[STFGM]\d{7}[A-Z]\b", re.I), "[id]"),  # Singapore NRIC / FIN
+    (re.compile(r"(?i)Bearer\s+[A-Za-z0-9._~+/=-]+"), "Bearer [REDACTED]"),
+]
+_CARD = re.compile(r"\b\d(?:[ -]?\d){12,18}\b")
+
+
+def _luhn(digits: str) -> bool:
+    total = sum(
+        int(d) if i % 2 == 0 else sum(divmod(int(d) * 2, 10)) for i, d in enumerate(digits[::-1])
+    )
+    return total % 10 == 0
+
+
+def scrub(text: str) -> str:
+    """Replace typed credentials, card numbers, NRICs and API keys with placeholders."""
+    for pattern, replacement in _SAID:
+        text = pattern.sub(replacement, text)
+    return _CARD.sub(
+        lambda m: "[card]" if _luhn(re.sub(r"\D", "", m.group(0))) else m.group(0), text
+    )
 
 
 def clean(value):
@@ -44,8 +84,8 @@ def clean(value):
                 and isinstance(secret, str)
                 and len(secret) >= 8
             ):
-                value = value.replace(secret, "[REDACTED]")
-        return re.sub(r"(?i)Bearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]", value)
+                value = re.sub(re.escape(secret), "[REDACTED]", value, flags=re.I)
+        return scrub(value)
     return value
 
 

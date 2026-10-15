@@ -135,6 +135,7 @@ async def preview(request: PreviewRequest) -> dict[str, Any]:
     """
     if not config.MAKERS_MODELS_KEY:
         return _STUB_PREVIEW
+    request = request.model_copy(update={"text": evidence.scrub(request.text)})
     # A fresh scope per preview: stand-ins and name pseudonyms can't be linked across requests
     # or people (D-039). The cache keys on the raw text, which stays in server memory, and on
     # the browser: a shared cache told anyone whether someone else had typed a text (H7).
@@ -205,6 +206,8 @@ async def understand(request: UnderstandRequest) -> dict[str, Any]:
     open answers it instead (CONTRACTS §10.2).
     """
     readonly.get_accounts(request.user_id)  # an unknown user is a 404 before any state changes
+    if request.transcript is not None:  # typed secrets go no further: Jev, validator, evidence
+        request = request.model_copy(update={"transcript": evidence.scrub(request.transcript)})
     try:
         transaction_state.start_turn(request.user_id, request.session_id)
     except transaction_state.InvalidDraft as error:  # another client's conversation

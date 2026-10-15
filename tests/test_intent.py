@@ -1750,6 +1750,21 @@ def test_a_stand_in_never_shows_the_whole_units_or_leading_digits(mask_key) -> N
             assert str(stand_in)[:2] != str(int(value))[:2]
 
 
+def test_typed_secrets_reach_neither_jev_nor_evidence(client, fake_jev, bank) -> None:
+    # M11 (15 Oct audit): a password's letters reached Jev and every secret was kept.
+    from app import evidence
+
+    said = (
+        "send 50 to John, my password is hunter2 and the OTP is 482913, card 4111 1111 1111 "
+        "1111, NRIC S1234567D, key sk-proj-abcdefghijklmnopqrstuv"
+    )
+    _understand(client, said)
+    stored = json.dumps(evidence.timeline(None, 100, True))
+    for secret in ("hunter2", "482913", "4111 1111", "S1234567D", "sk-proj-abc"):
+        assert secret not in _sent_to_jev(fake_jev) and secret not in stored, secret
+    assert evidence.scrub("pay 50.00 to John") == "pay 50.00 to John"
+
+
 @pytest.mark.parametrize(
     "env",
     [
