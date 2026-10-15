@@ -83,6 +83,24 @@ def test_jev_without_key_is_an_upstream_error(monkeypatch: pytest.MonkeyPatch) -
     assert caught.value.status_code == 502
 
 
+def test_only_stand_ins_leave_with_their_digits(monkeypatch: pytest.MonkeyPatch) -> None:
+    # L2 (15 Oct audit): digits inside biller, company or payee names reached Jev.
+    sent = {}
+
+    async def post(client, payload):
+        sent.update(payload)
+        raise jev.httpx.ConnectError("offline")
+
+    monkeypatch.setattr(config, "MAKERS_MODELS_KEY", "test-key")
+    monkeypatch.setattr(jev, "_post", post)
+    bill = jev.Question("biller", "Which bill, task 1?", {"b": "SP Group acct 88812345", "n": "72"})
+    with pytest.raises(HTTPException):
+        asyncio.run(jev.ask("pay 72000 to Agent", [bill], {"tasks": ["pay Agent 47"]}))
+    wording = json.dumps(sent)
+    assert "88812345" not in wording and "47" not in wording and "72000" in wording
+    assert "task 1" in wording
+
+
 def test_jev_asks_every_phrasing_in_order(fake_jev) -> None:
     replies = asyncio.run(jev.ask_all(["send fifty to john", "transfer 50 to john"], [RECIPIENT]))
     assert [text for text, _ in fake_jev.calls] == ["send fifty to john", "transfer 50 to john"]
