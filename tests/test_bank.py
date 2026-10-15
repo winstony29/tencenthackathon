@@ -72,15 +72,253 @@ def test_seed_has_required_demo_records(bank_seed: dict[str, Any]) -> None:
         ("current", "SGD"),
         ("investment", "USD"),
     }
-    assert {p["name"] for p in user["payees"]} == {"John Doe", "John Smith", "Tan Mei Ling", "Mum"}
+    assert {p["name"] for p in user["payees"]} >= {"John Doe", "John Smith", "Tan Mei Ling", "Mum"}
     assert len(user["accounts"]) == 3
-    assert len(user["payees"]) == 4
+    assert len(user["payees"]) == 10
     assert len(user["billers"]) == 1
     assert user["billers"][0]["bill_reference"] == "4120-XXXX-XXXX-9012"
-    assert len(bank_seed["quotes"]) == 5
+    assert len(bank_seed["quotes"]) == 8
     assert "AAPL" in bank_seed["quotes"]
-    assert 10 <= len(user["transaction_history"]) <= 15
+    assert len(user["transaction_history"]) == 19
     assert all(a["status"] == "active" for a in user["accounts"])
+
+
+@pytest.mark.parametrize(
+    "section,expected",
+    [
+        ("accounts", "208070941c972867c3dbfb96920bcf79423cc87b4eb3cf5cc52ea2b065c4497e"),
+        ("payees", "4f6f52554496a4e02eef1bac9f3726d228f6fc6dccfcb2c45c5083f38b3ab8fe"),
+        ("billers", "c988ce4542fbb39eb7900ea419483b9d3797aaab5873733cbf27db0920796dd8"),
+        ("holdings", "191d8c89e451932e8de9b51ca5bfaa5dc7e95e9be1edfca3c1c76af0f449fb22"),
+        ("transaction_history", "3103b840489a7d2878fc06090dce9a2ae723bee98b37b72c00e0519d73f2d71a"),
+        ("cashflow_schedule", "4262976b2c18b8490ea202a6c162db6ca078e7f6083452bb13b8038527415a52"),
+        ("quotes", "2491637a30ba0d8441ae5a6b3199eb44f2befdbac375d758915a020a31cf7397"),
+        ("fx_rates", "8a79a487c1f651ce93fc91564973cb451af54f20ab531007ccaa07ad9f15a485"),
+    ],
+)
+def test_expansion_preserves_original_records_exactly(
+    bank_seed: dict[str, Any], section: str, expected: str
+) -> None:
+    """Golden digests from the reviewed pre-expansion seed, including internal fields."""
+    user = bank_seed["users"]["u_demo"]
+    if section == "quotes":
+        original = {
+            ticker: bank_seed["quotes"][ticker]
+            for ticker in ("AAPL", "MSFT", "GOOGL", "AMZN", "NVDA")
+        }
+    elif section == "fx_rates":
+        original = bank_seed[section]
+    else:
+        original = user[section]
+        count = {"payees": 4, "holdings": 2, "transaction_history": 12}.get(section)
+        if count is not None:
+            original = original[:count]
+    payload = json.dumps(original, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    assert hashlib.sha256(payload.encode()).hexdigest() == expected
+    assert user["display_name"] == "Alex Demo"
+
+
+def test_expansion_adds_only_the_approved_fictional_instruments_and_payees(
+    bank_seed: dict[str, Any],
+) -> None:
+    assert set(bank_seed["quotes"]) == {
+        "AAPL",
+        "MSFT",
+        "GOOGL",
+        "AMZN",
+        "NVDA",
+        "TSLA",
+        "META",
+        "AMD",
+    }
+    for ticker, price in {"TSLA": "251.00", "META": "575.00", "AMD": "174.20"}.items():
+        quote = bank_seed["quotes"][ticker]
+        assert quote["ticker"] == ticker and quote["price"] == price
+        assert quote["currency"] == "USD"
+        assert quote["as_of"] == "2026-10-09T16:00:00-04:00"
+        assert ticker in quote["aliases"]
+    assert "synthetic" in bank_seed["description"]
+    additions = bank_seed["users"]["u_demo"]["payees"][4:]
+    assert {p["payee_id"]: p["name"] for p in additions} == {
+        "pay_3101": "Aisha Rahman",
+        "pay_3102": "Ben Lim",
+        "pay_3103": "Chloe Tan",
+        "pay_3104": "Ravi Kumar",
+        "pay_3105": "Example Demo Landlord",
+        "pay_3106": "Example Demo Utilities",
+    }
+    for payee in additions:
+        assert payee["currency"] == "SGD" and payee["status"] == "active"
+        assert payee["name"] in payee["aliases"] and payee["nickname"] in payee["aliases"]
+
+
+def test_expansion_portfolio_keeps_cash_separate_and_matches_purchase_history(
+    bank_seed: dict[str, Any],
+) -> None:
+    user = bank_seed["users"]["u_demo"]
+    assert len(user["holdings"]) == 6
+    assert {h["ticker"]: h["quantity"] for h in user["holdings"]} == {
+        "AAPL": 10,
+        "MSFT": 5,
+        "NVDA": 12,
+        "AMZN": 8,
+        "GOOGL": 6,
+        "AMD": 15,
+    }
+    assert all(h["account_id"] == "acc_7788" for h in user["holdings"])
+    assert (
+        next(a["balance"] for a in user["accounts"] if a["account_id"] == "acc_7788") == "30000.00"
+    )
+    purchases = user["transaction_history"][12:16]
+    assert [(t["ticker"], t["quantity"], t["amount"]) for t in purchases] == [
+        ("NVDA", 12, "1507.20"),
+        ("AMZN", 8, "1490.40"),
+        ("GOOGL", 6, "1010.40"),
+        ("AMD", 15, "2613.00"),
+    ]
+    for purchase in purchases:
+        assert purchase["account_id"] == "acc_7788" and purchase["direction"] == "debit"
+        assert purchase["currency"] == "USD"
+        assert (
+            Decimal(purchase["amount"])
+            == Decimal(bank_seed["quotes"][purchase["ticker"]]["price"]) * purchase["quantity"]
+        )
+
+
+def test_expansion_history_is_completed_and_does_not_settle_future_occurrences(
+    bank_seed: dict[str, Any],
+) -> None:
+    user = bank_seed["users"]["u_demo"]
+    additions = user["transaction_history"][12:]
+    assert [t["transaction_id"] for t in additions] == [f"tx_seed_{i:04d}" for i in range(13, 20)]
+    assert [t["reference"] for t in additions] == [f"SEED-{i:06d}" for i in range(13, 20)]
+    dates = [datetime.fromisoformat(t["time"]) for t in additions]
+    assert dates == sorted(dates)
+    assert all(
+        d.utcoffset() is not None and d < datetime.fromisoformat("2026-10-15T09:00:00+08:00")
+        for d in dates
+    )
+    assert all(t["status"] == "completed" for t in additions)
+    salary, rent, utilities = additions[4:]
+    assert (salary["account_id"], salary["currency"], salary["direction"], salary["amount"]) == (
+        "acc_5678",
+        "SGD",
+        "credit",
+        "6200.00",
+    )
+    assert (rent["account_id"], rent["payee_id"], rent["amount"]) == (
+        "acc_1234",
+        "pay_3105",
+        "1450.00",
+    )
+    assert (utilities["account_id"], utilities["payee_id"], utilities["amount"]) == (
+        "acc_1234",
+        "pay_3106",
+        "92.40",
+    )
+    assert all(t["direction"] == "debit" and t["currency"] == "SGD" for t in (rent, utilities))
+    assert [r["state"] for r in user["cashflow_schedule"]] == [
+        "scheduled",
+        "scheduled",
+        "scheduled",
+        "confirmed_demo",
+    ]
+    assert user["billers"][0]["payment_state"] == "outstanding"
+
+
+@pytest.mark.parametrize(
+    "account_id,deduction,income,commitments,before,after",
+    [
+        ("acc_1234", "0.00", "0.00", "2782.40", "417.60", "417.60"),
+        ("acc_1234", "500.00", "0.00", "2782.40", "417.60", "-82.40"),
+        ("acc_5678", "0.00", "6200.00", "0.00", "71200.00", "71200.00"),
+        ("acc_7788", "0.00", "0.00", "0.00", "30000.00", "30000.00"),
+    ],
+)
+def test_expansion_forecasts_preserve_the_account_specific_demo_story(
+    bank_seed: dict[str, Any],
+    account_id: str,
+    deduction: str,
+    income: str,
+    commitments: str,
+    before: str,
+    after: str,
+) -> None:
+    user = bank_seed["users"]["u_demo"]
+    original = copy.deepcopy(user)
+    result = readonly.get_cashflow_forecast(
+        "u_demo",
+        account_id,
+        as_of=datetime.fromisoformat("2026-10-15T09:00:00+08:00"),
+        horizon_days=30,
+        proposed_amount=Decimal(deduction),
+        runtime_snapshot=user,
+    )
+    assert result["scheduled_income_total"] == income
+    assert result["commitment_total"] == commitments
+    assert (
+        result["projected_balance_before"] == before and result["projected_balance_after"] == after
+    )
+    assert result["window_end"] == "2026-11-14T09:00:00+08:00"
+    assert user == original
+    if account_id == "acc_1234":
+        assert [r["occurrence_id"] for r in result["commitments"]] == [
+            "occ_card_2026_10",
+            "occ_rent_2026_11",
+            "occ_utilities_2026_11",
+        ]
+        assert result["currency"] == "SGD" and result["current_balance"] == "3200.00"
+
+
+def test_expansion_history_is_never_replayed_into_opening_runtime_cash(
+    ledger_store: dict[str, Path],
+) -> None:
+    state = _ledger_state(ledger_store)
+    assert {a["account_id"]: a["balance"] for a in state["users"]["u_demo"]["accounts"]} == {
+        "acc_1234": "3200.00",
+        "acc_5678": "65000.00",
+        "acc_7788": "30000.00",
+    }
+    assert len(state["users"]["u_demo"]["transaction_history"]) == 19
+    assert state["transactions"] == [] and state["executions"] == {}
+
+
+def test_expansion_never_silently_migrates_an_established_customer_snapshot(
+    integrated_views: dict[str, Path],
+) -> None:
+    ledger.reconcile_audit(**integrated_views)
+    state = _ledger_state(integrated_views)
+    user = state["users"]["u_demo"]
+    # Model an older installation entirely in temporary storage, with no financial reset.
+    user["payees"] = user["payees"][:4]
+    user["holdings"] = user["holdings"][:2]
+    user["transaction_history"] = user["transaction_history"][:12]
+    ledger._save_state(integrated_views["storage_path"], state)
+    before = integrated_views["storage_path"].read_bytes()
+    view = readonly.get_accounts("u_demo")
+    assert len(view.payees) == 4 and len(view.holdings) == 2
+    assert view.accounts[2].balance == Decimal("30000.00")
+    assert readonly.get_quote("AMD").price == Decimal("174.20")
+    assert integrated_views["storage_path"].read_bytes() == before
+
+
+@pytest.mark.parametrize("ticker", ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "AMD"])
+def test_expansion_quotes_do_not_authorise_stock_execution(
+    risk_execution_store: dict[str, Path],
+    bank_seed: dict[str, Any],
+    ticker: str,
+) -> None:
+    quote = bank_seed["quotes"][ticker]
+    draft = _ledger_draft(
+        _ledger_action("stock_order", ticker=ticker, company_name=quote["company_name"], quantity=1)
+    )
+    before = _financial_state(risk_execution_store)
+    assert (
+        _risk_execution_result(risk_execution_store, "ex_expanded_stock", draft)
+        == "policy_unsupported"
+    )
+    assert _financial_state(risk_execution_store) == before
+    assert _ledger_state(risk_execution_store)["transactions"] == []
 
 
 def test_seed_preserves_contract_fields_and_demo_funding(bank_seed: dict[str, Any]) -> None:
@@ -220,7 +458,7 @@ def test_accounts_endpoint_returns_only_public_seed_fields(
     assert isinstance(readonly.get_accounts("u_demo").accounts[0].balance, Decimal)
 
 
-@pytest.mark.parametrize("ticker", ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"])
+@pytest.mark.parametrize("ticker", ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "AMD"])
 def test_quote_endpoint_returns_requested_seed_quote(
     bank_client: TestClient, bank_seed: dict[str, Any], ticker: str
 ) -> None:
@@ -1515,9 +1753,9 @@ def test_ledger_stock_buy_sell_and_execution_details(
     assert next(h["quantity"] for h in user["holdings"] if h["ticker"] == "AAPL") == 0
 
 
-@pytest.mark.parametrize("ticker", ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"])
+@pytest.mark.parametrize("ticker", ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "AMD"])
 @pytest.mark.usefixtures("financial_kernel")
-def test_ledger_buys_all_five_seed_stocks(
+def test_ledger_buys_all_seed_stocks(
     ticker: str,
     ledger_store: dict[str, Path],
     bank_seed: dict[str, Any],
