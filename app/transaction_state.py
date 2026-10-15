@@ -62,10 +62,9 @@ def start_turn(user_id: str, session_id: str):
             _owners.pop(min(_owners, key=lambda k: _owners[k][1]))
         _owners[session_id] = (client.get(), now + config.SESSION_TIMEOUT_SECONDS)
         if len(_turns) >= 1000 and (user_id, session_id) not in _turns:
-            # Evict the conversation closest to expiry: junk sessions can't lock everyone out.
-            oldest = min(_turns, key=lambda k: _turns[k][1])
-            _turns.pop(oldest)
-            revoke(*oldest)
+            # Evict the turn closest to expiry: junk sessions can't lock everyone out. Its draft
+            # keeps its approval (M4); only an in-flight request of that turn is refused.
+            _turns.pop(min(_turns, key=lambda k: _turns[k][1]))
         key = (user_id, session_id)
         token = secrets.token_hex(16)
         _turns[key] = (token, now + config.SESSION_TIMEOUT_SECONDS)

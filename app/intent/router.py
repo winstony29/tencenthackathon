@@ -214,8 +214,7 @@ async def understand(request: UnderstandRequest) -> dict[str, Any]:
     started = time.monotonic()
     if request.transcript is not None:
         if shield.obvious(request.transcript):
-            if session.load(request.session_id, request.user_id):  # only the owner's session
-                session.drop(request.session_id)
+            session.drop(request.session_id, request.user_id)
             return _blocked("", started)
         current = session.load(request.session_id, request.user_id)
         if current and current.pending:
@@ -230,14 +229,14 @@ async def understand(request: UnderstandRequest) -> dict[str, Any]:
             flagged = shield.flagged(current.replies[0])
             _event("shield_checked", reason="flagged" if flagged else "clear")
             if flagged:
-                session.drop(request.session_id)
+                session.drop(request.session_id, request.user_id)
                 return _blocked(current.replies[0].model, started)
     else:
         current = session.load(request.session_id, request.user_id)
         if current is None:
             raise HTTPException(404, "This conversation has expired. Please start again.")
         if request.answer.option_id == NONE_OPTION_ID:
-            session.drop(request.session_id)
+            session.drop(request.session_id, request.user_id)
             return _cancelled("user_declined", _meta(current, started))
         try:
             current.record(request.answer)
@@ -270,7 +269,7 @@ async def _spoken_answer(
         "cached": False,
     }
     if shield.flagged(reply):
-        session.drop(request.session_id)
+        session.drop(request.session_id, request.user_id)
         return _blocked(reply.model, started)
     p = gate.pick([reply], question.name)
     if not gate.trusted(p, _amount(current)):
@@ -279,11 +278,11 @@ async def _spoken_answer(
     if p.option == options.NEW_REQUEST:
         fresh = await _start(current.user_id, request.transcript, request.session_id)
         if shield.flagged(fresh.replies[0]):
-            session.drop(request.session_id)
+            session.drop(request.session_id, request.user_id)
             return _blocked(fresh.replies[0].model, started)
         return _command_step(request, fresh, _meta(fresh, started))
     if p.option not in offered:  # "none", or a "no" that wasn't one of the chips
-        session.drop(request.session_id)
+        session.drop(request.session_id, request.user_id)
         return _cancelled("user_declined", meta)
     current.history.append({"kind": "spoken_answer", "text": request.transcript})
     current.record(Answer(question_id=question_id, option_id=p.option))
@@ -359,7 +358,7 @@ def _command_step(
             return question
         decision = gate.Decision(decision.picks, decision.actions, missing=decision.ask)
     if decision.missing or not decision.actions:
-        session.drop(request.session_id)
+        session.drop(request.session_id, request.user_id)
         return _unsupported(_MISSING.get(decision.missing, _HELP), meta)
     try:
         built = draft.build(
@@ -371,7 +370,7 @@ def _command_step(
             current.data,
         )
     except draft.Unbuildable as error:
-        session.drop(request.session_id)
+        session.drop(request.session_id, request.user_id)
         return _unsupported(str(error), meta)
     # The objective only shapes the screen on a first command, so an unsure one means "prepare".
     p = gate.pick(current.replies, "objective")
@@ -414,12 +413,12 @@ def _answer_step(request: UnderstandRequest, current: session.Session, meta: dic
     try:
         payload = draft.answer(kind, picks, current.data, current.user_id, current.transcript)
     except draft.Unbuildable as error:
-        session.drop(request.session_id)
+        session.drop(request.session_id, request.user_id)
         return _unsupported(str(error), meta)
     except readonly.ForecastDataError:
-        session.drop(request.session_id)
+        session.drop(request.session_id, request.user_id)
         return _unsupported("I can't read your upcoming bills right now.", meta)
-    session.drop(request.session_id)
+    session.drop(request.session_id, request.user_id)
     _event("answer_given", reason=kind)
     return {"status": "answer", "kind": kind, **payload, "meta": meta}
 
@@ -461,7 +460,7 @@ def _ask(
     if not chips:
         return None
     if current.asked >= config.MAX_QUESTIONS:
-        session.drop(request.session_id)
+        session.drop(request.session_id, request.user_id)
         return _cancelled("too_many_questions", meta)
     current.asked += 1
     question_id = f"q_{current.asked}"

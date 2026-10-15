@@ -543,7 +543,7 @@ def test_large_amounts_need_more_certainty(client, fake_jev, bank) -> None:
     reply = _understand(client, "send fifty thousand to mei ling").json()
     assert reply["status"] == "question"  # 0.85 passes for small amounts, not for 50,000
 
-    session.drop("s_test")  # a new transcript would otherwise answer the open question
+    session.drop("s_test", "u_demo")  # a new transcript would otherwise answer the open question
     fake_jev.script["recipient"] = {"pay_3310": SURE, "pay_4521": 1 - SURE}
     reply = _understand(client, "send fifty thousand to mei ling").json()
     assert reply["draft"]["actions"][0]["amount"] == "50000.00"
@@ -1494,13 +1494,13 @@ def test_a_preview_flood_cannot_use_up_the_command_budget(monkeypatch) -> None:
 # --- session flood, IDs, ownership and intent audit events ---
 
 
-def test_junk_sessions_cannot_lock_everyone_out() -> None:
-    from app import transaction_state
-
+def test_junk_sessions_cannot_lock_everyone_out(client, fake_jev, bank) -> None:
+    _transfer_500_to_john(client, fake_jev)
     for i in range(1001):
         transaction_state.start_turn("u_demo", f"s_junk{i}")
     transaction_state.start_turn("u_demo", "s_real")  # evicts the oldest instead of refusing
     assert ("u_demo", "s_real") in transaction_state._turns
+    assert ("u_demo", "s_test") in transaction_state._records  # eviction revokes nothing (M4)
 
 
 def test_malformed_ids_and_unknown_users_are_refused_first(client, monkeypatch) -> None:
