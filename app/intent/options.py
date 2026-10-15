@@ -32,6 +32,7 @@ _TENS = {
     w: 10 * i
     for i, w in enumerate("twenty thirty forty fifty sixty seventy eighty ninety".split(), start=2)
 }
+_DIGIT_WORDS = {"zero": 0, **{w: i for w, i in _SMALL.items() if i < 10}}
 _SCALES = {"hundred": 100, "thousand": 1000, "grand": 1000, "million": 1_000_000}
 _SUFFIXES = {"k": 1000, "m": 1_000_000}
 # Spoken spellings an ASR transcript may contain, mapped to the number word meant.
@@ -57,6 +58,13 @@ _FRACTIONS = {
 # These mean what is left after the actions said before them (§10.4); draft.py works it out.
 _REMAINING = {"rest", "left", "remaining", "leftover"}
 _FRACTION = re.compile(r"\b(" + "|".join(_FRACTIONS) + r")\b")
+# Sizes code can't read exactly: a number or fraction next to one is dropped, so the user is
+# asked instead of "a couple grand" becoming 1,000 or "half a mil" half of a balance (M12).
+_VAGUE = re.compile(
+    r"\b(?:couple|few|several|dozens?|mil|mill|thirds?|fifths?)\b|\band an? half\b"
+    r"|\bhalf an? (?:mil|million|thousand|grand|k)\b",
+    re.IGNORECASE,
+)
 # Matched on the original text (not text.lower()) so spans index the text mask() rewrites.
 _TOKEN = re.compile(r"(\d[\d,]*(?:\.\d+)?)(k|m)?\b|[a-z]+", re.IGNORECASE)
 _EMAIL = re.compile(r"\S+@\S+")
@@ -97,13 +105,14 @@ class Options:
     aliases: dict[str, str] = field(default_factory=dict)
 
 
-def parse_numbers(text: str) -> list[Number]:
+def parse_numbers(text: str, keep_vague: bool = False) -> list[Number]:
     """Find every amount or count said in the text, in order.
 
     Handles digits ("50", "1,250.50", "$500"), suffixes ("50k"), number words
-    ("fifty", "one hundred and fifty", "fifty thousand"), slang ("a grand",
-    "5 grand") and spoken spellings ("fiddy", "tirty"). "a" only counts before a
-    scale word, so "send a friend" has no number.
+    ("fifty", "one hundred and fifty", "fifty thousand", "fifty point five"), digits said
+    one by one ("nine nine eight eight"), slang ("a grand", "5 grand") and spoken spellings
+    ("fiddy", "tirty"). "a" only counts before a scale word, so "send a friend" has no
+    number. A number beside a vague size ("a couple grand") is left out.
     """
     tokens = [
         (m.group(1), (m.group(2) or "").lower(), _ALIASES.get(w, w), m.span())
@@ -135,14 +144,26 @@ def parse_numbers(text: str) -> list[Number]:
                 value, word, skip = value * _SCALES[following], f"{word} {following}", True
                 span = (span[0], tokens[i + 1][3][1])
             found.append(Number(value, word, span))
-        elif word in _SMALL or word in _TENS or word in _SCALES:
+        elif word in _SMALL or word in _TENS or word in _SCALES or word == "zero":
+            words.append((word, span))
+        elif word == "point" and following in _DIGIT_WORDS:
             words.append((word, span))
         elif (word in ("a", "an") and following in _SCALES) or (word == "and" and words):
             words.append((word, span))
         else:
             flush()
     flush()
+    vague = [m.span() for m in _VAGUE.finditer(text)]
+    found = [n for n in found if keep_vague or not _beside(text, n.span, vague)]
     return [_with_currency(text, n) for n in found]
+
+
+def _beside(text: str, span: tuple[int, int], vague: list[tuple[int, int]]) -> bool:
+    return any(
+        (start >= span[1] and not text[span[1] : start].strip())
+        or (end <= span[0] and text[end : span[0]].strip().lower() in ("", "a", "an"))
+        for start, end in vague
+    )
 
 
 def _with_currency(text: str, n: Number) -> Number:
@@ -166,8 +187,10 @@ def _stand_in(value: Decimal, scope: str, taken: set[int]) -> int:
         message = f"{scope}|{value.normalize()}|{attempt}".encode()
         digest = hmac.new(config.MASK_KEY, message, hashlib.sha256).digest()
         number = (10 + int.from_bytes(digest[:4], "big") % 90) * scale
-        # A stand-in equal to the value would show Jev the real number (1 in 90 for "50").
-        if number not in taken and number != value:
+        # A stand-in equal to the value would show Jev the real number (1 in 90 for "50"), and
+        # one sharing its first two digits nearly does (52345 -> 52000); compare whole units,
+        # so "50.50" never becomes "50" (L1, 15 Oct audit).
+        if number not in taken and str(number)[:2] != str(int(value))[:2]:
             return number
     return number
 
@@ -254,10 +277,11 @@ def mask(text: str, scope: str, names: dict[str, str] | None = None) -> str:
     # ponytail: number words parse_numbers doesn't know ("dozen", "couple") pass through
     # unmasked; add them to _SMALL / _SCALES if they turn up in real transcripts.
     numbers = parse_numbers(text)
+    shown = dict(zip((n.span for n in numbers), stand_ins(numbers, scope), strict=True))
     parts, last = [], 0
-    for n, stand_in in zip(numbers, stand_ins(numbers, scope), strict=True):
+    for n in parse_numbers(text, keep_vague=True):  # a vague size's number still never shows
         start, end = n.span
-        parts += [_hide_digits(text[last:start]), str(stand_in)]
+        parts += [_hide_digits(text[last:start]), str(shown.get(n.span, "[number]"))]
         last = end
     parts.append(_hide_digits(text[last:]))
     text = _EMAIL.sub("[email]", _URL.sub("[link]", "".join(parts)))
@@ -363,7 +387,14 @@ def _relative(text: str, accounts: AccountsResponse) -> list[Number]:
     Offers the fraction of every account's balance; Jev picks which account was meant.
     """
     found = []
-    for word in dict.fromkeys(_FRACTION.findall(text.lower())):
+    lower = text.lower()
+    vague = [m.span() for m in _VAGUE.finditer(lower)]
+    said = [
+        m.group(1)
+        for m in _FRACTION.finditer(lower)
+        if not any(a <= m.start() < b for a, b in vague)
+    ]
+    for word in dict.fromkeys(said):
         for x in accounts.accounts:
             value = (x.balance * _FRACTIONS[word]).quantize(Decimal("0.01"))
             found.append(
@@ -379,6 +410,12 @@ def _relative(text: str, accounts: AccountsResponse) -> list[Number]:
 
 
 def _words_value(words: list[str]) -> Decimal | None:
+    if "point" in words:  # "fifty point five"; the loop only keeps "point" before digit words
+        i = words.index("point")
+        decimals = "".join(str(_DIGIT_WORDS[w]) for w in words[i + 1 :])
+        return Decimal(f"{_words_value(words[:i]) or 0}.{decimals}") or None
+    if len(words) > 1 and all(w in _DIGIT_WORDS for w in words):  # "nine nine eight eight"
+        return Decimal("".join(str(_DIGIT_WORDS[w]) for w in words)) or None
     total = current = 0
     for word in words:
         if word in _SMALL or word in _TENS:

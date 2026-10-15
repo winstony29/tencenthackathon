@@ -1717,6 +1717,40 @@ def test_names_in_disguise_are_still_masked(mask_key, text: str) -> None:
 
 
 @pytest.mark.parametrize(
+    ("text", "values"),
+    [
+        ("one two three four", ["1234"]),
+        ("nine nine eight eight", ["9988"]),
+        ("fifty point five", ["50.5"]),
+        ("point five", ["0.5"]),
+        ("one hundred and fifty", ["150"]),
+        ("send a couple grand", []),
+        ("a million and a half", []),
+        ("two thirds of my savings", []),
+    ],
+)
+def test_number_words_are_read_or_left_for_the_user(text: str, values: list[str]) -> None:
+    # M12 (15 Oct audit): "one two three four" read as 10, "a couple grand" as 1000.
+    assert [str(n.value) for n in options.parse_numbers(text)] == values
+
+
+def test_vague_sizes_offer_no_amount_and_still_hide_the_number(mask_key) -> None:
+    data = options.UserData(BANK, QUOTES)
+    for text in ("send John half a mil", "send John a million and a half"):
+        built = options.build(text, data, "u_demo|s_1")
+        assert built.numbers == {}, text
+        assert "million" not in built.text and "half" in built.text
+
+
+def test_a_stand_in_never_shows_the_whole_units_or_leading_digits(mask_key) -> None:
+    # L1 (15 Oct audit): "50.50" became "50" in about 1 in 140 conversations.
+    for i in range(500):
+        for value in (Decimal("50.50"), Decimal("52345")):
+            stand_in = options.stand_ins([options.Number(value, "", (0, 1))], f"s{i}")[0]
+            assert str(stand_in)[:2] != str(int(value))[:2]
+
+
+@pytest.mark.parametrize(
     "env",
     [
         {"MASK_KEY": "short"},
