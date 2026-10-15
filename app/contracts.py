@@ -162,6 +162,8 @@ class Meta(ContractModel):
 
 class PreviewRequest(ContractModel):
     text: Text
+    # Optional: with it, the user's payee names reach Jev only as pseudonyms (D-039).
+    user_id: str | None = Field(default=None, pattern=r"^u_[A-Za-z0-9_]{1,64}$")
 
 
 PreviewIntent = Literal["transfer", "bill_payment", "stock_order", "none"]

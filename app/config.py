@@ -22,6 +22,8 @@ MAKERS_JEV_TIMEOUT_SECONDS = 12  # Presentation request deadline; UI falls back 
 # HMAC key for the stand-in numbers Jev reads (D-026). A random key per process is enough,
 # because sessions live in memory; set it to keep stand-ins stable across restarts.
 MASK_KEY = os.getenv("MASK_KEY", "").encode() or secrets.token_bytes(32)
+if len(MASK_KEY) < 32:  # every stand-in and pseudonym is only as strong as this key
+    raise ValueError("MASK_KEY must be at least 32 bytes; leave it empty for a random one.")
 STAND_IN_TRIES = 50  # HMAC retries before two numbers in one text may share a stand-in (D-026)
 
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")  # OpenAI-compatible endpoint for app/llm.py (D-009)
