@@ -114,7 +114,7 @@ Actions can include an `fx_conversion`. Code builds it; the user never says it. 
 `source` is `jev`, `fallback` (D-005), `fake` (tests, `USE_FAKES=1`) or `none` (no model ran, e.g. `cancelled`). `phrasings` is how many texts Jev was asked about: 1 + K for `/api/understand`, 1 for `/api/preview`. `meta` feeds the latency readout and the H-01 comparison; it never changes what the UI does.
 
 **`POST /api/preview`**: a live guess of the action type while the user types. **Display only.**
-Request: `{"text": "send fifty to jo"}`
+Request: `{"text": "send fifty to jo", "user_id": "u_demo"}`. `user_id` is optional; with it, the user's payee names reach Jev only as pseudonyms (D-039), without it they pass through, so UIs send it.
 Response:
 ```json
 {"intent": {"value": "transfer", "confidence": 0.81,
