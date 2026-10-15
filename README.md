@@ -248,9 +248,31 @@ The server is a single-process demo. Before giving judges a public URL:
 5. **Real client IPs for rate limits:** run `uvicorn app.main:app --proxy-headers
    --forwarded-allow-ips=<proxy address>`; otherwise every visitor shares one limit.
 6. **Build with `npm ci`** so the front end uses the locked dependency versions.
-7. **Device keys:** the first browser to sign owns `u_demo` until `var/devices.json` is
-   deleted. Pre-register the demo device, or keep the server private until Jayanth adds an
-   enrollment code.
+7. **Device keys:** supervise initial enrollment on the private demo. Preserve the pinned
+   registry; never delete it to bypass a key conflict. Public customer authentication remains
+   outside the current demo.
 
 Limits (`app/config.py`): 256 KB JSON bodies, 2 MB audio, 40 model calls per IP per minute
 (120 for `/api/preview`), 600 a minute in total. They live in memory, so run one worker.
+
+
+### Updating an existing local bank
+
+After merging, run `python -m app.bank.gateway sync-catalogue` to add the new demo payees.
+It preserves financial state and can be retried safely. Do not delete `var/` or rerun fresh
+initialization to load new examples. Existing holdings stay unchanged; new opening positions
+apply to fresh installations only.
+
+For pre-HMAC encrypted evidence, stop the app, back up `var/evidence.sqlite3`, then run the
+operator upgrade with the original evidence key configured:
+
+```python
+from app import evidence
+
+with evidence._connect(upgrade_legacy=True):
+    pass
+```
+
+This checks the old links and retained encrypted payloads before an atomic upgrade and retains
+original hashes. Normal app access refuses legacy unkeyed chains rather than silently trusting
+a format downgrade. Windows access control uses NTFS ACLs; macOS/Linux also enforce mode 0600.

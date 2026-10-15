@@ -240,6 +240,10 @@ def test_legacy_chain_is_upgraded_without_losing_evidence():
         original = hashlib.sha256(evidence.encoded(json.loads(text))).hexdigest()
         db.execute("UPDATE events SET hash=?", (original,))
         db.execute("PRAGMA user_version=0")
+    with pytest.raises(AuditError):
+        evidence.timeline(None, 10, True)
+    with evidence._connect(upgrade_legacy=True):
+        pass
     entry = evidence.timeline(None, 10, True)["entries"][0]
     assert entry["legacy_hash"] == original
     assert entry["evidence"] == {"amount": "50.00"}

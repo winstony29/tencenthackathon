@@ -134,3 +134,20 @@ IDs: `S` setup · `W` Winston · `J` Jayanth · `D` Darren · `I` integration ·
 ## Phase 5: Submit (Fri 16 Oct)
 
 - [ ] **P-07** · All · Check: live link works in a private window; video link viewable without login; GitHub link public; PDF opens. Submit early.
+
+
+### Branch integration verified ? 16 October 2026
+
+- Winston `b849bee` and Jayanth `37570fc` integrated into Darren's existing execution path.
+- Connected validation receives stored bill references and explicit order defaults; independent
+  deterministic reference checks augment the existing model/receipt adapter. J-05's stricter
+  source-offset model protocol and offline summaries remain internal, not a replacement route.
+- Existing bank state receives an audited, additive payee update; balances, holdings, executions,
+  payment controls and prior payees are preserved. Legacy encrypted evidence is upgraded only by
+  an explicit operator step, retaining original hashes and all event payloads subject to retention.
+- Windows verification: 981 backend tests passed, 6 skipped; 35 frontend tests and 14 V5 browser
+  tests passed; TypeScript, ESLint, production build and Ruff passed. Browser/model tests use test
+  doubles; this is not a new live model accuracy measurement. macOS runtime still needs a teammate
+  check. Repository-wide Prettier flags 36 untouched files; the merged root page is formatted.
+- Execution policy remains limited to configured SGD transfers; this merge does not enable
+  bill, stock, FX or own-account execution policies or remove signing/validation requirements.

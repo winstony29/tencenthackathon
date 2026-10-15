@@ -72,7 +72,7 @@ def _cipher() -> Fernet:
 
 
 @contextmanager
-def _connect():
+def _connect(*, upgrade_legacy: bool = False):
     path = (
         Path(config.AUDIT_EVIDENCE_PATH)
         if config.AUDIT_EVIDENCE_PATH
@@ -88,13 +88,13 @@ def _connect():
         payload BLOB, expires REAL NOT NULL)""")
     try:
         with db:
-            _upgrade_chain(db)
+            _upgrade_chain(db, allow_legacy=upgrade_legacy)
             yield db
     finally:
         db.close()
 
 
-def _upgrade_chain(db):
+def _upgrade_chain(db, *, allow_legacy: bool = False):
     """Atomically authenticate legacy SHA chains, retaining their original link hashes."""
     if db.execute("PRAGMA user_version").fetchone()[0] == 1:
         return
@@ -114,6 +114,8 @@ def _upgrade_chain(db):
             raise AuditError("Legacy evidence timeline integrity check failed.")
         # A store created by Winston already uses keyed links and needs no re-signing.
         if not hmac.compare_digest(_link(meta), digest):
+            if not allow_legacy:
+                raise AuditError("Legacy audit chain requires an explicit operator upgrade.")
             if not hmac.compare_digest(sha(encoded(meta)), digest):
                 raise AuditError("Legacy evidence timeline integrity check failed.")
             if blob is not None and sha(_cipher().decrypt(blob)) != meta["evidence_digest"]:

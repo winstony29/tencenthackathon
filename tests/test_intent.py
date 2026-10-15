@@ -531,6 +531,17 @@ def test_bill_and_shares_make_two_actions_in_spoken_order(client, fake_jev, bank
         "currency": "USD",
     }
 
+    from app import transaction_state
+    from app.contracts import Draft
+    from app.validation import validator
+
+    record = transaction_state._records["u_demo", "s_test"]
+    assert record.facts["accounts"]["billers"][0]["bill_reference"] == bill["bill_reference"]
+    assert record.facts["defaults"]["stock_order.order_type"] == "market"
+    assert record.facts["defaults"]["stock_order.limit_price"] == "null"
+    bank_snapshot = {**record.facts["accounts"], "quotes": record.facts["quotes"], "fx_rates": []}
+    assert validator._deterministic(Draft.model_validate(reply["draft"]), bank_snapshot) == []
+
 
 def test_large_amounts_need_more_certainty(client, fake_jev, bank) -> None:
     fake_jev.script = {

@@ -2,7 +2,7 @@
 
 Owner: Winston (shared; all three agree before any change)
 Diagram box: none; the shapes that cross every arrow
-Contract: docs/CONTRACTS.md v0.1, which wins if the two disagree
+Contract: docs/CONTRACTS.md v0.14, which wins if the two disagree
 """
 
 from decimal import Decimal

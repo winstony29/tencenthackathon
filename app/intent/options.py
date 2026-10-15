@@ -92,7 +92,7 @@ class Options:
     # The account a transfer or bill uses when none is said: the first savings account,
     # as draft._account picks it.
     usual_account: str | None = field(default=None)
-    # Keyed pseudonym for every word of the user's payee names (D-039): what Jev reads instead.
+    # Keyed pseudonym for every word of the user's payee names (D-049): what Jev reads instead.
     aliases: dict[str, str] = field(default_factory=dict)
 
 
@@ -187,7 +187,7 @@ _CONSONANTS, _VOWELS = "bdfgklmnprstvz", "aeiou"
 
 
 def aliases(accounts: AccountsResponse, scope: str) -> dict[str, str]:
-    """A keyed pseudonym for every word of the user's payee names (D-039).
+    """A keyed pseudonym for every word of the user's payee names (D-049).
 
     HMAC-SHA256 under config.MASK_KEY of the word and the scope, spelt as three
     consonant-vowel syllables so Jev still reads a name ("John" -> e.g. "Kavoru"). Without the

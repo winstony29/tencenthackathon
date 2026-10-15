@@ -1031,7 +1031,9 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Supervised local bank operations")
-    parser.add_argument("operation", choices=["initialize", "reconcile", "pause", "resume"])
+    parser.add_argument(
+        "operation", choices=["initialize", "reconcile", "pause", "resume", "sync-catalogue"]
+    )
     parser.add_argument("--confirm-fresh-install", action="store_true")
     args = parser.parse_args()
     if not config.BANK_EXECUTION_ENABLED or not config.BANK_SUPERVISED_USER:
@@ -1044,6 +1046,8 @@ if __name__ == "__main__":
             parser.error("Initialization requires an explicitly confirmed fresh installation.")
         ledger.reconcile_audit()
         print("Bank initialized with payments paused.")
+    elif args.operation == "sync-catalogue":
+        print(f"Added {ledger.sync_demo_catalogue()} payees; existing financial state preserved.")
     elif args.operation == "reconcile":
         ledger.reconcile_audit()
         print("Ledger audit delivery reconciled; no new payment submitted.")

@@ -555,8 +555,23 @@ competing amounts, recipients, explicit own-account moves and stock exposure.
 
 Keep Darren's authoritative draft revisions, validation receipts, signed gateway and audit recovery.
 Merge Winston's guards and masking without removing conditional preparation or structured-first UI.
-Legacy SHA evidence links are verified and atomically upgraded to keyed links, preserving the original
+An explicit operator step verifies legacy SHA evidence links and atomically upgrades them to keyed links, preserving the original
 hashes and encrypted payloads. Windows uses NTFS ACLs; POSIX mode assertions apply on macOS/Linux.
 Incoming Winston decisions D-038/D-039 are recorded here as D-048/D-049 to avoid duplicate IDs.
 Jayanth's seed and independent checking are reconciled with the connected validator rather than
 replacing it with his deliberately unavailable public endpoint. No runtime ledger reset is permitted.
+## D-051 · Isolated independent validation and offline monitoring
+2026-10-15 · Jayanth · Status: internal implementation approved; team integration review required
+**Decision:** Keep J-05 independently testable in `app/validation/validator.py`. Require explicit backend policy, an independent model adapter, immutable instruction/history and banking-input snapshots, a current-revision lease shared with J-06, and a security-event recorder. Strict field evidence and deterministic checks must pass before issuing a D-038 HMAC receipt for the exact draft and context. Uncertain, stale or unavailable validation issues no receipt. Bounded correction feedback never executes or rewrites transactions. UI rendering may run concurrently with validation.
+**Public boundary:** Jayanth approved replacing the fabricated `/api/validate` match with the existing sanitised 503 `upstream_error` response. Public v0.5 models and banking execution remain unchanged. Trusted authority, D-009 model/client selection and live integration remain unavailable; isolated fake-model and temporary-storage tests are not a live end-to-end demonstration.
+**Monitoring:** Pure offline functions summarise controlled outcomes, categories, version/configuration hashes and latency, without raw instructions, identities, receipts or financial values. Reviewed same-case comparisons use explicit test thresholds and flag human review; they never replace models or change banking controls. This is a regression gate, not measured production accuracy or statistical drift detection.
+**Why:** Strengthen validation without redesigning completed banking components or inventing trusted provenance. Jayanth approved this minimal shared entry; the team must review it before merging.
+
+
+**Integration resolution (D-050, 16 October):** The public route retains Darren's connected
+provider, immutable records and receipts. J-05 deterministic checks run on that path; strict
+source-offset model comparison and offline regression summaries stay internal and independently
+tested. This preserves conditions, own-account moves and the existing frontend response schema.
+The bill-reference and default-order evidence fixes apply to the live path. Catalogue updates
+add only absent payees and are audited; opening holdings never overwrite runtime positions.
+Legacy evidence migration is operator-only: normal reads cannot downgrade/re-sign an unkeyed chain.

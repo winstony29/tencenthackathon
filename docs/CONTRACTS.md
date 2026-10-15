@@ -1,7 +1,7 @@
 # Contracts
 
 **Purpose:** the exact data shapes and endpoints every part of the system agrees on. `app/contracts.py` implements this file as Pydantic models. If the two disagree, this file wins.
-**Owner:** Winston (keeper) · **Version:** 0.14 (structured-first presentation with selective context) · **Last updated:** 2026-10-15
+**Owner:** Winston (keeper) · **Version:** 0.14 (integrated validation evidence and request guards) · **Last updated:** 2026-10-16
 
 > Changing anything here needs all three teammates to agree. Then bump the version, update `app/contracts.py` in the same commit, and add a `docs/DECISIONS.md` entry.
 
@@ -694,3 +694,24 @@ this gate too. Unsupported results retain a read-only enquiry fallback. Question
 responses remain in Winston's existing clarification loop; no UI composition starts
 until that loop returns a result. No extra model round trip is introduced. Existing
 card deduplication and the two-supplementary-card limit remain in force.
+
+
+### Integration evidence (0.14)
+
+The connected `/api/validate` continues to accept only server-registered draft revisions and
+returns the existing `match`, `mismatch`, `uncertain`, `unavailable`, `pending` or `stale` result.
+It uses the configured `llm.audit` provider and `transaction_state` receipt/lease authority.
+Independent bank reference checks additionally verify labels, ownership references, currencies,
+bill references, quote identities and FX arithmetic. No extra model request is introduced.
+
+Validator snapshots include the selected biller's stored `bill_reference` and SGD currency,
+explicit SGD/market/null-limit defaults, and available account metadata without unused balances.
+Intent-selected `amounts_said` is retained for audit but excluded from independent model input.
+Explicit customer instructions override defaults; ambiguous recipients still require clarification.
+Jayanth's source-offset comparison and regression summaries remain an isolated internal interface;
+they do not replace the active semantic model schema or publish receipts through the public route.
+
+The operator-only `sync-catalogue` command adds absent seed payees to existing runtime users with
+an idempotent `catalogue_updated` audit event. It preserves balances, holdings, bill settlement,
+transaction history, payment controls and existing records. New seed positions apply only to fresh
+installations. Eight quotes and sample history are read from the seed; prices remain demo data.

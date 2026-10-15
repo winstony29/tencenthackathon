@@ -141,7 +141,7 @@ async def preview(request: PreviewRequest) -> dict[str, Any]:
     if not config.MAKERS_MODELS_KEY:
         return _STUB_PREVIEW
     # A fresh scope per preview: stand-ins and name pseudonyms can't be linked across requests
-    # or people (D-039). The cache keys on the raw text, which stays in server memory.
+    # or people (D-049). The cache keys on the raw text, which stays in server memory.
     scope = f"preview|{secrets.token_hex(8)}"
     names = (
         options.aliases(readonly.get_accounts(request.user_id), scope) if request.user_id else {}
@@ -576,7 +576,7 @@ def _ask(
 
 
 def _validator_facts(built, current: session.Session) -> dict[str, Any]:
-    """The bank data the validator may need for this draft, and no more (D-038).
+    """The bank data the validator may need for this draft, and no more (D-048).
 
     Balances only for the accounts the draft uses; billers, holdings and quotes only for what
     it names. Payee names stay, so an ambiguous "John" is still visible. On a first command it
@@ -595,7 +595,13 @@ def _validator_facts(built, current: session.Session) -> dict[str, Any]:
             ],
             "payees": [p.model_dump(mode="json") for p in accounts.payees],
             "billers": [
-                b.model_dump(mode="json") for b in accounts.billers if b.biller_id in billers
+                {
+                    **b.model_dump(mode="json"),
+                    "bill_reference": readonly.get_bill_reference(b.biller_id),
+                    "currency": "SGD",
+                }
+                for b in accounts.billers
+                if b.biller_id in billers
             ],
             "holdings": [
                 h.model_dump(mode="json") for h in accounts.holdings if h.ticker in tickers
@@ -604,6 +610,27 @@ def _validator_facts(built, current: session.Session) -> dict[str, Any]:
         "quotes": [q.model_dump(mode="json") for q in current.data.quotes if q.ticker in tickers],
         "fx_rates": [],
     }
+    # Preserve account choices without exposing unused balances. Defaults must come from
+    # the full original bank list, never from the model-selected account subset.
+    facts["account_options"] = [
+        a.model_dump(mode="json", exclude={"balance"}) for a in accounts.accounts
+    ]
+    facts["defaults"] = {
+        "transfer.currency": "SGD",
+        "bill_payment.currency": "SGD",
+        "stock_order.order_type": "market",
+        "stock_order.limit_price": "null",
+    }
+    if accounts.accounts:
+        source = next(
+            (a for a in accounts.accounts if "savings" in a.type.lower()), accounts.accounts[0]
+        )
+        facts["defaults"].update(
+            {
+                "transfer.from_account_id": source.account_id,
+                "bill_payment.from_account_id": source.account_id,
+            }
+        )
     if current.followup is None:  # a follow-up's evidence mixes turns, so only first commands
         said = current.options.said
         picks = {

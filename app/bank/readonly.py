@@ -169,6 +169,14 @@ def _validate_payment_controls(state: dict[str, Any]) -> list[dict[str, Any]]:
         if event["event"] in {"kill_switch_activated", "kill_switch_deactivated"}:
             if set(data) != {"transaction_id", "reason"} or data["reason"] != "operator_control":
                 raise ValueError("Invalid operator event")
+        elif event["event"] == "catalogue_updated":
+            if (
+                set(data) != {"transaction_id", "reason", "count"}
+                or data["reason"] != "seed_catalogue"
+                or type(data["count"]) is not int
+                or data["count"] <= 0
+            ):
+                raise ValueError("Invalid catalogue update")
         elif event["event"] in {"risk_rejected", "step_up_required"}:
             if (
                 set(data) != {"transaction_id", "reason", "count"}

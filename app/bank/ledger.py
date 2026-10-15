@@ -237,6 +237,7 @@ def _delivered_events(entries: list[Any]) -> set[str]:
             "step_up_required",
             "kill_switch_activated",
             "kill_switch_deactivated",
+            "catalogue_updated",
         }:
             continue
         identity = (entry.event, entry.data["transaction_id"], entry.data.get("action_index"))
@@ -311,6 +312,39 @@ def reconcile_audit(*, storage_path: Path | None = None, audit_path: Path | None
     path = readonly._ledger_path(storage_path)
     with _locked(path) as established:
         _reconcile(_load_state(path, established, audit_path), path, audit_path)
+
+
+def sync_demo_catalogue(*, storage_path: Path | None = None, audit_path: Path | None = None) -> int:
+    """Operator-only additive payee update. Never reset balances, holdings or execution state."""
+    path = readonly._ledger_path(storage_path)
+    with _locked(path) as established:
+        if not established or not path.exists():
+            raise readonly.LedgerStorageError("Initialize the bank before updating its catalogue")
+        state = readonly._read_ledger_state(path)
+        _reconcile(state, path, audit_path)
+        added = []
+        for user_id, seed in readonly._load_database()["users"].items():
+            if user_id not in state["users"]:
+                continue
+            user = state["users"][user_id]
+            existing = {p["payee_id"] for p in user["payees"]}
+            for payee in seed["payees"]:
+                if payee["payee_id"] not in existing:
+                    user["payees"].append(copy.deepcopy(payee))
+                    added.append([user_id, payee["payee_id"]])
+        if added:
+            readonly._validate_ledger_users(state["users"])
+            event = {
+                "event": "catalogue_updated",
+                "data": {
+                    "transaction_id": "tx_"
+                    + hashlib.sha256(json.dumps(added).encode()).hexdigest(),
+                    "reason": "seed_catalogue",
+                    "count": len(added),
+                },
+            }
+            _security_event(state, event, path, audit_path)
+        return len(added)
 
 
 def _security_event(
