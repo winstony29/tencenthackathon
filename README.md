@@ -182,13 +182,18 @@ The server is a single-process demo. Before giving judges a public URL:
 3. **Validator:** `VALIDATOR_PROVIDER=compatible-api` with its own `LLM_BASE_URL`,
    `LLM_API_KEY` and `VALIDATOR_MODEL`. Never sign a personal Codex account in on a server:
    anonymous visitors would spend its quota.
-4. **`API_DOCS=0`** hides `/docs` and `/openapi.json`.
+4. **Leave `API_DOCS` unset** (off): `API_DOCS=1` shows `/docs` and `/openapi.json`.
 5. **Real client IPs for rate limits:** run `uvicorn app.main:app --proxy-headers
-   --forwarded-allow-ips=<proxy address>`; otherwise every visitor shares one limit.
+   --forwarded-allow-ips=<proxy address>` with the proxy's exact addresses or ranges,
+   **never `*`**: with `*` any client picks its own IP and escapes every limit; without the
+   flag every visitor shares one limit.
 6. **Build with `npm ci`** so the front end uses the locked dependency versions.
 7. **Device keys:** the first browser to sign owns `u_demo` until `var/devices.json` is
    deleted. Pre-register the demo device, or keep the server private until Jayanth adds an
    enrollment code.
 
-Limits (`app/config.py`): 256 KB JSON bodies, 2 MB audio, 40 model calls per IP per minute
-(120 for `/api/preview`), 600 a minute in total. They live in memory, so run one worker.
+Limits (`app/config.py`): 256 KB JSON bodies, 2 MB audio; per IP per minute 40 model calls,
+120 previews, 120 validations, 60 writes and 120 reads; 600 model calls and 600 previews a
+minute in total. They live in memory, as do sessions, so run one worker. Every key and token
+must be at least 32 random characters and differ from the others, or the server won't start.
+To rotate `AUDIT_EVIDENCE_KEY`, set it to `new,old` and keep the old key while its rows remain.
