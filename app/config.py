@@ -14,6 +14,18 @@ from dotenv import load_dotenv
 # Real environment variables win over .env, so a server can set them directly.
 load_dotenv()
 
+
+def _strong(name: str, value: str | bytes) -> None:
+    """Refuse a short or repetitive key: a receipt key "dcta" was cracked offline from one
+    receipt (M6, 15 Oct audit). ponytail: counts distinct characters, not true entropy."""
+    if value and (len(value) < 32 or len(set(value)) < 8):
+        raise ValueError(
+            f"{name} must be at least 32 bytes of random characters "
+            "(python -c 'import secrets; print(secrets.token_urlsafe(32))'); "
+            "leave it empty for a random one."
+        )
+
+
 TYPESAFE_API_KEY = os.getenv("TYPESAFE_API_KEY", "")  # direct TypeSafe key; unused (D-005)
 MAKERS_MODELS_KEY = os.getenv("MAKERS_MODELS_KEY", "")  # Jev gateway key (D-005)
 MAKERS_JEV_ENDPOINT = "https://ai-gateway.edgeone.link/v1/systemone"  # Native System One API
@@ -21,9 +33,8 @@ MAKERS_JEV_MODEL = "@makers/jev"  # Gateway model alias
 MAKERS_JEV_TIMEOUT_SECONDS = 12  # Presentation request deadline; UI falls back on failure
 # HMAC key for the stand-in numbers Jev reads (D-026). A random key per process is enough,
 # because sessions live in memory; set it to keep stand-ins stable across restarts.
+_strong("MASK_KEY", os.getenv("MASK_KEY", ""))  # every stand-in and pseudonym rests on it
 MASK_KEY = os.getenv("MASK_KEY", "").encode() or secrets.token_bytes(32)
-if len(MASK_KEY) < 32:  # every stand-in and pseudonym is only as strong as this key
-    raise ValueError("MASK_KEY must be at least 32 bytes; leave it empty for a random one.")
 STAND_IN_TRIES = 50  # HMAC retries before two numbers in one text may share a stand-in (D-026)
 
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")  # OpenAI-compatible endpoint for app/llm.py (D-009)
@@ -35,6 +46,7 @@ TENCENTCLOUD_SECRET_ID = os.getenv("TENCENTCLOUD_SECRET_ID", "")  # Tencent ASR 
 TENCENTCLOUD_SECRET_KEY = os.getenv("TENCENTCLOUD_SECRET_KEY", "")  # Tencent ASR secret
 TENCENTCLOUD_REGION = os.getenv("TENCENTCLOUD_REGION", "ap-singapore")  # Tencent ASR region
 
+_strong("VALIDATION_RECEIPT_KEY", os.getenv("VALIDATION_RECEIPT_KEY", ""))
 VALIDATION_RECEIPT_KEY = os.getenv("VALIDATION_RECEIPT_KEY", "") or (
     "" if os.getenv("BANK_EXECUTION_ENABLED", "0") == "1" else secrets.token_hex(32)
 )
@@ -62,10 +74,18 @@ AUDIT_DEFAULT_LIMIT = 50  # entries GET /api/audit returns when no limit is give
 VALIDATOR_PROVIDER = os.getenv("VALIDATOR_PROVIDER", "codex")  # local demo, or compatible-api
 VALIDATOR_CODEX_MODEL = os.getenv("VALIDATOR_CODEX_MODEL", "")  # blank uses CLI default
 VALIDATOR_TIMEOUT_SECONDS = 45 if VALIDATOR_PROVIDER == "codex" else 12
+VALIDATOR_RETRY_SECONDS = 10  # an "unavailable" check is reused this long before a model rerun
 
 # Persistent audit evidence; key/token must survive restart and stay outside source control.
 AUDIT_EVIDENCE_KEY = os.getenv("AUDIT_EVIDENCE_KEY", "")
 AUDIT_ADMIN_TOKEN = os.getenv("AUDIT_ADMIN_TOKEN", "")
+_strong("AUDIT_ADMIN_TOKEN", AUDIT_ADMIN_TOKEN)
+_KEYS = [
+    os.getenv(name, "")
+    for name in ("MASK_KEY", "VALIDATION_RECEIPT_KEY", "AUDIT_EVIDENCE_KEY", "AUDIT_ADMIN_TOKEN")
+]
+if len({k for k in _KEYS if k}) < len([k for k in _KEYS if k]):
+    raise ValueError("Use a different value for each key and token.")
 AUDIT_RETENTION_DAYS = int(os.getenv("AUDIT_RETENTION_DAYS", "7"))
 AUDIT_MAX_BYTES = 2_000_000  # Bound each JSON request/response the audit middleware reads.
 EVIDENCE_MAX_ITEM_BYTES = 64_000  # larger evidence keeps only its size and SHA-256
@@ -82,8 +102,13 @@ TRANSACTION_STATE_PATH = os.getenv("TRANSACTION_STATE_PATH", "")
 # Presentation comparisons older than this remain unknown for current decisions.
 CONDITION_QUOTE_MAX_AGE_SECONDS = 60
 # Request guard (app/main.py): limits for an anonymous public demo. Starting values.
-API_DOCS = os.getenv("API_DOCS", "1") == "1"  # 0 when deployed: hides /docs and /openapi.json
+API_DOCS = os.getenv("API_DOCS", "0") == "1"  # 1 locally shows /docs and /openapi.json (L10)
 MAX_REQUEST_BYTES = 256_000  # largest JSON body any /api/ endpoint accepts
 MAX_AUDIO_BYTES = 2_000_000  # largest /api/transcribe upload (a few seconds of speech)
-RATE_PER_MINUTE = {"preview": 120, "model": 40}  # model-backed calls per client IP per minute
-RATE_GLOBAL_PER_MINUTE = 600  # model-backed calls per minute from everyone together
+MAX_MANIFEST_BYTES = 16_000  # largest manifest /api/audit/presentation stores
+# Calls per client IP per minute, by group (app/main.py _RATE_GROUPS). "validate" allows the
+# UI's 500 ms polling while a check runs; a draft revision still costs at most one model call.
+RATE_PER_MINUTE = {"preview": 120, "model": 40, "validate": 120, "write": 60, "read": 120}
+# Groups that spend a model or ASR key also share one budget across every client. Each group
+# has its own, so a flood of previews can't stop commands.
+RATE_GLOBAL_PER_MINUTE = {"preview": 600, "model": 600}

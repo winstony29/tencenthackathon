@@ -140,14 +140,18 @@ async def preview(request: PreviewRequest) -> dict[str, Any]:
     """
     if not config.MAKERS_MODELS_KEY:
         return _STUB_PREVIEW
+    request = request.model_copy(update={"text": evidence.scrub(request.text)})
     # A fresh scope per preview: stand-ins and name pseudonyms can't be linked across requests
-    # or people (D-049). The cache keys on the raw text, which stays in server memory.
+    # or people (D-049). The cache keys on the raw text, which stays in server memory, and on
+    # the browser: a shared cache told anyone whether someone else had typed a text (H7).
     scope = f"preview|{secrets.token_hex(8)}"
     names = (
         options.aliases(readonly.get_accounts(request.user_id), scope) if request.user_id else {}
     )
     masked = options.mask(request.text, scope, names)
-    key = f"{request.user_id}|" + " ".join(request.text.lower().split())
+    key = f"{transaction_state.client.get()}|{request.user_id}|" + " ".join(
+        request.text.lower().split()
+    )
     if len(" ".join(masked.split())) < 2:
         certain = {o: float(o == "none") for o in _PREVIEW_QUESTION.criteria}
         return {
@@ -207,10 +211,12 @@ async def understand(request: UnderstandRequest) -> dict[str, Any]:
     open answers it instead (CONTRACTS §10.2).
     """
     readonly.get_accounts(request.user_id)  # an unknown user is a 404 before any state changes
+    if request.transcript is not None:  # typed secrets go no further: Jev, validator, evidence
+        request = request.model_copy(update={"transcript": evidence.scrub(request.transcript)})
     try:
         transaction_state.start_turn(request.user_id, request.session_id)
-    except transaction_state.InvalidDraft as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
+    except transaction_state.InvalidDraft as error:  # another client's conversation
+        raise HTTPException(404, str(error)) from error
     if not _live():
         if request.transcript and options._CONDITIONAL.search(request.transcript):
             raise HTTPException(
@@ -220,9 +226,8 @@ async def understand(request: UnderstandRequest) -> dict[str, Any]:
     started = time.monotonic()
     if request.transcript is not None:
         if shield.obvious(request.transcript):
-            if session.load(request.session_id, request.user_id):  # only the owner's session
-                session.drop(request.session_id)
-            return _blocked("", started, request.session_id)
+            session.drop(request.session_id, request.user_id)
+            return _blocked("", started)
         current = session.load(request.session_id, request.user_id)
         if current and current.pending:
             finished = await _spoken_answer(request, current, started)
@@ -237,22 +242,22 @@ async def understand(request: UnderstandRequest) -> dict[str, Any]:
             else:
                 current = await _start(request.user_id, request.transcript, request.session_id)
             flagged = shield.flagged(current.replies[0])
-            _event("shield_checked", request, reason="flagged" if flagged else "clear")
+            _event("shield_checked", reason="flagged" if flagged else "clear")
             if flagged:
-                session.drop(request.session_id)
-                return _blocked(current.replies[0].model, started, request.session_id)
+                session.drop(request.session_id, request.user_id)
+                return _blocked(current.replies[0].model, started)
     else:
         current = session.load(request.session_id, request.user_id)
         if current is None:
             raise HTTPException(404, "This conversation has expired. Please start again.")
         if request.answer.option_id == NONE_OPTION_ID:
-            session.drop(request.session_id)
-            return _cancelled("user_declined", _meta(current, started), request.session_id)
+            session.drop(request.session_id, request.user_id)
+            return _cancelled("user_declined", _meta(current, started))
         try:
             current.record(request.answer)
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
-        _event("answer_received", request, reason="chip")
+        _event("answer_received", reason="chip")
     if current.followup is not None:
         return await _followup_step(request, current, started)
     return _command_step(request, current, _meta(current, started))
@@ -279,8 +284,8 @@ async def _spoken_answer(
         "cached": False,
     }
     if shield.flagged(reply):
-        session.drop(request.session_id)
-        return _blocked(reply.model, started, request.session_id)
+        session.drop(request.session_id, request.user_id)
+        return _blocked(reply.model, started)
     p = gate.pick([reply], question.name)
     if not gate.trusted(p, _amount(current)):
         if name in {"plan_timing", "condition_currency"}:
@@ -303,15 +308,15 @@ async def _spoken_answer(
     if p.option == options.NEW_REQUEST:
         fresh = await _start(current.user_id, request.transcript, request.session_id)
         if shield.flagged(fresh.replies[0]):
-            session.drop(request.session_id)
-            return _blocked(fresh.replies[0].model, started, request.session_id)
+            session.drop(request.session_id, request.user_id)
+            return _blocked(fresh.replies[0].model, started)
         return _command_step(request, fresh, _meta(fresh, started))
     if p.option not in offered:  # "none", or a "no" that wasn't one of the chips
-        session.drop(request.session_id)
-        return _cancelled("user_declined", meta, request.session_id)
+        session.drop(request.session_id, request.user_id)
+        return _cancelled("user_declined", meta)
     current.history.append({"kind": "spoken_answer", "text": request.transcript})
     current.record(Answer(question_id=question_id, option_id=p.option))
-    _event("answer_received", request, reason="speech")
+    _event("answer_received", reason="speech")
     return None
 
 
@@ -416,7 +421,7 @@ def _command_step(
     decision = gate.decide(
         current.replies, current.answers, _amount(current), current.options, current.data
     )
-    _event("gate_decision", request, reason="ask" if decision.ask else "proceed")
+    _event("gate_decision", reason="ask" if decision.ask else "proceed")
     if current.condition is None and not (decision.ask or decision.missing or decision.actions):
         answered = _answer_step(request, current, meta)
         if answered:
@@ -429,7 +434,7 @@ def _command_step(
     if decision.missing or not decision.actions:
         if current.condition is not None:
             return _plan(request, current, [], meta, [_MISSING.get(decision.missing, _HELP)])
-        session.drop(request.session_id)
+        session.drop(request.session_id, request.user_id)
         return _unsupported(_MISSING.get(decision.missing, _HELP), meta)
     try:
         built = draft.build(
@@ -443,7 +448,7 @@ def _command_step(
     except draft.Unbuildable as error:
         if current.condition is not None:
             return _plan(request, current, [], meta, [str(error)])
-        session.drop(request.session_id)
+        session.drop(request.session_id, request.user_id)
         return _unsupported(str(error), meta)
     # The objective only shapes the screen on a first command, so an unsure one means "prepare".
     p = gate.pick(current.replies, "objective")
@@ -488,13 +493,13 @@ def _answer_step(request: UnderstandRequest, current: session.Session, meta: dic
     except draft.Unbuildable as error:
         if current.condition is not None:
             return _plan(request, current, [], meta, [str(error)])
-        session.drop(request.session_id)
+        session.drop(request.session_id, request.user_id)
         return _unsupported(str(error), meta)
     except readonly.ForecastDataError:
-        session.drop(request.session_id)
+        session.drop(request.session_id, request.user_id)
         return _unsupported("I can't read your upcoming bills right now.", meta)
-    session.drop(request.session_id)
-    _event("answer_given", request, reason=kind)
+    session.drop(request.session_id, request.user_id)
+    _event("answer_given", reason=kind)
     return {
         "status": "answer",
         "kind": kind,
@@ -546,11 +551,11 @@ def _ask(
     if not chips:
         return None
     if current.asked >= config.MAX_QUESTIONS:
-        session.drop(request.session_id)
-        return _cancelled("too_many_questions", meta, request.session_id)
+        session.drop(request.session_id, request.user_id)
+        return _cancelled("too_many_questions", meta)
     current.asked += 1
     question_id = f"q_{current.asked}"
-    _event("question_asked", request, reason=decision.ask, count=current.asked)
+    _event("question_asked", reason=decision.ask, count=current.asked)
     current.history.append(
         {
             "kind": "question",
@@ -671,7 +676,7 @@ def _keep_draft(request, current, built, objective, scenario, meta) -> dict[str,
         raise HTTPException(409, str(error)) from error
     current.draft, current.followup, current.pending = built, None, None
     session.save(request.session_id, current)
-    _event("draft_built", request, draft_id=built.draft_id, count=len(built.actions))
+    _event("draft_built", draft_id=built.draft_id, count=len(built.actions))
     return {
         "status": "draft",
         "draft": built,
@@ -682,20 +687,20 @@ def _keep_draft(request, current, built, objective, scenario, meta) -> dict[str,
     }
 
 
-def _event(event: str, request: UnderstandRequest, **data: Any) -> None:
+def _event(event: str, **data: Any) -> None:
     """Write one intent event to the audit chain (CONTRACTS §8).
 
     The chain takes only allowlisted, non-sensitive fields (app/audit.py), so transcripts and
-    probabilities stay in the encrypted evidence store. A failed write stops the request (503).
+    probabilities stay in the encrypted evidence store. `GET /api/audit` is public and a
+    session ID unlocks its conversation, so session IDs stay out of the chain. A failed
+    write stops the request (503).
     """
-    audit.append_event("intent", event, {"session_id": request.session_id, **data})
+    audit.append_event("intent", event, data)
 
 
-def _blocked(model: str, started: float, session_id: str) -> dict[str, Any]:
+def _blocked(model: str, started: float) -> dict[str, Any]:
     # No model means the phrase backstop blocked it before any Jev call.
-    audit.append_event(
-        "intent", "blocked", {"session_id": session_id, "reason": "possible_injection"}
-    )
+    _event("blocked", reason="possible_injection")
     return {
         "status": "blocked",
         "reason": "possible_injection",
@@ -733,8 +738,8 @@ def _meta(current: session.Session, started: float) -> dict[str, Any]:
     }
 
 
-def _cancelled(reason: str, meta: dict, session_id: str) -> dict[str, Any]:
-    audit.append_event("intent", "cancelled", {"session_id": session_id, "reason": reason})
+def _cancelled(reason: str, meta: dict) -> dict[str, Any]:
+    _event("cancelled", reason=reason)
     messages = {
         "user_declined": "Okay, nothing was sent.",
         "too_many_questions": "I couldn't work out what you meant. Please try again.",
@@ -948,6 +953,6 @@ def _plan(
         "intent": _presentation(current, request.session_id, [a.type for a in actions]),
     }
     plan = RequestPlan.model_validate(plan).model_dump(mode="json")
-    session.drop(request.session_id)
+    session.drop(request.session_id, request.user_id)
     evidence.record("intent_plan", {"plan": plan}, session_id=request.session_id)
     return {"status": "plan", "plan": plan, "meta": meta}

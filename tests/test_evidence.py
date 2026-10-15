@@ -33,6 +33,18 @@ def test_encrypted_evidence_survives_session_clear_and_redacts_secrets(monkeypat
         assert raw not in disk
 
 
+def test_plaintext_metadata_holds_no_guessable_digest():
+    # H6 (15 Oct audit): sha256(body) beside the ciphertext let a file reader confirm guesses.
+    evidence.record("first", {"transcript": "send 350 to John Doe"}, draft_digest="abc123")
+    with sqlite3.connect(config.AUDIT_EVIDENCE_PATH) as db:
+        (text,) = db.execute("SELECT metadata FROM events").fetchone()
+    body = evidence.encoded({"transcript": "send 350 to John Doe"})
+    for unkeyed in (hashlib.sha256(body).hexdigest(), hashlib.sha256(b"abc123").hexdigest()):
+        assert unkeyed not in text
+    assert "abc123" not in text
+    assert evidence.timeline(None, 10, True)["entries"][0]["evidence"]["transcript"]
+
+
 def test_metadata_and_evidence_tampering_are_detected():
     evidence.record("first", {"value": 1})
     with sqlite3.connect(config.AUDIT_EVIDENCE_PATH) as db:
@@ -106,10 +118,36 @@ def test_client_manifest_is_explicitly_untrusted_and_bound_to_session(client):
     assert report["evidence"]["manifest"] == {"root": "transfer"}
 
 
+def test_presentation_reports_are_small_and_stored_once(client):
+    big = {"session_id": "s_ui", "manifest": {"x": "y" * 20_000}, "source": "jev"}
+    assert client.post("/api/audit/presentation", json=big).status_code == 400
+    small = {**big, "manifest": {"root": "transfer"}}
+    assert client.post("/api/audit/presentation", json=small).status_code == 200
+    rows = evidence.timeline("s_ui", 10, False)["entries"]
+    assert [r["event"] for r in rows] == ["presentation_client_reported"]
+
+
+def test_odd_bodies_are_400_and_previews_are_not_kept(client):
+    # L5, L6, L9, L13 (15 Oct audit): deep JSON or NaN gave 500/503, previews were stored.
+    headers = {"content-type": "application/json"}
+    deep = client.post("/api/understand", content="[" * 100_000, headers=headers)
+    nan = '{"user_id": "u_demo", "session_id": "s_x", "transcript": NaN}'
+    assert (
+        deep.status_code
+        == client.post("/api/understand", content=nan, headers=headers).status_code
+        == 400
+    )
+    assert deep.json()["error"]["code"] == "bad_request"
+    preview = client.post("/api/preview", json={"text": "send fifty"})
+    assert preview.headers["cache-control"] == "no-store"
+    rows = evidence.timeline(None, 100, False)["entries"]
+    assert not any("preview" in json.dumps(r) for r in rows)
+
+
 def test_size_limit_and_no_plaintext_headers(client, monkeypatch):
     monkeypatch.setattr(config, "AUDIT_MAX_BYTES", 100)
     response = client.post("/api/understand", content="x" * 101)
-    assert response.status_code == 413
+    assert response.status_code == 413 and response.json()["error"]["code"] == "too_large"
 
 
 def test_request_history_and_bank_snapshot_reconstruct_after_expiry(client, fake_jev, bank):
@@ -225,6 +263,32 @@ def test_history_cannot_be_rewritten_without_the_key():
         evidence.timeline(None, 10, False)
 
 
+def test_deleted_rows_are_detected_and_writes_stop(monkeypatch):
+    # M8 (15 Oct audit): deleting rows from the end, or all of them, still verified.
+    evidence.record("first", {"x": 1})
+    evidence.record("second", {"x": 2})
+    with sqlite3.connect(config.AUDIT_EVIDENCE_PATH) as db:
+        db.execute("DELETE FROM events WHERE position=1")
+    with pytest.raises(AuditError):
+        evidence.timeline(None, 10, False)
+    with sqlite3.connect(config.AUDIT_EVIDENCE_PATH) as db:
+        db.execute("DELETE FROM events")
+    with pytest.raises(AuditError):  # fail closed even though the file now looks clean
+        evidence.record("third", {})
+
+
+def test_the_evidence_key_can_rotate(monkeypatch):
+    # M15 (15 Oct audit): a new key made every audited request fail with 503.
+    from cryptography.fernet import Fernet
+
+    old = config.AUDIT_EVIDENCE_KEY
+    evidence.record("before", {"x": 1})
+    monkeypatch.setattr(config, "AUDIT_EVIDENCE_KEY", Fernet.generate_key().decode() + "," + old)
+    evidence.record("after", {"x": 2})
+    entries = evidence.timeline(None, 10, True)["entries"]
+    assert [e["evidence"]["x"] for e in entries] == [1, 2]
+
+
 def test_the_store_is_owner_only():
     evidence.record("first", {"x": 1})
     if os.name != "nt":  # Windows access is governed by inherited NTFS ACLs, not POSIX bits.
@@ -250,3 +314,94 @@ def test_legacy_chain_is_upgraded_without_losing_evidence():
     evidence.record("first", {"amount": "50.00"}, idempotency_key="original")
     evidence.record("second", {"amount": "60.00"})
     assert len(evidence.timeline(None, 10, True)["entries"]) == 2
+
+
+def test_key_rotation_preserves_idempotent_bank_events(monkeypatch):
+    from cryptography.fernet import Fernet
+
+    identifier = evidence.record(
+        "bank_transaction_committed",
+        {"amount": "50.00"},
+        idempotency_key="payment",
+        draft_digest="a" * 64,
+    )
+    old = config.AUDIT_EVIDENCE_KEY
+    monkeypatch.setattr(config, "AUDIT_EVIDENCE_KEY", Fernet.generate_key().decode() + "," + old)
+    assert (
+        evidence.record(
+            "bank_transaction_committed",
+            {"amount": "50.00"},
+            idempotency_key="payment",
+            draft_digest="a" * 64,
+        )
+        == identifier
+    )
+    with pytest.raises(AuditError):
+        evidence.record(
+            "bank_transaction_committed",
+            {"amount": "51.00"},
+            idempotency_key="payment",
+            draft_digest="a" * 64,
+        )
+    assert len(evidence.timeline(None, 10, True)["entries"]) == 1
+
+
+def test_migrate_deployed_sha_digests_and_replay_after_rotation(monkeypatch):
+    from cryptography.fernet import Fernet
+
+    payload = {"amount": "50.00"}
+    identifier = evidence.record(
+        "payment", payload, idempotency_key="original", draft_digest="a" * 64
+    )
+    with sqlite3.connect(config.AUDIT_EVIDENCE_PATH) as db:
+        meta = json.loads(db.execute("SELECT metadata FROM events").fetchone()[0])
+        meta["evidence_digest"] = evidence.sha(evidence.encoded(payload))
+        meta["draft_digest"] = "a" * 64
+        db.execute(
+            "UPDATE events SET metadata=?,hash=?",
+            (evidence.encoded(meta).decode(), evidence._link(meta, config.AUDIT_EVIDENCE_KEY)),
+        )
+        db.execute("PRAGMA user_version=1")
+    with pytest.raises(AuditError):
+        evidence.record("payment", payload, idempotency_key="original")
+    with evidence._connect(upgrade_legacy=True):
+        pass
+    old = config.AUDIT_EVIDENCE_KEY
+    monkeypatch.setattr(config, "AUDIT_EVIDENCE_KEY", Fernet.generate_key().decode() + "," + old)
+    assert (
+        evidence.record("payment", payload, idempotency_key="original", draft_digest="a" * 64)
+        == identifier
+    )
+    entry = evidence.timeline(None, 10, True)["entries"][0]
+    assert entry["evidence"] == payload
+    assert entry["draft_digest"] != "a" * 64
+    assert entry["evidence_digest"] != evidence.sha(evidence.encoded(payload))
+
+
+def test_another_process_may_append_without_invalidating_known_head():
+    import subprocess
+    import sys
+
+    evidence.record("before", {})
+    script = """
+import json, sys
+from app import config, evidence
+values=json.load(sys.stdin)
+config.AUDIT_EVIDENCE_PATH=values['path']
+config.AUDIT_EVIDENCE_KEY=values['key']
+evidence.record('operator', {})
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        input=json.dumps({"path": config.AUDIT_EVIDENCE_PATH, "key": config.AUDIT_EVIDENCE_KEY}),
+        text=True,
+        capture_output=True,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    evidence.record("after", {})
+    assert [r["event"] for r in evidence.timeline(None, 10, True)["entries"]] == [
+        "before",
+        "operator",
+        "after",
+    ]

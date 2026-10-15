@@ -1513,6 +1513,21 @@ def test_late_match_cannot_restore_superseded_draft(draft):
     assert state.finish(record, {"status": "match"})["status"] == "stale"
 
 
+def test_retries_wait_and_a_crashed_check_does_not_stay_pending(draft):
+    # M2/M3 (15 Oct audit): every retry after "unavailable" reran the model, and an
+    # unexpected error left the draft "pending" forever.
+    state.clear()
+    state.register(draft, [], {})
+    record, _ = state.begin(draft)
+    state.finish(record, {"status": "unavailable"})
+    assert state.begin(draft)[1] == {"status": "unavailable"}
+    record.checked -= 60
+    assert state.begin(draft)[1] is None  # cooldown over: one rerun
+    assert state.begin(draft)[1]["status"] == "pending"
+    record.started -= 600  # that rerun crashed without finish()
+    assert state.begin(draft)[1] is None
+
+
 def test_validator_unconfigured_never_matches(draft, monkeypatch):
     from app import config
 

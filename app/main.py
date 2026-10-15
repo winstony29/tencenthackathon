@@ -6,7 +6,10 @@ Contract: docs/CONTRACTS.md §3 (endpoints) and §6 (errors)
 """
 
 import asyncio
+import ipaddress
 import logging
+import re
+import secrets
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
@@ -18,7 +21,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException
 
-from app import config, evidence
+from app import config, evidence, transaction_state
 from app.audit import AuditError
 from app.audit_http import AuditMiddleware
 from app.audit_http import router as audit_router
@@ -69,11 +72,23 @@ _HEADERS = [
     (b"referrer-policy", b"no-referrer"),
     (b"permissions-policy", b"microphone=(self), camera=(), geolocation=()"),
 ]
-# Endpoints that spend a model call (the shared Jev key), and the rate group each belongs to.
-_MODEL_PATHS = {"/api/understand": "model", "/api/preview": "preview"}
-# Rate state: tokens and last refill per (client IP, group), and every recent model call.
+# Rate group of each endpoint (config.RATE_PER_MINUTE). Other /api/presentation-* paths spend
+# Jev calls too and count as "model"; every remaining /api/ path is "read".
+_RATE_GROUPS = {
+    "/api/understand": "model",
+    "/api/transcribe": "model",
+    "/api/preview": "preview",
+    "/api/validate": "validate",
+    "/api/validation/cancel": "write",
+    "/api/challenge": "write",
+    "/api/execute": "write",
+    "/api/device/register": "write",
+    "/api/audit/presentation": "write",
+}
+# Rate state: tokens and last refill per (client, group), and recent calls per global group.
 RATE_BUCKETS: dict[tuple[str, str], tuple[float, float]] = {}
-RATE_WINDOW: list[float] = []
+RATE_WINDOW: dict[str, list[float]] = {}
+_COOKIE = re.compile(rb"(?:^|;)\s*dcta_client=([A-Za-z0-9_-]{43})(?:;|$)")
 
 
 class _Guard:
@@ -89,50 +104,69 @@ class _Guard:
     @staticmethod
     def _allowed(client: str, group: str) -> bool:
         now = time.monotonic()
-        RATE_WINDOW[:] = [t for t in RATE_WINDOW if now - t < 60]
-        if len(RATE_WINDOW) >= config.RATE_GLOBAL_PER_MINUTE:
+        window = RATE_WINDOW.setdefault(group, [])
+        window[:] = [t for t in window if now - t < 60]
+        if len(window) >= config.RATE_GLOBAL_PER_MINUTE.get(group, float("inf")):
             return False
         rate = config.RATE_PER_MINUTE[group]
         tokens, last = RATE_BUCKETS.get((client, group), (rate, now))
         tokens = min(rate, tokens + (now - last) * rate / 60)
         if tokens < 1:
             return False
-        if len(RATE_BUCKETS) > 10_000:  # forget idle clients rather than grow without bound
-            RATE_BUCKETS.clear()
+        if len(RATE_BUCKETS) > 10_000:
+            # A bucket idle for a minute is full again, the same as a new one, so dropping it
+            # forgets nothing. ponytail: active buckets still grow with the number of clients.
+            for key in [k for k, (_, t) in RATE_BUCKETS.items() if now - t >= 60]:
+                del RATE_BUCKETS[key]
         RATE_BUCKETS[(client, group)] = (tokens - 1, now)
-        RATE_WINDOW.append(now)
+        if group in config.RATE_GLOBAL_PER_MINUTE:
+            window.append(now)
         return True
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
 
+        headers = list(_HEADERS)
+        path = scope.get("path", "")
+
         async def send_with_headers(message):
             if message["type"] == "http.response.start":
-                message["headers"] = list(message.get("headers", [])) + _HEADERS
+                message["headers"] = list(message.get("headers", [])) + headers
+                if path.startswith("/api/") and not any(
+                    k.lower() == b"cache-control" for k, _ in message["headers"]
+                ):  # bank data and errors are never cached (L9)
+                    message["headers"].append((b"cache-control", b"no-store"))
             await send(message)
 
-        path = scope.get("path", "")
         if not path.startswith("/api/"):
             return await self.app(scope, receive, send_with_headers)
+        # Every browser gets a secret HttpOnly cookie; conversations belong to it (H1 in the
+        # 15 Oct audit), so a leaked session ID alone can't answer, change or sign them.
+        found = _COOKIE.search(dict(scope.get("headers", [])).get(b"cookie", b""))
+        client_id = found.group(1).decode() if found else secrets.token_urlsafe(32)
+        transaction_state.client.set(client_id)
+        if not found:
+            secure = "; Secure" if scope.get("scheme") == "https" else ""
+            cookie = f"dcta_client={client_id}; Path=/api; HttpOnly; SameSite=Strict{secure}"
+            headers.append((b"set-cookie", cookie.encode()))
         limit = config.MAX_AUDIO_BYTES if path == "/api/transcribe" else config.MAX_REQUEST_BYTES
         length = dict(scope.get("headers", [])).get(b"content-length", b"0")
-        if not length.isdigit() or int(length) > limit:
+        if not length.isdigit() or len(length) > 12 or int(length) > limit:
             return await _error(413, "Request too large.")(scope, receive, send_with_headers)
-        group = _MODEL_PATHS.get(path, "model" if path.startswith("/api/presentation-") else None)
-        client = (scope.get("client") or ("unknown", 0))[0]
-        if group and not self._allowed(client, group):
+        group = _RATE_GROUPS.get(path, "model" if path.startswith("/api/presentation-") else "read")
+        if not self._allowed(_rate_key((scope.get("client") or ("unknown", 0))[0]), group):
             response = _error(429, "Too many requests. Please wait a moment and try again.")
             response.headers["retry-after"] = "10"
             return await response(scope, receive, send_with_headers)
         # Content-Length can be left out (chunked uploads), so read what actually arrives, up
         # to the cap, and hand the app the same bytes.
-        body, more = b"", True
+        body, more = bytearray(), True
         while more:
             message = await receive()
             if message["type"] == "http.disconnect":
                 return
-            body += message.get("body", b"")
+            body.extend(message.get("body", b""))
             more = message.get("more_body", False)
             if len(body) > limit:
                 return await _error(413, "Request too large.")(scope, receive, send_with_headers)
@@ -143,9 +177,20 @@ class _Guard:
             if replayed:
                 return await receive()
             replayed = True
-            return {"type": "http.request", "body": body, "more_body": False}
+            return {"type": "http.request", "body": bytes(body), "more_body": False}
 
         await self.app(scope, replay, send_with_headers)
+
+
+def _rate_key(client: str) -> str:
+    """One IPv6 user usually holds a whole /64, so it shares one bucket."""
+    try:
+        address = ipaddress.ip_address(client)
+    except ValueError:
+        return client
+    if address.version == 4:
+        return client
+    return str(ipaddress.ip_network(f"{client}/64", strict=False))
 
 
 app = FastAPI(

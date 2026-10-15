@@ -7,6 +7,7 @@ Contract: none; called by app/intent/router.py; gateway settings in D-005
 
 import asyncio
 import math
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -77,6 +78,18 @@ async def ask(text: str, questions: list[Question], context: dict[str, Any] | No
     """
     if not config.MAKERS_MODELS_KEY:
         raise HTTPException(502, "Jev is not configured on the server.")
+    # Last pass over bank-data wording (biller and company names, labels): any number of two
+    # or more digits that isn't a stand-in in the masked text becomes "[number]" (L2).
+    allowed = set(_DIGITS.findall(text))
+    questions = [
+        Question(
+            q.name,
+            _hide(q.instructions, allowed),
+            {k: _hide(v, allowed) for k, v in q.criteria.items()},
+        )
+        for q in questions
+    ]
+    context = _hide(context, allowed)
     questions, restore = opaque(questions)
     payload = {
         "model": config.MAKERS_JEV_MODEL,
@@ -100,6 +113,19 @@ async def ask(text: str, questions: list[Question], context: dict[str, Any] | No
         return restore(parse(response.json(), questions))
     except (httpx.HTTPError, ValueError, TypeError) as error:
         raise HTTPException(502, "Jev is unavailable right now. Please try again.") from error
+
+
+_DIGITS = re.compile(r"\d{2,}")
+
+
+def _hide(value: Any, allowed: set[str]) -> Any:
+    if isinstance(value, str):
+        return _DIGITS.sub(lambda m: m.group(0) if m.group(0) in allowed else "[number]", value)
+    if isinstance(value, dict):
+        return {k: _hide(v, allowed) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_hide(v, allowed) for v in value]
+    return value
 
 
 def opaque(questions: list[Question]) -> tuple[list[Question], Callable[[Reply], Reply]]:

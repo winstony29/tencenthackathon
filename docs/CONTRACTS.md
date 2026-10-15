@@ -1,7 +1,7 @@
 # Contracts
 
 **Purpose:** the exact data shapes and endpoints every part of the system agrees on. `app/contracts.py` implements this file as Pydantic models. If the two disagree, this file wins.
-**Owner:** Winston (keeper) · **Version:** 0.14 (integrated validation evidence and request guards) · **Last updated:** 2026-10-16
+**Owner:** Winston (keeper) · **Version:** 0.15 (integrated browser ownership and privacy guards) · **Last updated:** 2026-10-16
 
 > Changing anything here needs all three teammates to agree. Then bump the version, update `app/contracts.py` in the same commit, and add a `docs/DECISIONS.md` entry.
 
@@ -123,7 +123,7 @@ Response:
 ```
 `value` is one of `transfer`, `bill_payment`, `stock_order`, `none` (not a banking command yet, or under 2 characters). The `intent` shape matches shapeshift's, so its `decide.ts` (ghost, choose, committed card) works with only the keys changed.
 - The UI uses it only to morph the input into an empty card of the right type. It must never show values from it, build a draft from it, or skip `/api/understand` because of it.
-- One Jev call on the text with numbers swapped for stand-ins (D-026), no rewrites, cached by normalised text. It names the main action only; a multi-action command shows all its actions in the draft.
+- One Jev call on the text with numbers swapped for stand-ins (D-026), no rewrites, cached by normalised text per browser (§14). It names the main action only; a multi-action command shows all its actions in the draft.
 
 **`POST /api/transcribe`**: speech to text.
 Request: multipart form, field `audio` (format agreed in D-006).
@@ -164,7 +164,7 @@ Responses (one of). Each also carries `meta` (above), left out of the examples b
 {"status": "cancelled", "reason": "user_declined", "message": "Okay, nothing was sent."}
 ```
 `reason` is `user_declined` (the user picked "None of these", `option_id: "none"`) or `too_many_questions` (still unsure after 3 questions; message "I couldn't work out what you meant. Please try again.").
-An answer for an unknown or expired session returns 404 `not_found`; the UI starts a new command.
+An answer for an unknown or expired session returns 404 `not_found`; the UI starts a new command. So does any request whose `session_id` another browser started (§14).
 
 **Answers** (*v0.6, proposed*). A question about the user's own data, or a market figure, that moves no money gets an `answer`, not a draft:
 ```json
@@ -373,7 +373,7 @@ Other states the UI must show: **preview** (empty card of the guessed type while
 
 ## 6. Errors
 
-Malformed requests return HTTP 400 with `{"error": {"code": "bad_request", "message": "…"}}`. Unknown user or session returns 404 with code `not_found`. Upstream failures (Jev, LLM, ASR down) return 502 with code `upstream_error`; a missing server key for a model returns 503 with the same code. A body over the size cap (256 KB of JSON, 2 MB of audio) returns 413 `too_large`. Too many model-backed calls (`/api/understand`, `/api/preview`, `/api/presentation-*`) from one client IP, or from everyone together, return 429 `rate_limited` with a `Retry-After` header; the UI waits and lets the user try again. `/api/understand` refuses a `user_id` not shaped `u_…` or a `session_id` not shaped `s_…` (400) and an unknown user (404) before touching any state. Business outcomes such as `rejected` or `mismatch` return HTTP 200 with the status shown above.
+Malformed requests return HTTP 400 with `{"error": {"code": "bad_request", "message": "…"}}`. Unknown user or session returns 404 with code `not_found`. Upstream failures (Jev, LLM, ASR down) return 502 with code `upstream_error`; a missing server key for a model returns 503 with the same code. A body over the size cap (256 KB of JSON, 2 MB of audio) returns 413 `too_large`. Too many calls from one client IP in a rate group, or too many model-backed calls (`/api/understand`, `/api/transcribe`, `/api/presentation-*`; `/api/preview` has its own budget) from everyone together, return 429 `rate_limited` with a `Retry-After` header; the UI waits and lets the user try again. Groups per IP per minute: model 40, preview 120, validate 120, write 60 (`/api/validation/cancel`, `/api/challenge`, `/api/execute`, `/api/device/register`, `/api/audit/presentation`), read 120 (every other `/api/` path). `/api/understand` refuses a `user_id` not shaped `u_…` or a `session_id` not shaped `s_…` (400) and an unknown user (404) before touching any state. Business outcomes such as `rejected` or `mismatch` return HTTP 200 with the status shown above.
 
 ## 7. Stubs
 
@@ -381,20 +381,20 @@ Until a real endpoint works, its router returns the example responses in this fi
 
 ## 8. Audit events
 
-Intent side (`actor: "intent"`). Jayanth adds the validation and bank events here. `data` never holds keys or secrets. `/api/preview` calls are not logged: they are display only and too frequent.
+Intent side (`actor: "intent"`). Jayanth adds the validation and bank events here. `data` never holds keys or secrets. `/api/preview` calls are not logged, nor kept as evidence: they are display only and too frequent.
 
-The audit chain (`app/audit.py`) accepts only a flat allowlist of non-sensitive fields, so intent events carry IDs, a `reason` and a `count`; transcripts, Jev's probabilities and the options offered stay in the encrypted evidence store (v0.8), linked by `session_id`. A failed audit write stops the request (503).
+The audit chain (`app/audit.py`) accepts only a flat allowlist of non-sensitive fields, so intent events carry a `reason`, a `count` and sometimes a `draft_id`; transcripts, Jev's probabilities and the options offered stay in the encrypted evidence store (v0.8), linked by `session_id` there. `GET /api/audit` is public, so intent events never carry `session_id` (v0.10). A failed audit write stops the request (503).
 
 | `event` | `data` |
 |---|---|
-| `shield_checked` | `session_id`, `reason` (`flagged` or `clear`) |
-| `gate_decision` | `session_id`, `reason` (`proceed` or `ask`) |
-| `question_asked` | `session_id`, `reason` (the question asked, e.g. `recipient`), `count` (its number) |
-| `answer_received` | `session_id`, `reason` (`chip` or `speech`) |
-| `draft_built` | `session_id`, `draft_id`, `count` (actions) |
-| `answer_given` (*v0.6, proposed*) | `session_id`, `reason` (the kind) |
-| `blocked` | `session_id`, `reason` |
-| `cancelled` | `session_id`, `reason` |
+| `shield_checked` | `reason` (`flagged` or `clear`) |
+| `gate_decision` | `reason` (`proceed` or `ask`) |
+| `question_asked` | `reason` (the question asked, e.g. `recipient`), `count` (its number) |
+| `answer_received` | `reason` (`chip` or `speech`) |
+| `draft_built` | `draft_id`, `count` (actions) |
+| `answer_given` (*v0.6, proposed*) | `reason` (the kind) |
+| `blocked` | `reason` |
+| `cancelled` | `reason` |
 
 `transcribed` waits for live ASR (W-09). Jev's answers per question are in the evidence store, as the stand-in text Jev saw, never the transcript (D-026). Jayanth adds `fx_converted` (actor `bank`) with `draft_id`, `sell_amount`, `sell_currency`, `buy_amount`, `buy_currency`, `rate`.
 
@@ -535,29 +535,36 @@ metadata-only by default. Responses have `Cache-Control: no-store`. Returns
 draft_id?,revision?,draft_digest?,evidence_digest,previous_hash,hash,evidence_state,
 evidence?}]}`. Corruption returns 503, never fabricated empty history. Expired evidence
 has `evidence_state:expired` and no evidence body. A valid chain does not prove the model
-was correct or that an event writer was honest; full rewrite/tail deletion needs independent
-checkpoints to detect, which are not implemented.
+was correct or that an event writer was honest. The running server remembers the chain's
+head, so rows deleted from the end are caught until it restarts; a store found tampered
+refuses new writes (503) until then. Independent checkpoints that survive a restart are
+not implemented.
 
 `POST /api/audit/presentation` accepts
-`{session_id, draft_id?, manifest:object, source:jev|fallback}` and returns
+`{session_id, draft_id?, manifest:object (at most 16 KB as JSON), source:jev|fallback}` and returns
 `{status:recorded}`. V5 submits the final component spec before enabling confirmation;
 read-only answers report initial fallback and selected presentation on a best-effort basis.
 These are explicitly `presentation_client_reported`, not proof of rendered pixels, user
 consent, or server-validated component choices. The server's JEV exchange is separate evidence.
 
-Encryption uses Fernet (cryptography 46.0.3). Required persistent `AUDIT_EVIDENCE_KEY` and
+Encryption uses Fernet (cryptography 46.0.7). Required persistent `AUDIT_EVIDENCE_KEY` and
 independent `AUDIT_ADMIN_TOKEN` belong in local `.env` or deployment secret storage, never
 frontend/source control. Losing the encryption key loses evidence access; keep it across
 restarts. Encryption protects the database alone, not a machine compromised alongside its
 key. Default evidence retention is seven days (`AUDIT_RETENTION_DAYS`), removed on writes,
 admin reads, startup and hourly maintenance while running. Metadata remains. Backups and
-cloud-synced historical copies need their own retention policy. No automatic key rotation.
+cloud-synced historical copies need their own retention policy. To rotate, set
+`AUDIT_EVIDENCE_KEY=new,old`: the newest key encrypts and signs, older ones still verify and
+decrypt. Keep a retired key listed while rows it signed remain. No automatic rotation.
 
 Structured secret fields (OTP, authorization, cookies, credentials, receipts, private-key
-material) and configured secret values are redacted before encryption. Raw HTTP headers,
+material, PIN, CVV, card number, NRIC, signature, nonce) and configured secret values are
+redacted before encryption. Passwords, PINs and OTPs typed after their keyword, card numbers,
+NRICs, API keys and JWTs are replaced in free text, and in transcripts before Jev or the
+validator see them (§14). Raw HTTP headers,
 raw audio and malformed unparsed bodies are not stored. Free text remains sensitive;
 redaction is not a guarantee of discovering every arbitrary secret a user may type.
-Transcription is currently a labelled stub event. Evidence over 64 KB per item keeps only its size and SHA-256; past 500 MB in total, new events keep metadata only (`evidence_state: "capacity"`). The chain hash is an HMAC keyed from `AUDIT_EVIDENCE_KEY`, so rewriting history needs the key; writes check the newest link and reads check the whole chain. The database is owner-only (0600).
+Transcription is currently a labelled stub event. Evidence over 64 KB per item keeps only its size and SHA-256; past 500 MB in total, new events keep metadata only (`evidence_state: "capacity"`). The chain hash is an HMAC keyed from `AUDIT_EVIDENCE_KEY`, so rewriting history needs the key; writes check the newest link and reads check the whole chain. `evidence_digest` and `draft_digest` in metadata are HMACs too, so the file alone can't confirm a guessed request. The database is owner-only (0600).
 Missing encryption or storage failure stops audited requests; expired/cancelled/stale drafts
 cannot regain approval through audit replay. Confirmation attempts and unavailable bank
 execution are recorded, but no signature verification or ledger execution is implied.
@@ -715,3 +722,20 @@ The operator-only `sync-catalogue` command adds absent seed payees to existing r
 an idempotent `catalogue_updated` audit event. It preserves balances, holdings, bill settlement,
 transaction history, payment controls and existing records. New seed positions apply only to fresh
 installations. Eight quotes and sample history are read from the seed; prices remain demo data.
+
+## 14. Integrated security audit changes (v0.15, 16 October 2026)
+
+- **Conversations belong to a browser.** Every `/api/` response without a valid `dcta_client` cookie sets one (HttpOnly, `SameSite=Strict`, `Path=/api`, `Secure` over HTTPS). A `session_id` started by one browser is refused for every other: `/api/understand` returns 404 `not_found`, `/api/validate` returns `stale`, `/api/challenge` 409, and `/api/validation/cancel` changes nothing. Browsers send the cookie on same-origin requests without any UI change; other clients must keep cookies (httpx and the test client do).
+- **§8:** intent events no longer carry `session_id`, and previews are no longer kept as evidence.
+- **§6:** every `/api/` path has a per-IP rate group; previews and model calls have separate global budgets. The audit middleware's 413 and 503 bodies carry `too_large` and `upstream_error`. Every `/api/` response has `Cache-Control: no-store`.
+- **`/api/validate`:** an `unavailable` result is returned again for 10 seconds before the validator runs once more, and a check that crashed stops reading as `pending` after its deadline.
+- **`/api/audit/presentation`:** `manifest` is at most 16 KB as JSON (400 otherwise).
+- **`draft_id`** is `d_` and 16 hex characters (was 6).
+
+Browser ownership and validation retry timestamps persist in the encrypted approval store when
+local bank execution is enabled. Persistence uses wall-clock timestamps on Windows and macOS.
+Existing approvals without a browser owner require a fresh request; committed transactions and
+device registrations remain intact. Evidence format 2 requires the explicit operator migration
+in README for previous stores. Payload/draft digests verify against retained rotation keys;
+idempotent bank commits retain stable event IDs. Another process may append a verified extension
+of the remembered audit head; truncation or replacement of that prefix fails closed.

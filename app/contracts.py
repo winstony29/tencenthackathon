@@ -5,6 +5,7 @@ Diagram box: none; the shapes that cross every arrow
 Contract: docs/CONTRACTS.md v0.14, which wins if the two disagree
 """
 
+import json
 from decimal import Decimal
 from typing import Annotated, Any, Literal
 
@@ -18,7 +19,7 @@ from pydantic import (
     model_validator,
 )
 
-from app.config import MAX_ACTIONS_PER_DRAFT, MAX_TEXT_CHARS
+from app.config import MAX_ACTIONS_PER_DRAFT, MAX_MANIFEST_BYTES, MAX_TEXT_CHARS
 
 NONE_OPTION_ID = "none"  # option_id the UI sends when the user picks "None of these"
 
@@ -616,3 +617,10 @@ class PresentationEvidenceRequest(ContractModel):
     draft_id: str | None = Field(default=None, max_length=100)
     manifest: dict[str, Any]
     source: Literal["jev", "fallback"]
+
+    @model_validator(mode="after")
+    def _small_manifest(self) -> "PresentationEvidenceRequest":
+        # Every report is stored for the retention period (H3 in the 15 Oct audit).
+        if len(json.dumps(self.manifest, default=str)) > MAX_MANIFEST_BYTES:
+            raise ValueError(f"manifest is larger than {MAX_MANIFEST_BYTES} bytes")
+        return self

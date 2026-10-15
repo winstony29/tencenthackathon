@@ -6,6 +6,7 @@ Contract: none; a hit makes /api/understand return "blocked"; asked inside the m
 """
 
 import re
+import unicodedata
 
 from app import config
 from app.intent import jev
@@ -29,14 +30,25 @@ QUESTION = jev.Question(
 # Phrases that are always an attack, whatever Jev says; a backstop, not the main check.
 _ALWAYS = re.compile(
     r"\b(ignore|disregard|forget|override)\b.{0,30}\b(instructions?|rules?|prompts?)\b"
+    r"|\b(ignore|disregard|forget)\b.{0,20}\b(the|everything) above\b"
     r"|\bsystem prompt\b|\byou are now\b|\bdeveloper mode\b",
     re.IGNORECASE,
 )
+# Latin look-alikes from Cyrillic and Greek, so "Jоhn" with a Cyrillic "о" reads as John.
+_CONFUSABLES = str.maketrans("аеорсухіјѕԁһӏԛԝαεικνοτυχ", "aeopcyxijsdhlqwaeikvotux")
+_LEET = str.maketrans("013457@$", "oieastas")
+
+
+def fold(text: str) -> str:
+    """Text without accents, case or look-alike letters; also used for payee names (options)."""
+    plain = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+    return plain.casefold().translate(_CONFUSABLES)
 
 
 def obvious(text: str) -> bool:
-    """A known attack phrase: blocked before any model sees the text."""
-    return bool(_ALWAYS.search(text))
+    """A known attack phrase, even disguised ("ign0re", Cyrillic "і"; L3): blocked before
+    any model sees the text."""
+    return bool(_ALWAYS.search(fold(text).translate(_LEET)))
 
 
 def flagged(reply: jev.Reply) -> bool:

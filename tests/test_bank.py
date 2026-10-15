@@ -6394,7 +6394,9 @@ def test_combined_persistent_validation_execution_and_encrypted_timeline(combine
     rows = evidence.timeline(draft.session_id, 100, True)["entries"]
     commits = [r for r in rows if r["event"] == "bank_transaction_committed"]
     assert len(commits) == 1
-    assert commits[0]["draft_digest"] == transaction_state.digest(draft)
+    assert evidence._signed(
+        "draft-digest", transaction_state.digest(draft).encode(), commits[0]["draft_digest"]
+    )
     assert commits[0]["evidence"]["result"] == result.model_dump(mode="json")
     assert b"Send SGD 50 to John" not in Path(config.TRANSACTION_STATE_PATH).read_bytes()
     assert b"Send SGD 50 to John" not in Path(config.AUDIT_EVIDENCE_PATH).read_bytes()
@@ -6479,17 +6481,21 @@ def test_combined_http_validation_sign_execute(combined_bank, monkeypatch):
 
     env = combined_bank
     draft = _risk_draft("50.00")
+    client = TestClient(app)
+    client.get("/api/accounts?user_id=u_demo")
+    owner = transaction_state.client.set(client.cookies.get("dcta_client"))
     transaction_state.register(
         draft,
         [{"text": draft.transcript}],
         {"accounts": readonly.get_accounts(draft.user_id).model_dump(mode="json")},
     )
 
+    transaction_state.client.reset(owner)
+
     async def matched(*args):
         return report(draft)
 
     monkeypatch.setattr(validator.llm, "audit", matched)
-    client = TestClient(app)
     approved = client.post("/api/validate", json={"draft": draft.model_dump(mode="json")})
     assert approved.status_code == 200, approved.text
     assert approved.json()["status"] == "match", approved.text
@@ -6703,3 +6709,28 @@ def test_catalogue_sync_is_additive_audited_and_idempotent(ledger_paths, monkeyp
     assert ledger.sync_demo_catalogue(**ledger_paths) == 0
     events = audit.read_events(100, storage_path=ledger_paths["audit_path"])
     assert sum(e.event == "catalogue_updated" for e in events.entries) == 1
+
+
+def test_persistent_browser_ownership_survives_cache_loss(combined_bank):
+    from app import transaction_state as state
+
+    draft = _risk_draft("50.00")
+    token = state.client.set("original-browser")
+    try:
+        state.start_turn(draft.user_id, draft.session_id)
+        state.register(draft, [], {})
+        record, _ = state.begin(draft)
+        receipt = state.finish(record, {"status": "match"})["receipt"]
+        state._records.clear()
+        state._turns.clear()
+        state._owners.clear()
+        state.client.set("another-browser")
+        with pytest.raises(state.InvalidDraft):
+            state.start_turn(draft.user_id, draft.session_id)
+        with pytest.raises(state.InvalidDraft):
+            state.authorize(draft, receipt)
+        state.cancel(draft)
+        state.client.set("original-browser")
+        assert state.authorize(draft, receipt).digest == state.digest(draft)
+    finally:
+        state.client.reset(token)

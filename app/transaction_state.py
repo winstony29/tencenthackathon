@@ -39,24 +39,38 @@ class Record:
     checking: bool = False
     started: float = 0
     issued: float = 0
+    checked: float = 0
+    client: str = ""
 
 
 _lock = threading.RLock()
 _records: dict[tuple[str, str], Record] = {}
 _turns: dict[tuple[str, str], tuple[str, float]] = {}
 _turn: ContextVar[tuple[tuple[str, str], str] | None] = ContextVar("audit_turn", default=None)
+# The browser's server-issued client secret (HttpOnly cookie, app/main.py). A session ID is
+# chosen by the client and can leak, so each conversation belongs to the client that started it.
+client: ContextVar[str] = ContextVar("client", default="")
+_owners: dict[str, tuple[str, float]] = {}  # session_id -> (client, expires)
 
 
 def start_turn(user_id: str, session_id: str):
+    """Open a turn owned by this browser."""
     with _locked():
         now = time.time()
         for key in [k for k, (_, expires) in _turns.items() if expires < now]:
             _turns.pop(key)
+        for key in [k for k, (_, expires) in _owners.items() if expires < now]:
+            _owners.pop(key)
+        owner = _owners.get(session_id)
+        if owner is not None and not hmac.compare_digest(owner[0], client.get()):
+            raise InvalidDraft("This conversation has expired. Please start again.")
+        if len(_owners) >= 1000 and owner is None:
+            _owners.pop(min(_owners, key=lambda k: _owners[k][1]))
+        _owners[session_id] = (client.get(), now + config.SESSION_TIMEOUT_SECONDS)
         if len(_turns) >= 1000 and (user_id, session_id) not in _turns:
-            # Evict the conversation closest to expiry: junk sessions can't lock everyone out.
-            oldest = min(_turns, key=lambda k: _turns[k][1])
-            _turns.pop(oldest)
-            revoke(*oldest)
+            # Evict the turn closest to expiry: junk sessions can't lock everyone out. Its draft
+            # keeps its approval (M4); only an in-flight request of that turn is refused.
+            _turns.pop(min(_turns, key=lambda k: _turns[k][1]))
         key = (user_id, session_id)
         token = secrets.token_hex(16)
         _turns[key] = (token, now + config.SESSION_TIMEOUT_SECONDS)
@@ -78,6 +92,7 @@ def clear():
     with _locked():
         _records.clear()
         _turns.clear()
+        _owners.clear()
         _turn.set(None)
 
 
@@ -113,6 +128,7 @@ def register(draft: Draft, history: list[dict], facts: dict):
             copy.deepcopy(history),
             copy.deepcopy(facts),
             issued=now,
+            client=client.get(),
         )
         evidence.record(
             "draft_registered",
@@ -131,7 +147,12 @@ def register(draft: Draft, history: list[dict], facts: dict):
 
 def _current(draft: Draft) -> Record:
     r = _records.get((draft.user_id, draft.session_id))
-    if r is None or r.expires <= time.time() or r.digest != digest(draft):
+    if (
+        r is None
+        or r.expires <= time.time()
+        or r.digest != digest(draft)
+        or not hmac.compare_digest(r.client, client.get())
+    ):
         raise InvalidDraft("This draft changed or expired. Request a fresh draft.")
     return r
 
@@ -139,11 +160,16 @@ def _current(draft: Draft) -> Record:
 def begin(draft: Draft) -> tuple[Record, dict | None]:
     with _locked():
         r = _current(draft)
-        if r.result and r.result["status"] != "unavailable":
+        now = time.time()
+        # Retrying "unavailable" reruns the model, so retries wait (M3, 15 Oct audit).
+        if r.result and (
+            r.result["status"] != "unavailable" or now - r.checked < config.VALIDATOR_RETRY_SECONDS
+        ):
             return r, copy.deepcopy(r.result)
-        if r.checking:
+        # A check that crashed never calls finish(); after its deadline a retry may run (M2).
+        if r.checking and now - r.started < config.VALIDATOR_TIMEOUT_SECONDS + 5:
             return r, {"status": "pending", "message": "Checking your request."}
-        r.checking, r.started = True, time.time()
+        r.checking, r.started = True, now
         return r, None
 
 
@@ -198,7 +224,7 @@ def finish(r: Record, result: dict) -> dict:
             )
             return {"status": "stale", "message": "This draft changed or expired."}
         r = current
-        r.checking = False
+        r.checking, r.checked = False, time.time()
         result = copy.deepcopy(result)
         if result["status"] == "match":
             result["receipt"] = _receipt(r)
@@ -271,6 +297,7 @@ def _locked():
             row = db.execute("SELECT payload FROM approvals WHERE id=1").fetchone()
             _records.clear()
             _turns.clear()
+            _owners.clear()
             if row:
                 body = json.loads(evidence._cipher().decrypt(row[0]))
                 for raw in body["records"]:
@@ -279,6 +306,7 @@ def _locked():
                     if record.expires > time.time():
                         _records[(record.draft.user_id, record.draft.session_id)] = record
                 _turns.update({tuple(key): tuple(value) for key, value in body["turns"]})
+                _owners.update({key: tuple(value) for key, value in body.get("owners", [])})
             _local.active = True
             try:
                 yield
@@ -290,7 +318,13 @@ def _locked():
                     raw["draft"] = record.draft.model_dump(mode="json")
                     records.append(raw)
                 payload = evidence._cipher().encrypt(
-                    evidence.encoded({"records": records, "turns": list(_turns.items())})
+                    evidence.encoded(
+                        {
+                            "records": records,
+                            "turns": list(_turns.items()),
+                            "owners": list(_owners.items()),
+                        }
+                    )
                 )
                 db.execute("INSERT OR REPLACE INTO approvals VALUES (1,?)", (payload,))
                 db.commit()
