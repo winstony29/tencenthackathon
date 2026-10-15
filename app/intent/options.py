@@ -8,7 +8,6 @@ Contract: none; user data comes from app/bank/readonly.py (CONTRACTS §3.3)
 import hashlib
 import hmac
 import re
-import unicodedata
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from itertools import groupby
@@ -215,14 +214,7 @@ _COMMON = frozenset(
     "rose grace hope joy faith penny rich cash chase gold sky summer sunny pay bank fund "
     "the and to from my of a an i me for in on at by with it is".split()
 )
-# Latin look-alikes from Cyrillic and Greek, so "Jоhn" with a Cyrillic "о" still reads as John.
-_CONFUSABLES = str.maketrans("аеорсухіјѕԁһӏԛԝαεικνοτυχ", "aeopcyxijsdhlqwaeikvotux")
-
-
-def _fold(word: str) -> str:
-    """The form a name word is looked up by: no accents, no case, no look-alike letters (M10)."""
-    plain = "".join(c for c in unicodedata.normalize("NFKD", word) if not unicodedata.combining(c))
-    return plain.casefold().translate(_CONFUSABLES)
+_fold = shield.fold  # a name word is looked up without accents, case or look-alikes (M10)
 
 
 def aliases(accounts: AccountsResponse, scope: str) -> dict[str, str]:
