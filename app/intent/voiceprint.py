@@ -136,6 +136,12 @@ async def check(user_id: str, wav_bytes: bytes) -> dict[str, Any]:
         return {"status": "enrolled", "score": None}
     score = sum(a * b for a, b in zip(entry["embedding"], vector, strict=True))
     if score < config.VOICE_THRESHOLD:
+        # Rejections never reach the transcribed record, so keep the score here for tuning.
+        rounded = round(score, 2)
+        evidence.record(
+            "speaker_rejected",
+            {"score": rounded, "threshold": config.VOICE_THRESHOLD, "clips": entry["clips"]},
+        )
         return {"status": "rejected", "score": round(score, 2)}
     confident = score >= config.VOICE_THRESHOLD + config.VOICE_UPDATE_MARGIN
     if confident and entry["clips"] < config.VOICE_MAX_CLIPS:  # fold the clip into the running mean

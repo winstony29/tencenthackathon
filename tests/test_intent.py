@@ -2667,6 +2667,16 @@ def test_different_voice_is_rejected_before_any_asr_call(
     assert _audit_events(audit_log).count(("transcribed", "ok")) == 1
 
 
+def test_rejection_score_is_kept_in_evidence(client, fake_asr, fake_voice, evidence_events) -> None:
+    from tests.conftest import OTHER_VOICE, _wav_bytes
+
+    _transcribe(client, _wav_bytes(1.0))
+    fake_voice.vectors = [OTHER_VOICE]
+    _transcribe(client, _wav_bytes(1.0))
+    (payload,) = [p for e, p in evidence_events if e == "speaker_rejected"]
+    assert payload == {"score": 0.0, "threshold": config.VOICE_THRESHOLD, "clips": 1}
+
+
 def test_voice_check_failure_is_unavailable_and_still_transcribes(
     client, fake_asr, fake_voice
 ) -> None:
