@@ -6955,3 +6955,35 @@ def test_voice_fingerprint_step_up_preserves_signature_otp_and_exactly_once(
     assert done.status == "executed"
     assert gateway.execute(confirmed, **env.paths) == done
     assert len(_ledger_state(env.ledger_paths)["transactions"]) == 1
+
+
+@pytest.mark.parametrize(
+    "count,status,method",
+    [
+        (2, "allow", "otp"),
+        (3, "needs_extra_check", "fingerprint"),
+        (9, "needs_extra_check", "fingerprint"),
+        (10, "reject", "otp"),
+    ],
+)
+def test_demo_velocity_fingerprint_threshold(
+    count: int,
+    status: str,
+    method: str,
+    risk_policy: rules.TransferPolicy,
+    risk_state: dict[str, Any],
+    risk_now: datetime,
+) -> None:
+    policy = risk_policy.model_copy(
+        update={
+            "velocity_step_up_at": 3,
+            "velocity_max_transfers": 10,
+            "velocity_window_minutes": 1,
+        }
+    )
+    for index in range(count):
+        _risk_history(
+            risk_state, amount="1.00", completed_at=risk_now - timedelta(seconds=index + 1)
+        )
+    decision = _risk_evaluate(policy, risk_state, risk_now)
+    assert (decision.status, decision.method) == (status, method)
