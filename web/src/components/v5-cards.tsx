@@ -5,7 +5,15 @@ import type { Composition } from "@/lib/v4-composition";
 import type { State } from "@/lib/v4-state";
 import { financialRows } from "@/lib/v4-financial";
 import { displayMoney, estimatedTotal, fromCurrency } from "@/lib/money";
-import { quoteSchema, validationSchema, type Validation, type Action, type Answer, type Quote, type RequestPlan } from "@/lib/contracts";
+import {
+  quoteSchema,
+  validationSchema,
+  type Validation,
+  type Action,
+  type Answer,
+  type Quote,
+  type RequestPlan,
+} from "@/lib/contracts";
 import { post, request } from "@/lib/api";
 import {
   RecipientDetails,
@@ -17,13 +25,20 @@ import {
 import { AccountInsights } from "./v4-context";
 import { effective, type Event } from "@/lib/v4-state";
 import type { ReactNode } from "react";
-import { fallbackAnswerPresentation, acceptPlanView, fallbackPlanView, type PlanView, type AnswerPresentation } from "./v5-enquiry";
+import {
+  fallbackAnswerPresentation,
+  acceptPlanView,
+  fallbackPlanView,
+  type PlanView,
+  type AnswerPresentation,
+} from "./v5-enquiry";
 import { V5Payment } from "./v5-payment";
 import { activityLabel } from "./v4-primitives";
 
 const money = (value: string, currency: string) =>
   displayMoney(value, currency).replace(/^SGD /, "S$").replace(/^USD /, "US$");
-const label = (value: string) => value.replace(/\.\.\.|â€¦/g, "··").replace(/…/g, "··");
+const label = (value: string) =>
+  value.replace(/\.\.\.|â€¦/g, "··").replace(/…/g, "··");
 function Task({
   action: a,
   quote,
@@ -92,7 +107,9 @@ function Task({
                   : "Bill payment"}
         </span>
       </div>
-      <h2 className={`v5-figure ${auditFields.some(f => ["amount", "sell_amount", "quantity"].includes(f)) ? "v5-field-error" : ""}`}>
+      <h2
+        className={`v5-figure ${auditFields.some((f) => ["amount", "sell_amount", "quantity"].includes(f)) ? "v5-field-error" : ""}`}
+      >
         {stock ? (
           <>
             {a.quantity}
@@ -104,15 +121,25 @@ function Task({
           money(a.amount, a.currency)
         )}
       </h2>
-      {auditFields.length > 0 && <p className="v5-warning" role="alert">
-        Check {auditFields.map(f => f.replaceAll("_", " ")).join(", ")}.
-      </p>}
+      {auditFields.length > 0 && (
+        <p className="v5-warning" role="alert">
+          Check {auditFields.map((f) => f.replaceAll("_", " ")).join(", ")}.
+        </p>
+      )}
       <dl className="v5-facts">
         {a.type === "fx_conversion" ? (
           <>
             <div>
               <dt>From</dt>
-              <dd className={auditFields.some(f => f.startsWith("from_account")) ? "v5-field-error" : ""}>{label(a.from_account_label)}</dd>
+              <dd
+                className={
+                  auditFields.some((f) => f.startsWith("from_account"))
+                    ? "v5-field-error"
+                    : ""
+                }
+              >
+                {label(a.from_account_label)}
+              </dd>
             </div>
             <div>
               <dt>Rate</dt>
@@ -122,17 +149,41 @@ function Task({
             </div>
             <div>
               <dt>Get</dt>
-              <dd className={auditFields.some(f => f.startsWith("buy_")) ? "v5-field-error" : ""}>{money(a.buy_amount, a.buy_currency)}</dd>
+              <dd
+                className={
+                  auditFields.some((f) => f.startsWith("buy_"))
+                    ? "v5-field-error"
+                    : ""
+                }
+              >
+                {money(a.buy_amount, a.buy_currency)}
+              </dd>
             </div>
             <div>
               <dt>Into</dt>
-              <dd className={auditFields.some(f => f.startsWith("to_account")) ? "v5-field-error" : ""}>{label(a.to_account_label)}</dd>
+              <dd
+                className={
+                  auditFields.some((f) => f.startsWith("to_account"))
+                    ? "v5-field-error"
+                    : ""
+                }
+              >
+                {label(a.to_account_label)}
+              </dd>
             </div>
           </>
         ) : (
           <div>
-            <dt>{stock ? "Stock" : a.type === "bill_payment" ? "Biller" : "To"}</dt>
-            <dd className={auditFields.some(f => /^(to_|biller|ticker|company)/.test(f)) ? "v5-field-error" : ""}>
+            <dt>
+              {stock ? "Stock" : a.type === "bill_payment" ? "Biller" : "To"}
+            </dt>
+            <dd
+              className={
+                auditFields.some((f) => /^(to_|biller|ticker|company)/.test(f))
+                  ? "v5-field-error"
+                  : ""
+              }
+            >
               {a.type === "stock_order"
                 ? `${a.ticker} · ${a.company_name}`
                 : label(
@@ -154,14 +205,26 @@ function Task({
         {!fx && (
           <div>
             <dt>{stock && a.side === "sell" ? "Into" : "From"}</dt>
-            <dd className={auditFields.some(f => f.startsWith("from_account")) ? "v5-field-error" : ""}>{label(a.from_account_label)}</dd>
+            <dd
+              className={
+                auditFields.some((f) => f.startsWith("from_account"))
+                  ? "v5-field-error"
+                  : ""
+              }
+            >
+              {label(a.from_account_label)}
+            </dd>
           </div>
         )}
         {stock && (
           <>
             <div>
               <dt>Order</dt>
-              <dd>{a.order_type === "market" ? "Market" : `Limit · ${money(a.limit_price!, a.currency)}`}</dd>
+              <dd>
+                {a.order_type === "market"
+                  ? "Market"
+                  : `Limit · ${money(a.limit_price!, a.currency)}`}
+              </dd>
             </div>
             <div>
               <dt>Price now · est.</dt>
@@ -169,14 +232,20 @@ function Task({
             </div>
             <div>
               <dt>Total · est.</dt>
-              <dd>{price ? money(estimatedTotal(price, a.quantity), a.currency) : "Unavailable"}</dd>
+              <dd>
+                {price
+                  ? money(estimatedTotal(price, a.quantity), a.currency)
+                  : "Unavailable"}
+              </dd>
             </div>
           </>
         )}
         {!compact && after !== undefined && (
           <div className="v5-balance-row">
             <dt>Balance after{stock ? " · est." : ""}</dt>
-            <dd>{after === null ? "Unavailable" : money(after, fromCurrency(a))}</dd>
+            <dd>
+              {after === null ? "Unavailable" : money(after, fromCurrency(a))}
+            </dd>
           </div>
         )}
       </dl>
@@ -190,6 +259,7 @@ export function V5Cards({
   onCancel,
   onAfford,
   onLock,
+  requireOtp = false,
   preview = false,
   composing = false,
   dispatch = () => {},
@@ -202,32 +272,46 @@ export function V5Cards({
   onCancel: () => void;
   onAfford: () => void;
   onLock: (locked: boolean) => void;
+  requireOtp?: boolean; // D-054
 }) {
   const h = state.handoff!;
   const [quotes, setQuotes] = useState<Record<string, Quote>>(h.data.quotes);
   const [locked, setLocked] = useState(false);
   const condition = h.draft.condition;
-  const conditionQuote = condition ? h.data.quotes[condition.ticker] : undefined;
+  const conditionQuote = condition
+    ? h.data.quotes[condition.ticker]
+    : undefined;
   const [settled, setSettled] = useState(false);
   const [completed, setCompleted] = useState(false);
   useEffect(() => {
     if (preview) return;
     const controller = new AbortController();
     const tickers = [
-      ...new Set([...h.draft.actions.flatMap((a) => (a.type === "stock_order" ? [a.ticker] : []))]),
+      ...new Set([
+        ...h.draft.actions.flatMap((a) =>
+          a.type === "stock_order" ? [a.ticker] : [],
+        ),
+      ]),
     ];
     async function refresh() {
       for (const ticker of tickers) {
         try {
-          const q = await request(`/quote?ticker=${encodeURIComponent(ticker)}`, quoteSchema, {
-            signal: controller.signal,
-          });
+          const q = await request(
+            `/quote?ticker=${encodeURIComponent(ticker)}`,
+            quoteSchema,
+            {
+              signal: controller.signal,
+            },
+          );
           if (
             !controller.signal.aborted &&
             q.ticker === ticker &&
-            (h.draft.actions.some(
-              (a) => a.type === "stock_order" && a.ticker === ticker && a.currency === q.currency,
-            ))
+            h.draft.actions.some(
+              (a) =>
+                a.type === "stock_order" &&
+                a.ticker === ticker &&
+                a.currency === q.currency,
+            )
           )
             setQuotes((prev) => ({ ...prev, [ticker]: q }));
         } catch {
@@ -236,7 +320,9 @@ export function V5Cards({
       }
     }
     void refresh();
-    const timer = tickers.length ? setInterval(() => void refresh(), 10000) : undefined;
+    const timer = tickers.length
+      ? setInterval(() => void refresh(), 10000)
+      : undefined;
     return () => {
       controller.abort();
       if (timer) clearInterval(timer);
@@ -256,9 +342,15 @@ export function V5Cards({
   const draft = { ...h.draft, actions: values.actions };
   const auditKey = JSON.stringify(draft);
   const [attempt, setAttempt] = useState(0);
-  const [auditResult, setAuditResult] = useState<{key: string; attempt: number; value: Validation} | null>(null);
-  const validation: Validation = auditResult?.key === auditKey && auditResult.attempt === attempt
-    ? auditResult.value : {status: "pending", message: "Checking your request..."};
+  const [auditResult, setAuditResult] = useState<{
+    key: string;
+    attempt: number;
+    value: Validation;
+  } | null>(null);
+  const validation: Validation =
+    auditResult?.key === auditKey && auditResult.attempt === attempt
+      ? auditResult.value
+      : { status: "pending", message: "Checking your request..." };
   useEffect(() => {
     if (preview) return;
     const controller = new AbortController();
@@ -266,21 +358,37 @@ export function V5Cards({
       try {
         let result: Validation;
         do {
-          result = await post("/validate", validationSchema, {draft: JSON.parse(auditKey)}, controller.signal);
-          if (result.status === "pending") await new Promise(resolve => setTimeout(resolve, 500));
+          result = await post(
+            "/validate",
+            validationSchema,
+            { draft: JSON.parse(auditKey) },
+            controller.signal,
+          );
+          if (result.status === "pending")
+            await new Promise((resolve) => setTimeout(resolve, 500));
         } while (result.status === "pending" && !controller.signal.aborted);
-        if (!controller.signal.aborted) setAuditResult({key: auditKey, attempt, value: result});
+        if (!controller.signal.aborted)
+          setAuditResult({ key: auditKey, attempt, value: result });
       } catch {
-        if (!controller.signal.aborted) setAuditResult({key: auditKey, attempt, value: {
-          status: "unavailable", message: "Checking is unavailable. Retry before confirming.",
-        }});
+        if (!controller.signal.aborted)
+          setAuditResult({
+            key: auditKey,
+            attempt,
+            value: {
+              status: "unavailable",
+              message: "Checking is unavailable. Retry before confirming.",
+            },
+          });
       }
     }
     void check();
     return () => controller.abort();
   }, [auditKey, preview, attempt]);
   const issues = "fields" in validation ? validation.fields : [];
-  const fieldsFor = (index: number) => issues.filter(f => f.field.startsWith(`actions[${index}].`)).map(f => f.field.split(".")[1]);
+  const fieldsFor = (index: number) =>
+    issues
+      .filter((f) => f.field.startsWith(`actions[${index}].`))
+      .map((f) => f.field.split(".")[1]);
   const root = composition.spec.elements[composition.spec.root];
   function render(id: string): ReactNode {
     const node = composition.nodes.find((n) => n.id === id)!;
@@ -292,7 +400,11 @@ export function V5Cards({
       case "TaskGroup":
       case "DecisionGroup":
         return (
-          <section key={id} className={`v5-tree-group v5-group-${component}`} data-component={component}>
+          <section
+            key={id}
+            className={`v5-tree-group v5-group-${component}`}
+            data-component={component}
+          >
             {Object.values(element.slots ?? {})
               .flat()
               .map(render)}
@@ -308,7 +420,9 @@ export function V5Cards({
             compact={variant === "compact"}
             flow={variant === "flow"}
             quote={a.type === "stock_order" ? quotes[a.ticker] : undefined}
-            after={rows.find((r) => r.account_id === a.from_account_id)?.projected}
+            after={
+              rows.find((r) => r.account_id === a.from_account_id)?.projected
+            }
           />
         );
         break;
@@ -347,7 +461,9 @@ export function V5Cards({
       <section
         key={id}
         className={component === "TaskEditor" ? "" : "v5-tree-support"}
-        aria-label={component === "BalanceProjection" ? "Balance projection" : undefined}
+        aria-label={
+          component === "BalanceProjection" ? "Balance projection" : undefined
+        }
         data-component={component}
         data-variant={variant}
       >
@@ -357,44 +473,112 @@ export function V5Cards({
   }
   return (
     <div className="v5-card-content" data-source={composition.source}>
-      {condition && !completed && <section className="v5-tree-support" aria-label="Transfer condition">
-        <p className="v5-caption">Only if</p>
-        <h2>{condition.ticker} {{lt: "is below", lte: "is at most", gt: "is above", gte: "is at least", eq: "equals", ne: "does not equal"}[condition.operator]} {money(condition.threshold, condition.currency)}</h2>
-        <p role="status">Condition met when prepared</p>
-        {conditionQuote && <p className="v5-caption">{money(conditionQuote.price, conditionQuote.currency)} · {new Date(conditionQuote.as_of).toLocaleString("en-SG")}</p>}
-      </section>}
+      {condition && !completed && (
+        <section className="v5-tree-support" aria-label="Transfer condition">
+          <p className="v5-caption">Only if</p>
+          <h2>
+            {condition.ticker}{" "}
+            {
+              {
+                lt: "is below",
+                lte: "is at most",
+                gt: "is above",
+                gte: "is at least",
+                eq: "equals",
+                ne: "does not equal",
+              }[condition.operator]
+            }{" "}
+            {money(condition.threshold, condition.currency)}
+          </h2>
+          <p role="status">Condition met when prepared</p>
+          {conditionQuote && (
+            <p className="v5-caption">
+              {money(conditionQuote.price, conditionQuote.currency)} ·{" "}
+              {new Date(conditionQuote.as_of).toLocaleString("en-SG")}
+            </p>
+          )}
+        </section>
+      )}
       {composing && (
         <p className="v5-caption" role="status">
           Preparing your view...
         </p>
       )}
-      <div className={`v5-tree v5-tree-${composition.layout}`} hidden={completed}>
-        {[...(root.slots?.primary ?? []), ...(root.slots?.tasks ?? []), ...(root.slots?.context ?? [])].map(
-          render,
-        )}
+      <div
+        className={`v5-tree v5-tree-${composition.layout}`}
+        hidden={completed}
+      >
+        {[
+          ...(root.slots?.primary ?? []),
+          ...(root.slots?.tasks ?? []),
+          ...(root.slots?.context ?? []),
+        ].map(render)}
       </div>
       {!projection &&
         rows.some(
-          (r) => (r.remaining !== null && r.remaining < 0n) || (r.afterBills !== null && r.afterBills < 0n),
-        ) && <p className="v5-warning">Your balance may not cover this and upcoming bills.</p>}
+          (r) =>
+            (r.remaining !== null && r.remaining < 0n) ||
+            (r.afterBills !== null && r.afterBills < 0n),
+        ) && (
+          <p className="v5-warning">
+            Your balance may not cover this and upcoming bills.
+          </p>
+        )}
       {!projection && !settled && (
-        <button className="v5-afford-link" disabled={locked || composing} onClick={onAfford}>
+        <button
+          className="v5-afford-link"
+          disabled={locked || composing}
+          onClick={onAfford}
+        >
           Can I afford it? <ArrowUpRight size={14} />
         </button>
       )}
-      {!preview && <div className="v5-validation" role={issues.length ? "alert" : "status"}>
-        {validation.status === "match" ? <p className="v5-caption">Request checked</p>
-          : "message" in validation ? <p>{validation.message}</p>
-          : <><p className="v5-warning">Check these details to continue.</p>
-            {issues.map((f, i) => <p className="v5-field-error" key={i}>
-              <strong>{f.field.replace(/^actions\[(\d+)\]\./, (_, n) => `Task ${Number(n) + 1}: `).replaceAll("_", " ")}</strong>: {f.note}
-              {f.transcript_says && <span> Expected: {f.transcript_says}</span>}
-            </p>)}
-            <button className="v5-secondary" onClick={onCancel}>Correct request</button></>}
-        {validation.status === "unavailable" && <button className="v5-secondary" onClick={() => setAttempt(n => n + 1)}>Retry check</button>}
-      </div>}
+      {!preview && (
+        <div
+          className="v5-validation"
+          role={issues.length ? "alert" : "status"}
+        >
+          {validation.status === "match" ? (
+            <p className="v5-caption">Request checked</p>
+          ) : "message" in validation ? (
+            <p>{validation.message}</p>
+          ) : (
+            <>
+              <p className="v5-warning">Check these details to continue.</p>
+              {issues.map((f, i) => (
+                <p className="v5-field-error" key={i}>
+                  <strong>
+                    {f.field
+                      .replace(
+                        /^actions\[(\d+)\]\./,
+                        (_, n) => `Task ${Number(n) + 1}: `,
+                      )
+                      .replaceAll("_", " ")}
+                  </strong>
+                  : {f.note}
+                  {f.transcript_says && (
+                    <span> Expected: {f.transcript_says}</span>
+                  )}
+                </p>
+              ))}
+              <button className="v5-secondary" onClick={onCancel}>
+                Correct request
+              </button>
+            </>
+          )}
+          {validation.status === "unavailable" && (
+            <button
+              className="v5-secondary"
+              onClick={() => setAttempt((n) => n + 1)}
+            >
+              Retry check
+            </button>
+          )}
+        </div>
+      )}
       <V5Payment
         key={auditKey}
+        requireOtp={requireOtp}
         validation={validation}
         preview={preview || composing || Object.keys(values.errors).length > 0}
         draft={draft}
@@ -422,18 +606,39 @@ const answerTitles: Record<Answer["kind"], string> = {
   payees: "Your recipients",
   help: "What I can do",
 };
-const day = (iso: string) => new Date(iso).toLocaleDateString("en-SG", { timeZone: "Asia/Singapore", day: "numeric", month: "short" });
+const day = (iso: string) =>
+  new Date(iso).toLocaleDateString("en-SG", {
+    timeZone: "Asia/Singapore",
+    day: "numeric",
+    month: "short",
+  });
 
 /** A read-only answer (CONTRACTS §3.1 answers): facts only, nothing to confirm or sign. */
-export function V5Answer({ answer: a, onDone, presentation = fallbackAnswerPresentation }: {
-  answer: Answer; onDone: () => void; presentation?: AnswerPresentation;
+export function V5Answer({
+  answer: a,
+  onDone,
+  presentation = fallbackAnswerPresentation,
+}: {
+  answer: Answer;
+  onDone: () => void;
+  presentation?: AnswerPresentation;
 }) {
   const timeline = a.kind === "bills" && presentation.variant === "timeline";
-  const cards = ["balance", "holdings", "quote", "payees"].includes(a.kind) && presentation.variant === "cards";
+  const cards =
+    ["balance", "holdings", "quote", "payees"].includes(a.kind) &&
+    presentation.variant === "cards";
   const totals = new Map<string, bigint>();
   if (presentation.summary && (a.kind === "balance" || a.kind === "holdings")) {
-    const values = a.kind === "balance" ? a.accounts.map(x => ({currency: x.currency, value: x.balance})) : a.holdings;
-    values.forEach(x => totals.set(x.currency, (totals.get(x.currency) ?? 0n) + BigInt(x.value.replace(".", ""))));
+    const values =
+      a.kind === "balance"
+        ? a.accounts.map((x) => ({ currency: x.currency, value: x.balance }))
+        : a.holdings;
+    values.forEach((x) =>
+      totals.set(
+        x.currency,
+        (totals.get(x.currency) ?? 0n) + BigInt(x.value.replace(".", "")),
+      ),
+    );
   }
   const rows: [string, string][] =
     a.kind === "balance"
@@ -444,7 +649,12 @@ export function V5Answer({ answer: a, onDone, presentation = fallbackAnswerPrese
             `${t.direction === "credit" ? "+" : "−"}${money(t.amount, t.currency)}`,
           ])
         : a.kind === "bills"
-          ? (timeline ? [...a.bills].sort((x, y) => Date.parse(x.due_at) - Date.parse(y.due_at)) : a.bills).map((b) => [
+          ? (timeline
+              ? [...a.bills].sort(
+                  (x, y) => Date.parse(x.due_at) - Date.parse(y.due_at),
+                )
+              : a.bills
+            ).map((b) => [
               `${activityLabel(label(b.label))} · ${b.recurrence ? `${b.recurrence}, next ` : ""}due ${day(b.due_at)}`,
               money(b.amount, b.currency),
             ])
@@ -454,37 +664,64 @@ export function V5Answer({ answer: a, onDone, presentation = fallbackAnswerPrese
                 `${money(h.value, h.currency)} est.`,
               ])
             : a.kind === "quote"
-              ? a.quotes.map((q) => [`${q.ticker} · ${q.company_name}`, money(q.price, q.currency)])
+              ? a.quotes.map((q) => [
+                  `${q.ticker} · ${q.company_name}`,
+                  money(q.price, q.currency),
+                ])
               : a.kind === "fx_rate"
                 ? [[`1 ${a.rate.from}`, `${a.rate.rate} ${a.rate.to}`]]
                 : a.kind === "payees"
                   ? a.payees.map((p) => [p.name, label(p.label)])
                   : [];
   return (
-    <section className="v5-task v5-answer" data-source={presentation.source} data-variant={timeline ? "timeline" : cards ? "cards" : "list"} aria-label={answerTitles[a.kind]}>
+    <section
+      className="v5-task v5-answer"
+      data-source={presentation.source}
+      data-variant={timeline ? "timeline" : cards ? "cards" : "list"}
+      aria-label={answerTitles[a.kind]}
+    >
       <div className="v5-task-title">
         <span>{answerTitles[a.kind]}</span>
       </div>
-      {[...totals].map(([currency, amount]) => <p className="v5-enquiry-number" key={currency}>
-        {money(`${amount / 100n}.${(amount % 100n).toString().padStart(2, "0")}`, currency)}
-      </p>)}
+      {[...totals].map(([currency, amount]) => (
+        <p className="v5-enquiry-number" key={currency}>
+          {money(
+            `${amount / 100n}.${(amount % 100n).toString().padStart(2, "0")}`,
+            currency,
+          )}
+        </p>
+      ))}
       {a.kind === "help" ? (
         <p>{a.message}</p>
       ) : rows.length ? (
         <>
           <div className={cards ? "v5-tree v5-tree-split" : ""}>
-            {rows.slice(0, presentation.detail === "compact" ? 5 : undefined).map(([name, value], i) => (
-              <div key={i} className={`v5-enquiry-row${timeline ? " v5-timeline-stop" : ""}${cards ? " v5-tree-support" : ""}`}>
-                <span>{name}</span><strong>{value}</strong>
-              </div>
-            ))}
+            {rows
+              .slice(0, presentation.detail === "compact" ? 5 : undefined)
+              .map(([name, value], i) => (
+                <div
+                  key={i}
+                  className={`v5-enquiry-row${timeline ? " v5-timeline-stop" : ""}${cards ? " v5-tree-support" : ""}`}
+                >
+                  <span>{name}</span>
+                  <strong>{value}</strong>
+                </div>
+              ))}
           </div>
-          {presentation.detail === "compact" && rows.length > 5 && <details>
-            <summary>Show all ({rows.length})</summary>
-            {rows.slice(5).map(([name, value], i) => <div key={i} className={`v5-enquiry-row${timeline ? " v5-timeline-stop" : ""}`}>
-              <span>{name}</span><strong>{value}</strong>
-            </div>)}
-          </details>}
+          {presentation.detail === "compact" && rows.length > 5 && (
+            <details>
+              <summary>Show all ({rows.length})</summary>
+              {rows.slice(5).map(([name, value], i) => (
+                <div
+                  key={i}
+                  className={`v5-enquiry-row${timeline ? " v5-timeline-stop" : ""}`}
+                >
+                  <span>{name}</span>
+                  <strong>{value}</strong>
+                </div>
+              ))}
+            </details>
+          )}
         </>
       ) : (
         <p>No results found.</p>
@@ -499,42 +736,134 @@ export function V5Answer({ answer: a, onDone, presentation = fallbackAnswerPrese
   );
 }
 
-
-export function V5Plan({plan, view, onDone}: {plan: RequestPlan; view: PlanView; onDone: () => void}) {
+export function V5Plan({
+  plan,
+  view,
+  onDone,
+}: {
+  plan: RequestPlan;
+  view: PlanView;
+  onDone: () => void;
+}) {
   let checked: PlanView;
-  try { checked = acceptPlanView(view, plan.actions.length, !!plan.condition.quote); }
-  catch { checked = fallbackPlanView(plan.actions.length, !!plan.condition.quote); }
+  try {
+    checked = acceptPlanView(view, plan.actions.length, !!plan.condition.quote);
+  } catch {
+    checked = fallbackPlanView(plan.actions.length, !!plan.condition.quote);
+  }
   const c = plan.condition;
-  const status = {met: "Met at quoted price", not_met: "Not met at quoted price", stale: "Quote needs updating", unknown: "Not evaluated"}[c.state];
-  const comparison = c.operator ? {lt: "below", lte: "at or below", gt: "above", gte: "at or above", eq: "equal to", ne: "not equal to"}[c.operator] : "";
-  return <div className={`v5-plan is-${checked.layout}`} aria-label="Conditional request">
-    <header className="v5-plan-heading"><p className="v5-card-label">Your conditional request</p>
-      <h2>First this. Then that.</h2></header>
-    {checked.nodes.map(n => {
-      const key = `${n.component}:${n.binding}`;
-      if (n.component === "Condition") return <section className={`v5-condition is-${n.variant}`} key={key} aria-label="Condition">
-        <span className="v5-card-label">{c.operator ? "Only if" : "Condition"}</span>
-        <h3>{c.ticker && c.threshold && c.currency ? <>{c.ticker} is {comparison} <strong>{money(c.threshold, c.currency)}</strong></> : c.text}</h3>
-        <span className="v5-condition-state" data-state={c.state}>{status}</span>
-        {c.quote && c.currency && c.quote.currency !== c.currency && <p>The quote and threshold use different currencies.</p>}
-      </section>;
-      if (n.component === "QuoteMetric" && c.quote) return <section className={`v5-quote-metric is-${n.variant}`} key={key} aria-label="Quoted stock price">
-        <span>{c.quote.ticker} <small>quoted price</small></span><strong>{money(c.quote.price, c.quote.currency)}</strong>
-        <time dateTime={c.quote.as_of}>{new Date(c.quote.as_of).toLocaleString("en-SG", {dateStyle: "medium", timeStyle: "short"})}</time>
-      </section>;
-      if (n.component === "Relationship") return <div className="v5-plan-connector" key={key}>
-        <span aria-hidden="true">↓</span><span>{!c.operator ? "Then" : "Then, if met"}</span>
-      </div>;
-      if (n.component === "PlannedAction") return <div className="v5-planned-action" key={key}>
-        <Task action={plan.actions[Number(n.binding)]} compact={n.variant === "compact"} />
-      </div>;
-      if (n.component === "AvailabilityNotice") return <section className="v5-plan-availability" key={key} role="status">
-        <p>{plan.limitation}</p>
-        {plan.unresolved.length > 0 && <ul>{plan.unresolved.map((u, i) => <li key={i}>{u}</li>)}</ul>}
-      </section>;
-      return null;
-    })}
-    <details className="v5-plan-original"><summary>Original request</summary><p>{plan.request}</p></details>
-    <button className="v4-button secondary" onClick={onDone}>New request</button>
-  </div>;
+  const status = {
+    met: "Met at quoted price",
+    not_met: "Not met at quoted price",
+    stale: "Quote needs updating",
+    unknown: "Not evaluated",
+  }[c.state];
+  const comparison = c.operator
+    ? {
+        lt: "below",
+        lte: "at or below",
+        gt: "above",
+        gte: "at or above",
+        eq: "equal to",
+        ne: "not equal to",
+      }[c.operator]
+    : "";
+  return (
+    <div
+      className={`v5-plan is-${checked.layout}`}
+      aria-label="Conditional request"
+    >
+      <header className="v5-plan-heading">
+        <p className="v5-card-label">Your conditional request</p>
+        <h2>First this. Then that.</h2>
+      </header>
+      {checked.nodes.map((n) => {
+        const key = `${n.component}:${n.binding}`;
+        if (n.component === "Condition")
+          return (
+            <section
+              className={`v5-condition is-${n.variant}`}
+              key={key}
+              aria-label="Condition"
+            >
+              <span className="v5-card-label">
+                {c.operator ? "Only if" : "Condition"}
+              </span>
+              <h3>
+                {c.ticker && c.threshold && c.currency ? (
+                  <>
+                    {c.ticker} is {comparison}{" "}
+                    <strong>{money(c.threshold, c.currency)}</strong>
+                  </>
+                ) : (
+                  c.text
+                )}
+              </h3>
+              <span className="v5-condition-state" data-state={c.state}>
+                {status}
+              </span>
+              {c.quote && c.currency && c.quote.currency !== c.currency && (
+                <p>The quote and threshold use different currencies.</p>
+              )}
+            </section>
+          );
+        if (n.component === "QuoteMetric" && c.quote)
+          return (
+            <section
+              className={`v5-quote-metric is-${n.variant}`}
+              key={key}
+              aria-label="Quoted stock price"
+            >
+              <span>
+                {c.quote.ticker} <small>quoted price</small>
+              </span>
+              <strong>{money(c.quote.price, c.quote.currency)}</strong>
+              <time dateTime={c.quote.as_of}>
+                {new Date(c.quote.as_of).toLocaleString("en-SG", {
+                  dateStyle: "medium",
+                  timeStyle: "short",
+                })}
+              </time>
+            </section>
+          );
+        if (n.component === "Relationship")
+          return (
+            <div className="v5-plan-connector" key={key}>
+              <span aria-hidden="true">↓</span>
+              <span>{!c.operator ? "Then" : "Then, if met"}</span>
+            </div>
+          );
+        if (n.component === "PlannedAction")
+          return (
+            <div className="v5-planned-action" key={key}>
+              <Task
+                action={plan.actions[Number(n.binding)]}
+                compact={n.variant === "compact"}
+              />
+            </div>
+          );
+        if (n.component === "AvailabilityNotice")
+          return (
+            <section className="v5-plan-availability" key={key} role="status">
+              <p>{plan.limitation}</p>
+              {plan.unresolved.length > 0 && (
+                <ul>
+                  {plan.unresolved.map((u, i) => (
+                    <li key={i}>{u}</li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          );
+        return null;
+      })}
+      <details className="v5-plan-original">
+        <summary>Original request</summary>
+        <p>{plan.request}</p>
+      </details>
+      <button className="v4-button secondary" onClick={onDone}>
+        New request
+      </button>
+    </div>
+  );
 }

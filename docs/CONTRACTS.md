@@ -126,9 +126,12 @@ Response:
 - One Jev call on the text with numbers swapped for stand-ins (D-026), no rewrites, cached by normalised text per browser (§14). It names the main action only; a multi-action command shows all its actions in the draft.
 
 **`POST /api/transcribe`**: speech to text.
-Request: multipart form, field `audio` (format agreed in D-006).
-Response: `{"transcript": "send fifty to john", "confidence": 0.93}` (`confidence` may be `null`).
+Request: multipart form, field `audio` (16 kHz mono 16-bit PCM WAV, D-006), optional field `user_id` (default `u_demo`, must match `u_…`). The `user_id` supplies hotwords from that user's bank data to improve recognition accuracy.
+Response: `{"transcript": "send fifty to john", "confidence": null, "speaker": {"status": "verified", "score": 0.78}}`. The international-site Tencent ASR API does not return a confidence score, so `confidence` is always `null`. `speaker` (D-054) is the voice check run on the same clip before transcription: `status` is `enrolled` (the first speaker after a reset now owns this user's voice), `verified`, `unsure` (the voice is between the two thresholds: the command proceeds, the UI shows "Voice not confirmed", and execution needs the one-time code), `rejected` (the transcript is `""`; nothing was transcribed) or `unavailable` (the model could not run; the transcript is still produced); `score` is the cosine similarity to the enrolled voice, or `null` when nothing was compared.
 Typed input skips this endpoint and goes straight to `/api/understand`.
+
+**`POST /api/voiceprint/enrol`**: adds one recording to the user's voiceprint (D-054).
+Request: multipart form, field `audio` (same WAV as above), optional `user_id`. The clip is folded into the enrolled mean whatever it scores, so enrolment hears the same microphone path as live commands. Response: `{"clips": 3}`, the recordings now in the voiceprint. Open on the demo like device registration (`VOICEPRINT_ENROLMENT_OPEN`); 404 when closed. Audit: `speaker_checked` with reason `enrolled` and `count` = clips.
 
 **`POST /api/understand`**: turns text into a question or a draft. Called again with the user's answer.
 
@@ -279,13 +282,13 @@ Request: `{"user_id": "u_demo", "public_key_jwk": { /* EC P-256 public JWK */ }}
 Response: `{"status": "registered"}`
 
 **`POST /api/challenge`**: issues a one-time nonce for a validated draft.
-Request: `{"draft": { /* §2 */ }, "receipt": "vr_3f9a…"}`
+Request: `{"draft": { /* §2 */ }, "receipt": "vr_3f9a…", "require_otp": false}`
 Response:
 ```json
 {"nonce": "n_7d21…", "signing_payload": "<canonical draft JSON>.n_7d21…",
  "expires_at": "2026-10-12T09:35:00+08:00"}
 ```
-The bank stores the draft against the nonce. Nonces expire after 5 minutes and work once.
+The bank stores the draft against the nonce. Nonces expire after 5 minutes and work once. `require_otp` (optional, default false; D-054) lets the client add the one-time-code step: the UI sets it when the voice check came back `unsure`. `/api/execute` then answers `needs_extra_check` until the request carries the correct `otp` (the demo code is `config.DEMO_OTP`, D-007); a wrong code answers `needs_extra_check` again, and too many wrong codes lock the nonce with `rejected` / `bad_otp`. A client can only add this step, never remove the bank's own risk step-up.
 
 **`POST /api/execute`**: the only way money moves.
 Request: `{"nonce": "n_7d21…", "signature": "<base64url>", "otp": null}`
@@ -395,8 +398,10 @@ The audit chain (`app/audit.py`) accepts only a flat allowlist of non-sensitive 
 | `answer_given` (*v0.6, proposed*) | `reason` (the kind) |
 | `blocked` | `reason` |
 | `cancelled` | `reason` |
+| `speaker_checked` | `reason` (`enrolled`, `match`, `unsure`, `mismatch` or `unavailable`); on `mismatch` it is the only event for that request (D-054) |
+| `transcribed` | `reason` (`ok` or `empty`), `count` (words) |
 
-`transcribed` waits for live ASR (W-09). Jev's answers per question are in the evidence store, as the stand-in text Jev saw, never the transcript (D-026). Jayanth adds `fx_converted` (actor `bank`) with `draft_id`, `sell_amount`, `sell_currency`, `buy_amount`, `buy_currency`, `rate`.
+Jev's answers per question are in the evidence store, as the stand-in text Jev saw, never the transcript (D-026). Jayanth adds `fx_converted` (actor `bank`) with `draft_id`, `sell_amount`, `sell_currency`, `buy_amount`, `buy_currency`, `rate`.
 
 ## 9. Timing
 
@@ -739,3 +744,13 @@ device registrations remain intact. Evidence format 2 requires the explicit oper
 in README for previous stores. Payload/draft digests verify against retained rotation keys;
 idempotent bank commits retain stable event IDs. Another process may append a verified extension
 of the remembered audit head; truncation or replacement of that prefix fails closed.
+
+
+### Integration note: independent validation evidence (16 October 2026)
+
+The public validation response and receipt formats remain unchanged. Internally each model
+check must cite its assigned masked instruction source and include source_ref, start, end
+and basis. The backend verifies complete field coverage and independently compares monetary
+values against captured evidence. Conditional drafts and unsupported instruction/correction
+scope return uncertain without a receipt, even if the intent engine can construct a draft.
+The model sees tokenised identities; captured balances and bill amounts remain server-side.

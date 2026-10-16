@@ -26,7 +26,7 @@ from app.audit import AuditError
 from app.audit_http import AuditMiddleware
 from app.audit_http import router as audit_router
 from app.bank.router import router as bank_router
-from app.intent import jev
+from app.intent import asr, jev, voiceprint
 from app.intent.router import router as intent_router
 from app.validation.router import router as validation_router
 from web import presentation_v4
@@ -39,6 +39,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     await jev.open_connection()
     await presentation_v4.open_connection()
     await llm.open_connection()
+    if config.ASR_PROVIDER != "tencent":
+        await asyncio.to_thread(asr.preload)  # MERaLiON weights take a while (D-053)
+    if config.VOICEPRINT_ENABLED:
+        try:
+            await asyncio.to_thread(voiceprint.preload)  # 26 MB download on first start (D-054)
+        except Exception:
+            logging.getLogger(__name__).warning("Speaker model unavailable; voice checks fail open")
 
     async def retention():
         while True:

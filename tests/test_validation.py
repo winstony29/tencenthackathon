@@ -1822,7 +1822,10 @@ def test_intent_picks_are_not_independent_validator_evidence(draft, monkeypatch)
 @pytest.mark.parametrize(
     "failure", [None, "length", "refusal", "malformed", "rate_limit", "timeout"]
 )
-def test_openai_validator_uses_strict_output_and_fails_closed(monkeypatch, failure):
+@pytest.mark.parametrize("use_evidence_schema", [False, True])
+def test_openai_validator_uses_strict_output_and_fails_closed(
+    monkeypatch, failure, use_evidence_schema
+):
     import httpx
 
     from app import llm
@@ -1833,6 +1836,9 @@ def test_openai_validator_uses_strict_output_and_fails_closed(monkeypatch, failu
     monkeypatch.setattr(config, "LLM_API_KEY", "test-only-key")
     monkeypatch.setattr(config, "REWRITER_MODEL", "different-model")
     calls = []
+    payload = {"required_fields": ["actions"]}
+    if use_evidence_schema:
+        payload["response_schema"] = validator.Report.model_json_schema()
     expected = {"checks": [{"field": "actions", "verdict": "match", "expected": "1", "note": ""}]}
 
     def respond(request):
@@ -1840,7 +1846,9 @@ def test_openai_validator_uses_strict_output_and_fails_closed(monkeypatch, failu
         body = json.loads(request.content)
         assert str(request.url) == "https://api.openai.com/v1/chat/completions"
         assert body["response_format"]["json_schema"]["strict"] is True
-        assert body["response_format"]["json_schema"]["schema"] == llm.AUDIT_SCHEMA
+        assert body["response_format"]["json_schema"]["schema"] == payload.get(
+            "response_schema", llm.AUDIT_SCHEMA
+        )
         assert body["store"] is False and body["max_completion_tokens"] == 4096
         assert body["temperature"] == 0
         assert "tools" not in body
@@ -1868,14 +1876,11 @@ def test_openai_validator_uses_strict_output_and_fails_closed(monkeypatch, failu
             monkeypatch.setattr(llm, "_client", client)
             if failure:
                 with pytest.raises((llm.Unavailable, httpx.HTTPError, ValueError)):
-                    await llm.audit("Independent checks", {"required_fields": ["actions"]})
+                    await llm.audit("Independent checks", payload)
                 assert len(calls) == 1  # no hidden retry or CLI fallback
             else:
                 for _ in range(2):
-                    assert (
-                        await llm.audit("Independent checks", {"required_fields": ["actions"]})
-                        == expected
-                    )
+                    assert await llm.audit("Independent checks", payload) == expected
                 assert len(calls) == 2 and llm._client is client
 
     asyncio.run(run())

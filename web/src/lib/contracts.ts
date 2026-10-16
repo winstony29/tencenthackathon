@@ -78,8 +78,10 @@ export const objectiveSchema = z.enum([
 ]);
 // Reject unknown draft fields rather than silently dropping part of a transaction.
 export const quoteConditionSchema = z.strictObject({
-  ticker: z.string().min(1).max(16), operator: z.enum(["lt", "lte", "gt", "gte", "eq", "ne"]),
-  threshold: money, currency,
+  ticker: z.string().min(1).max(16),
+  operator: z.enum(["lt", "lte", "gt", "gte", "eq", "ne"]),
+  threshold: money,
+  currency,
 });
 export const draftSchema = z.strictObject({
   condition: quoteConditionSchema.optional(),
@@ -92,29 +94,43 @@ export const draftSchema = z.strictObject({
   evidence: z.array(evidence),
 });
 export const presentationIntentSchema = z.strictObject({
-  request: z.string().max(2000), conversation: z.array(z.string()).max(20),
-  tasks: z.array(z.string()).max(4), constraints: z.array(z.string()).max(8),
+  request: z.string().max(2000),
+  conversation: z.array(z.string()).max(20),
+  tasks: z.array(z.string()).max(4),
+  constraints: z.array(z.string()).max(8),
   coverage: z.enum(["complete", "partial"]).default("complete"),
   gaps: z.array(z.string()).max(8).default([]),
 });
 export const requestPlanSchema = z.strictObject({
   request: z.string().max(500),
   condition: z.strictObject({
-    text: z.string().max(500), ticker: z.string().nullable(),
+    text: z.string().max(500),
+    ticker: z.string().nullable(),
     operator: z.enum(["lt", "lte", "gt", "gte", "eq", "ne"]).nullable(),
-    threshold: money.nullable(), currency: currency.nullable(),
-    quote: z.strictObject({ticker: z.string(), company_name: z.string(), price: money,
-      currency, as_of: z.iso.datetime({offset: true})}).nullable(),
+    threshold: money.nullable(),
+    currency: currency.nullable(),
+    quote: z
+      .strictObject({
+        ticker: z.string(),
+        company_name: z.string(),
+        price: money,
+        currency,
+        as_of: z.iso.datetime({ offset: true }),
+      })
+      .nullable(),
     state: z.enum(["met", "not_met", "stale", "unknown"]),
   }),
-  actions: z.array(actionSchema).max(4), timing: z.enum(["now", "watch", "unspecified"]),
-  unresolved: z.array(z.string()).max(8), executable: z.literal(false),
-  limitation: z.string(), intent: presentationIntentSchema,
+  actions: z.array(actionSchema).max(4),
+  timing: z.enum(["now", "watch", "unspecified"]),
+  unresolved: z.array(z.string()).max(8),
+  executable: z.literal(false),
+  limitation: z.string(),
+  intent: presentationIntentSchema,
 });
 export type RequestPlan = z.infer<typeof requestPlanSchema>;
 
 export const understandSchema = z.discriminatedUnion("status", [
-  z.strictObject({status: z.literal("plan"), plan: requestPlanSchema, meta: metaSchema}),
+  z.strictObject({ status: z.literal("plan"), plan: requestPlanSchema, meta: metaSchema }),
   z.strictObject({
     status: z.literal("draft"),
     presentation: presentationIntentSchema.nullable().optional(),
@@ -159,9 +175,16 @@ export const previewSchema = z.strictObject({
   }),
   meta: metaSchema,
 });
+// D-054: the voice check run on the clip before transcription; on "rejected" the transcript is "".
+export const speakerSchema = z.strictObject({
+  status: z.enum(["enrolled", "verified", "unsure", "rejected", "unavailable"]),
+  score: z.number().min(-1).max(1).nullable(),
+});
+export const voiceEnrolSchema = z.strictObject({ clips: z.number().int().min(1) });
 export const transcribeSchema = z.strictObject({
   transcript: z.string(),
   confidence: probability.nullable(),
+  speaker: speakerSchema,
 });
 export const accountsSchema = z.strictObject({
   accounts: z.array(
@@ -180,14 +203,19 @@ export const quoteSchema = z.strictObject({
   currency,
   as_of: z.iso.datetime({ offset: true }),
 });
-const validationFields = z.array(z.strictObject({
-  field: z.string(), draft_value: z.string(), transcript_says: z.string(), note: z.string(),
-}));
+const validationFields = z.array(
+  z.strictObject({
+    field: z.string(),
+    draft_value: z.string(),
+    transcript_says: z.string(),
+    note: z.string(),
+  }),
+);
 export const validationSchema = z.discriminatedUnion("status", [
-  z.strictObject({status: z.literal("match"), receipt: z.string().min(1)}),
-  z.strictObject({status: z.literal("mismatch"), fields: validationFields}),
-  z.strictObject({status: z.literal("uncertain"), fields: validationFields}),
-  z.strictObject({status: z.enum(["pending", "unavailable", "stale"]), message: z.string()}),
+  z.strictObject({ status: z.literal("match"), receipt: z.string().min(1) }),
+  z.strictObject({ status: z.literal("mismatch"), fields: validationFields }),
+  z.strictObject({ status: z.literal("uncertain"), fields: validationFields }),
+  z.strictObject({ status: z.enum(["pending", "unavailable", "stale"]), message: z.string() }),
 ]);
 
 export type Action = z.infer<typeof actionSchema>;
@@ -199,7 +227,11 @@ export type Quote = z.infer<typeof quoteSchema>;
 export type Validation = z.infer<typeof validationSchema>;
 export type Answer = z.infer<typeof answerSchema>;
 
-const answer = { status: z.literal("answer"), meta: metaSchema, presentation: presentationIntentSchema.nullable().optional() };
+const answer = {
+  status: z.literal("answer"),
+  meta: metaSchema,
+  presentation: presentationIntentSchema.nullable().optional(),
+};
 const time = z.iso.datetime({ offset: true });
 // CONTRACTS §3.1 answers (v0.6, proposed): read-only replies; nothing here can be signed.
 export const answerSchema = z.discriminatedUnion("kind", [

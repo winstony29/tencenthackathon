@@ -5,6 +5,7 @@ Diagram box: Speech to text, Confidence gate, Draft builder (Intent detection co
 Contract: docs/CONTRACTS.md §3.1
 """
 
+import asyncio
 import re
 import secrets
 import time
@@ -13,7 +14,7 @@ from dataclasses import replace
 from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, UploadFile
+from fastapi import APIRouter, Form, HTTPException, UploadFile
 
 from app import audit, config, evidence, transaction_state
 from app.bank import readonly
@@ -28,8 +29,9 @@ from app.contracts import (
     TranscribeResponse,
     UnderstandRequest,
     UnderstandResponse,
+    VoiceEnrolResponse,
 )
-from app.intent import draft, gate, jev, options, session, shield
+from app.intent import asr, draft, gate, jev, options, session, shield, voiceprint
 
 router = APIRouter(prefix="/api", tags=["intent"])
 
@@ -54,7 +56,6 @@ _STUB_PREVIEW = {
     },
     "meta": {**_STUB_META, "latency_ms": 210, "phrasings": 1},
 }
-_STUB_TRANSCRIPT = {"transcript": "send fifty to john", "confidence": 0.93}
 _STUB_QUESTION = {
     "status": "question",
     "question": {
@@ -192,10 +193,64 @@ async def preview(request: PreviewRequest) -> dict[str, Any]:
 
 
 @router.post("/transcribe", response_model=TranscribeResponse)
-async def transcribe(audio: UploadFile) -> dict[str, Any]:
-    """Turn recorded speech into text. Stub: always returns the CONTRACTS example."""
-    evidence.record("transcription_stub", {"output": _STUB_TRANSCRIPT, "audio_saved": False})
-    return _STUB_TRANSCRIPT
+async def transcribe(audio: UploadFile, user_id: str = Form("u_demo")) -> dict[str, Any]:
+    """Turn recorded speech into text via Tencent Cloud ASR (D-006, W-09).
+
+    Multipart form: field ``audio`` (16 kHz mono 16-bit PCM WAV), optional
+    ``user_id`` (default ``u_demo``). The clip is checked against the enrolled voice first
+    (D-054); a stranger's clip is never transcribed. Returns ``{"transcript", "confidence":
+    null, "speaker": {"status", "score"}}`` (CONTRACTS §3.1).
+    """
+    if not re.fullmatch(r"u_[A-Za-z0-9_-]{1,80}", user_id):
+        raise HTTPException(400, "Invalid user ID.")
+    data = await audio.read()
+    try:
+        asr.validate_wav(data)  # 400 before any model work
+        speaker = await voiceprint.check(user_id, data)
+        _event("speaker_checked", reason=_SPEAKER_REASON[speaker["status"]])
+        if speaker["status"] == "rejected":
+            return {"transcript": "", "confidence": None, "speaker": speaker}
+        result = await asr.transcribe(
+            user_id, data, {"speaker_status": speaker["status"], "speaker_score": speaker["score"]}
+        )
+    except asr.AsrError as error:
+        raise HTTPException(error.status, error.message) from error
+    _event(
+        "transcribed",
+        reason="ok" if result["transcript"] else "empty",
+        count=len(result["transcript"].split()),
+    )
+    return {**result, "speaker": speaker}
+
+
+@router.post("/voiceprint/enrol", response_model=VoiceEnrolResponse)
+async def enrol_voice(audio: UploadFile, user_id: str = Form("u_demo")) -> dict[str, Any]:
+    """Add one recording to the user's voiceprint through the browser's own microphone path
+    (D-054). Open on the demo like device registration; a real bank would authenticate first.
+    """
+    if not config.VOICEPRINT_ENROLMENT_OPEN:
+        raise HTTPException(404, "Not found.")
+    if not re.fullmatch(r"u_[A-Za-z0-9_-]{1,80}", user_id):
+        raise HTTPException(400, "Invalid user ID.")
+    data = await audio.read()
+    try:
+        asr.validate_wav(data)
+        clips = await asyncio.to_thread(voiceprint.add, user_id, data)
+    except asr.AsrError as error:
+        raise HTTPException(error.status, error.message) from error
+    except Exception as error:  # model missing or broken
+        raise HTTPException(502, "Voice enrolment isn't available right now.") from error
+    _event("speaker_checked", reason="enrolled", count=clips)
+    return {"clips": clips}
+
+
+_SPEAKER_REASON = {
+    "enrolled": "enrolled",
+    "verified": "match",
+    "unsure": "unsure",
+    "rejected": "mismatch",
+    "unavailable": "unavailable",
+}
 
 
 @router.post("/understand", response_model=UnderstandResponse)

@@ -970,3 +970,69 @@
 }
 
 .v5-planned-action > .v5-task.is-compact { padding: 0; border: 0; border-radius: 0; }
+
+/* Voice (D-006): the orb pulses with the microphone level while listening. */
+.v5-shell .v5-orb.is-listening {
+  box-shadow:
+    0 0 0 10px #e0213f33,
+    0 0 80px #e0213f50;
+}
+.v5-orb.is-listening .v5-orb-swirl {
+  animation-duration: 2s;
+}
+.v5-orb-area .v5-quiet {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #b0bbb3;
+  font: inherit;
+  font-size: 13px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.v5-notice {
+  margin: 0;
+  font-size: 13px;
+  color: #ffb3b3;
+}
+.v5-surface .v5-notice {
+  color: #a11a2e;
+  margin-bottom: 8px;
+}
+.v5-ask button.v5-mic {
+  background: #2a3230;
+  color: #eef2ee;
+}
+.v5-surface .v5-ask button.v5-mic {
+  background: #eef2ee;
+  color: #1b1f1d;
+}
+.v5-ask button.v5-mic[aria-pressed="true"] {
+  background: #c8102e;
+  color: #fff;
+}
+
+.v5-heard small {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  color: #b0bbb3;
+}
+
+.v5-requests .v5-enrol {
+  width: auto;
+  margin: -6px 0 16px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #b0bbb3;
+  font: inherit;
+  font-size: 13px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.v5-heard small.v5-unsure {
+  color: #ffb3b3;
+}

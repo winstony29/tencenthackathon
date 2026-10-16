@@ -81,6 +81,100 @@ def fake_jev(monkeypatch: pytest.MonkeyPatch) -> FakeJev:
     return fake
 
 
+@pytest.fixture(autouse=True)
+def _isolated_voiceprints(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test touches var/voiceprints.json or downloads the speaker model (D-054)."""
+    monkeypatch.setattr(config, "VOICEPRINT_ENABLED", False)
+    monkeypatch.setattr(config, "VOICEPRINT_PATH", str(tmp_path / "voiceprints.json"))
+
+
+class FakeVoice:
+    """Stands in for voiceprint._embed: returns scripted unit vectors, one per call."""
+
+    def __init__(self) -> None:
+        self.vectors: list[list[float]] = []
+        self.error: Exception | None = None
+        self.delay = 0.0
+        self.calls = 0
+
+    def embed(self, wav_bytes: bytes) -> list[float]:
+        import time as _time
+
+        self.calls += 1
+        _time.sleep(self.delay)
+        if self.error:
+            raise self.error
+        return self.vectors.pop(0) if self.vectors else SAME_VOICE
+
+
+def _unit(*values: float) -> list[float]:
+    import math
+
+    norm = math.sqrt(sum(v * v for v in values))
+    return [v / norm for v in values] + [0.0] * (256 - len(values))
+
+
+SAME_VOICE = _unit(1.0)
+CLOSE_VOICE = _unit(0.9, 0.436)  # cosine 0.9 with SAME_VOICE
+OTHER_VOICE = _unit(0.0, 1.0)  # cosine 0 with SAME_VOICE
+
+
+@pytest.fixture
+def fake_voice(monkeypatch: pytest.MonkeyPatch) -> FakeVoice:
+    from app.intent import voiceprint
+
+    fake = FakeVoice()
+    monkeypatch.setattr(config, "VOICEPRINT_ENABLED", True)
+    monkeypatch.setattr(voiceprint, "_embed", fake.embed)
+    return fake
+
+
+class FakeAsr:
+    """Stands in for Tencent ASR HTTP calls: tests script task statuses and results.
+
+    Monkeypatches ``asr._post`` so no network call is made. ``statuses`` is a list
+    of DescribeTaskStatus ``Response.Data`` dicts consumed one per poll; a single
+    CreateRecTask always succeeds with TaskId 1.
+    """
+
+    def __init__(self) -> None:
+        self.statuses: list[dict] = []
+        self.result: str = "send fifty to john"
+        self.create_error: dict | None = None
+        self.calls: list[tuple[str, dict]] = []
+
+    async def post(self, client: object, action: str, payload: dict) -> dict:
+        self.calls.append((action, payload))
+        if action == "CreateRecTask":
+            if self.create_error:
+                return {"Error": self.create_error}
+            return {"Data": {"TaskId": 1}}
+        if action == "DescribeTaskStatus":
+            # The real API rejects a string TaskId with InvalidParameter (seen live, 16 Oct).
+            assert isinstance(payload["TaskId"], int), "TaskId must be an int"
+            if self.statuses:
+                data = self.statuses.pop(0)
+            elif self.result is not None:
+                data = {"Status": 2, "Result": self.result}
+                self.result = None
+            else:
+                data = {"Status": 2, "Result": ""}
+            return {"Data": data}
+        return {}
+
+
+@pytest.fixture
+def fake_asr(monkeypatch: pytest.MonkeyPatch, bank) -> FakeAsr:
+    fake = FakeAsr()
+    monkeypatch.setattr(config, "TENCENTCLOUD_SECRET_ID", "test-secret-id")
+    monkeypatch.setattr(config, "TENCENTCLOUD_SECRET_KEY", "test-secret-key")
+    monkeypatch.setattr(config, "ASR_POLL_SECONDS", 0.0)
+    from app.intent import asr
+
+    monkeypatch.setattr(asr, "_post", fake.post)
+    return fake
+
+
 BANK = AccountsResponse.model_validate(
     {
         "accounts": [
@@ -130,6 +224,22 @@ QUOTES = [
     for t, n, p in [("AAPL", "Apple Inc.", "227.50"), ("TSLA", "Tesla Inc.", "251.00")]
 ]
 FX = {("SGD", "USD"): "0.740000", ("USD", "SGD"): "1.351351"}
+
+
+def _wav_bytes(
+    duration: float = 1.0, framerate: int = 16000, channels: int = 1, sampwidth: int = 2
+) -> bytes:
+    """Return a valid PCM WAV (silence) for ASR tests."""
+    from io import BytesIO
+    from wave import open as wave_open
+
+    buf = BytesIO()
+    with wave_open(buf, "wb") as wav:
+        wav.setnchannels(channels)
+        wav.setsampwidth(sampwidth)
+        wav.setframerate(framerate)
+        wav.writeframes(b"\x00\x00" * int(framerate * duration))
+    return buf.getvalue()
 
 
 def _fx_rate(from_currency: str, to_currency: str) -> FxResponse:

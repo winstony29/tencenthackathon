@@ -189,9 +189,19 @@ class PreviewResponse(ContractModel):
     meta: Meta
 
 
+class SpeakerCheck(ContractModel):
+    status: Literal["enrolled", "verified", "unsure", "rejected", "unavailable"]
+    score: float | None  # cosine similarity, or null when nothing was compared
+
+
+class VoiceEnrolResponse(ContractModel):
+    clips: int  # recordings now in the enrolled voiceprint (D-054)
+
+
 class TranscribeResponse(ContractModel):
     transcript: str
     confidence: float | None
+    speaker: SpeakerCheck  # D-054; on "rejected" the transcript is ""
 
 
 class Answer(ContractModel):
@@ -521,6 +531,7 @@ class DeviceRegisterResponse(ContractModel):
 class ChallengeRequest(ContractModel):
     draft: Draft
     receipt: str
+    require_otp: bool = False  # the client may add the one-time-code step, never remove it (D-054)
 
 
 class ChallengeResponse(ContractModel):

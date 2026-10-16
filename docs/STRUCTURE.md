@@ -42,6 +42,7 @@ dcta/
 │   │   ├── __init__.py
 │   │   ├── router.py         /api/transcribe, /api/understand
 │   │   ├── asr.py            Tencent ASR client
+│   │   ├── voiceprint.py     speaker verification on every voice clip (D-054)
 │   │   ├── shield.py         injection check (Jev yes/no)
 │   │   ├── rewriter.py       LLM writes K plain rewrites
 │   │   ├── jev.py            the only file that calls TypeSafe's API
@@ -80,6 +81,7 @@ dcta/
 │
 ├── scripts/
 │   ├── chat.py               text conversation with /api/understand (live Jev)  Winston
+│   ├── compare_asr.py        Tencent vs MERaLiON word error rate on a folder    Winston
 │   └── eval_intent.py        single Jev vs Jev × K comparison report           Winston
 │
 └── var/                      runtime state (ledger, audit, nonces); git-ignored
@@ -126,10 +128,12 @@ web/
 │       ├── draft-editor.ts  immutable edits, validation and projections
 │       ├── contracts.ts     runtime schemas matching contracts v0.2
 │       ├── api.ts           cancellable JSON requests
+│       ├── recorder.ts      microphone to 16 kHz mono WAV for /api/transcribe (D-006)
 │       ├── examples.ts      explicitly selected UI demo fixtures
 │       └── money.ts         exact estimated stock totals
 └── tests/
     ├── contracts.test.ts    boundary and exact-money checks
+    ├── recorder.test.ts     WAV header and downsampling checks
     └── browser.test.mjs     browser integration and layout checks
 ```
 
@@ -220,6 +224,7 @@ V4 financial-context additions (Darren):
 - `app/audit_http.py`: bounded HTTP audit capture and protected evidence routes.
 - `tests/test_evidence.py`: persistence, redaction, retention and request timeline tests.
 - `var/evidence.sqlite3`: ignored encrypted runtime evidence and metadata chain.
+- `var/voiceprints.json`, `var/models/`: ignored enrolled speaker embeddings and the downloaded speaker model (D-054).
 
 
 Bank integration runtime additions (git-ignored, under existing `var/`):

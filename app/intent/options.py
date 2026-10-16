@@ -33,7 +33,7 @@ _TENS = {
     for i, w in enumerate("twenty thirty forty fifty sixty seventy eighty ninety".split(), start=2)
 }
 _DIGIT_WORDS = {"zero": 0, **{w: i for w, i in _SMALL.items() if i < 10}}
-_SCALES = {"hundred": 100, "thousand": 1000, "grand": 1000, "million": 1_000_000}
+_SCALES = {"hundred": 100, "thousand": 1000, "grand": 1000, "k": 1000, "million": 1_000_000}
 _SUFFIXES = {"k": 1000, "m": 1_000_000}
 # Spoken spellings an ASR transcript may contain, mapped to the number word meant.
 _ALIASES = {
@@ -411,21 +411,31 @@ def _relative(text: str, accounts: AccountsResponse) -> list[Number]:
 
 def _words_value(words: list[str]) -> Decimal | None:
     if "point" in words:  # "fifty point five"; the loop only keeps "point" before digit words
+        scale = 1
+        if _SCALES.get(words[-1], 0) >= 1000:  # "one point five k" is 1500; "… hundred" stays odd
+            scale, words = _SCALES[words[-1]], words[:-1]
         i = words.index("point")
         if not all(w in _DIGIT_WORDS for w in words[i + 1 :]):
             return None  # malformed spoken decimals need clarification, not a guessed value
         decimals = "".join(str(_DIGIT_WORDS[w]) for w in words[i + 1 :])
-        return Decimal(f"{_words_value(words[:i]) or 0}.{decimals}") or None
+        value = Decimal(f"{_words_value(words[:i]) or 0}.{decimals}") * scale
+        if scale != 1 and value == value.to_integral_value():
+            value = value.quantize(Decimal(1))  # "one point five k" is 1500, not 1500.0
+        return value or None
     if len(words) > 1 and all(w in _DIGIT_WORDS for w in words):  # "nine nine eight eight"
         return Decimal("".join(str(_DIGIT_WORDS[w]) for w in words)) or None
     total = current = 0
+    prev = ""
     for word in words:
-        if word in _SMALL or word in _TENS:
+        if word in _TENS and prev in _SMALL:  # "seven fifty" is 750 when spoken, never 57
+            current = current * 100 + _TENS[word]
+        elif word in _SMALL or word in _TENS:
             current += _SMALL.get(word, 0) + _TENS.get(word, 0)
         elif word == "hundred":
             current = (current or 1) * 100
         elif word in _SCALES:
             total, current = total + (current or 1) * _SCALES[word], 0
+        prev = word
     return Decimal(total + current) or None
 
 

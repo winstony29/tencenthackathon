@@ -45,6 +45,44 @@ VALIDATOR_MODEL = os.getenv("VALIDATOR_MODEL", "")  # model that audits drafts; 
 TENCENTCLOUD_SECRET_ID = os.getenv("TENCENTCLOUD_SECRET_ID", "")  # Tencent ASR (app/intent/asr.py)
 TENCENTCLOUD_SECRET_KEY = os.getenv("TENCENTCLOUD_SECRET_KEY", "")  # Tencent ASR secret
 TENCENTCLOUD_REGION = os.getenv("TENCENTCLOUD_REGION", "ap-singapore")  # Tencent ASR region
+# International-site ASR settings (D-006, W-09). The intl API is file-upload + poll.
+ASR_ENGINE = "16k_zh_large"  # live 16 Oct: heard "John" in 2 s; "16k_en" heard "Jon" in 6 s
+ASR_POLL_SECONDS = 0.3  # how often to poll DescribeTaskStatus
+ASR_TIMEOUT_SECONDS = 13  # under the UI's 15 s fetch; a 6 s sentence timed out at 10 s live
+ASR_MIN_SECONDS = 0.3  # shortest WAV the server accepts
+ASR_MAX_SECONDS = 15  # longest WAV the server accepts (MAX_AUDIO_BYTES caps size)
+ASR_HOST = "asr.intl.tencentcloudapi.com"  # international-site endpoint
+ASR_VERSION = "2019-06-14"  # Tencent ASR API version
+
+
+def _choice(name: str, default: str, allowed: tuple[str, ...]) -> str:
+    value = os.getenv(name, default)
+    if value not in allowed:
+        raise ValueError(f"{name} must be one of {', '.join(allowed)}, not {value!r}")
+    return value
+
+
+# Second engine for Singlish comparison on a Mac (D-053); the deployed server stays "tencent".
+ASR_PROVIDER = _choice("ASR_PROVIDER", "tencent", ("tencent", "meralion", "compare"))
+MERALION_MODEL = os.getenv("MERALION_MODEL", "MERaLiON/MERaLiON-2-10B-MLX")  # 3B-MLX for 8 GB Macs
+MERALION_TIMEOUT_SECONDS = 12  # under the UI's 15 s fetch timeout
+ASR_AGREE_MIN = 0.8  # word-sequence similarity below this counts as disagreement
+
+# Speaker verification on every voice command (D-054); fails open when the model is unavailable.
+VOICEPRINT_ENABLED = True
+VOICEPRINT_PATH = os.getenv("VOICEPRINT_PATH", "")  # blank uses var/voiceprints.json
+VOICEPRINT_TIMEOUT_SECONDS = 1.5  # embedding takes ~15 ms; this plus ASR's 13 s stays under 15 s
+VOICE_THRESHOLD = 0.68  # verified at or above; Winston's full sentences 0.70–0.85 live (D-054)
+VOICE_UNSURE_THRESHOLD = 0.50  # unsure between this and VOICE_THRESHOLD; rejected below
+VOICE_MAX_CLIPS = 10  # verified clips folded into the enrolled mean
+VOICE_UPDATE_MARGIN = 0.10  # a clip joins the mean only this far above the threshold
+VOICEPRINT_ENROLMENT_OPEN = True  # POST /api/voiceprint/enrol accepts clips; demo only (D-054)
+DEMO_OTP = "123456"  # one-time code the gateway accepts for a require_otp challenge (D-007, D-054)
+VOICE_MODEL_URL = (
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/"
+    "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
+)
+VOICE_MODEL_SHA256 = "aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2"
 
 _strong("VALIDATION_RECEIPT_KEY", os.getenv("VALIDATION_RECEIPT_KEY", ""))
 VALIDATION_RECEIPT_KEY = os.getenv("VALIDATION_RECEIPT_KEY", "") or (

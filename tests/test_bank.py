@@ -6868,3 +6868,57 @@ def test_statement_projects_internal_moves_and_sales_without_cross_user_leaks(ba
         ("credit", "227.50"),
     ]
     assert all(r["is_spending"] is False for r in history)
+
+
+def _otp_challenge(env: SimpleNamespace) -> tuple[Any, ExecuteRequest]:
+    draft = _risk_draft("500.00")
+    context = env.approve(draft)
+    challenge = gateway.issue_challenge(
+        ChallengeRequest(draft=draft, receipt=_synthetic_receipt(draft, context), require_otp=True),
+        **env.paths,
+    )
+    return challenge, _sign_payment(env.private, challenge)
+
+
+def test_gateway_require_otp_demands_and_verifies_the_code_before_commit(
+    gateway_environment: SimpleNamespace,
+) -> None:
+    """D-054: an unsure voice makes the client ask for the one-time-code step."""
+    env = gateway_environment
+    challenge, request = _otp_challenge(env)
+    first = gateway.execute(request, **env.paths)
+    assert first.status == "needs_extra_check" and first.method == "otp"
+    assert _gateway_state(env)["challenges"][challenge.nonce]["status"] == "step_up"
+    assert len(_ledger_state(env.ledger_paths)["transactions"]) == 0
+    wrong = gateway.execute(request.model_copy(update={"otp": "000000"}), **env.paths)
+    assert wrong.status == "needs_extra_check"
+    assert len(_ledger_state(env.ledger_paths)["transactions"]) == 0
+    done = gateway.execute(request.model_copy(update={"otp": config.DEMO_OTP}), **env.paths)
+    assert done.status == "executed"
+    assert _gateway_state(env)["challenges"][challenge.nonce]["status"] == "committed"
+    assert len(_ledger_state(env.ledger_paths)["transactions"]) == 1
+
+
+def test_gateway_require_otp_locks_after_too_many_wrong_codes(
+    gateway_environment: SimpleNamespace,
+) -> None:
+    env = gateway_environment
+    challenge, request = _otp_challenge(env)
+    outcomes = [
+        gateway.execute(request.model_copy(update={"otp": "999999"}), **env.paths).status
+        for _ in range(env.limits.max_attempts)
+    ]
+    assert outcomes[-1] == "rejected" and set(outcomes[:-1]) == {"needs_extra_check"}
+    assert _gateway_state(env)["challenges"][challenge.nonce]["status"] == "locked"
+    with pytest.raises(gateway.GatewayRejected):  # a locked nonce is dead, even with the right code
+        gateway.execute(request.model_copy(update={"otp": config.DEMO_OTP}), **env.paths)
+    assert len(_ledger_state(env.ledger_paths)["transactions"]) == 0
+
+
+def test_gateway_without_require_otp_ignores_a_supplied_code(
+    gateway_environment: SimpleNamespace,
+) -> None:
+    env = gateway_environment
+    _, _, request = _gateway_challenge(env)
+    reply = gateway.execute(request.model_copy(update={"otp": "000000"}), **env.paths)
+    assert reply.status == "executed"

@@ -80,11 +80,18 @@ async function deviceKey(user: string): Promise<CryptoKeyPair> {
     db.close();
   }
 }
-export async function preparePayment(value: Draft, signal: AbortSignal, approved?: Extract<Validation, {status: "match"}>): Promise<Payment> {
+export async function preparePayment(
+  value: Draft,
+  signal: AbortSignal,
+  approved?: Extract<Validation, { status: "match" }>,
+  requireOtp = false, // D-054: the voice check was unsure, so the bank must ask for the one-time code
+): Promise<Payment> {
   const draft = draftSchema.parse(value);
-  const validation = approved ?? await post("/validate", validationSchema, { draft }, signal);
+  const validation = approved ?? (await post("/validate", validationSchema, { draft }, signal));
   if (validation.status !== "match") {
-    throw Error("message" in validation ? validation.message : "These details need correction before confirming.");
+    throw Error(
+      "message" in validation ? validation.message : "These details need correction before confirming.",
+    );
   }
   // Serialize key creation/registration across tabs sharing the demo user.
   return navigator.locks.request(`dcta-device-${draft.user_id}`, { signal }, async () => {
@@ -97,7 +104,12 @@ export async function preparePayment(value: Draft, signal: AbortSignal, approved
       { user_id: draft.user_id, public_key_jwk },
       signal,
     );
-    const reply = await post("/challenge", challengeSchema, { draft, receipt: validation.receipt }, signal);
+    const reply = await post(
+      "/challenge",
+      challengeSchema,
+      { draft, receipt: validation.receipt, ...(requireOtp ? { require_otp: true } : {}) },
+      signal,
+    );
     const challenge = checkChallenge(reply, draft);
     signal.throwIfAborted();
     // Sign the exact server string, never a client-serialized draft.

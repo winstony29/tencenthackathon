@@ -489,7 +489,7 @@ def _read(path: Path, established: bool, policy: GatewayPolicy) -> dict[str, Any
 def _validate_record(nonce: str, record: dict[str, Any], policy: GatewayPolicy) -> None:
     if not re.fullmatch(r"n_[A-Za-z0-9_-]{43}", nonce) or len(_decode(nonce[2:])) != 32:
         raise ValueError
-    if set(record) != {
+    if set(record) - {"require_otp"} != {  # require_otp is absent on records before D-054
         "draft",
         "receipt",
         "execution_id",
@@ -541,6 +541,8 @@ def _validate_record(nonce: str, record: dict[str, Any], policy: GatewayPolicy) 
         type(record[f]) is not int or not 0 <= record[f] <= policy.max_attempts
         for f in ("attempts", "step_up_attempts")
     ):
+        raise ValueError
+    if type(record.get("require_otp", False)) is not bool:  # absent on records before D-054
         raise ValueError
     if record["status"] == "committed":
         ExecutedResponse.model_validate(record["result"])
@@ -758,6 +760,7 @@ def issue_challenge(
                 "attempts": 0,
                 "step_up_attempts": 0,
                 "result": None,
+                "require_otp": request.require_otp,
             }
             _queue(
                 state,
@@ -985,6 +988,45 @@ def execute(
                 policy,
                 audit_path,
             )
+            if record.get("require_otp"):
+                # D-054: the client asked for the one-time-code step (the voice check was
+                # unsure). The demo code is verified here; the ledger's own risk step-up
+                # below is unchanged and still never commits.
+                good = request.otp is not None and hmac.compare_digest(
+                    request.otp.encode(), config.DEMO_OTP.encode()
+                )
+                if not good:
+                    record["status"] = "step_up"
+                    if request.otp is not None:
+                        record["step_up_attempts"] = min(
+                            record["step_up_attempts"] + 1, policy.max_attempts
+                        )
+                        if record["step_up_attempts"] >= policy.max_attempts:
+                            record["status"] = "locked"
+                    _record_event(
+                        state,
+                        record,
+                        request.nonce,
+                        "gateway_step_up_required",
+                        "otp_requested" if request.otp is None else "bad_otp",
+                        path,
+                        policy,
+                        audit_path,
+                        str(record["step_up_attempts"]),
+                    )
+                    if record["status"] == "locked":
+                        return RejectedResponse(
+                            status="rejected",
+                            reason="bad_otp",
+                            message="Too many wrong codes; start a new request.",
+                        )
+                    return NeedsExtraCheckResponse(
+                        status="needs_extra_check",
+                        method="otp",
+                        message="Enter the one-time code to continue."
+                        if request.otp is None
+                        else "That code didn't match. Try again.",
+                    )
             try:
                 result = _commit(
                     draft,

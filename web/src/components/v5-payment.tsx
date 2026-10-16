@@ -16,8 +16,10 @@ export function V5Payment({
   onLock,
   onSettled,
   preview = false,
+  requireOtp = false,
 }: {
   preview?: boolean;
+  requireOtp?: boolean; // D-054: unsure voice; the bank asks for the one-time code
   draft: Draft;
   validation: Validation;
   onCancel: () => void;
@@ -47,8 +49,10 @@ export function V5Payment({
             : a.type === "fx_conversion"
               ? "Convert now"
               : "Place order";
-  const needsFingerprint = result?.status === "needs_extra_check" && result.method === "fingerprint";
-  const needsOtp = result?.status === "needs_extra_check" && result.method === "otp";
+  const needsFingerprint =
+    result?.status === "needs_extra_check" && result.method === "fingerprint";
+  const needsOtp =
+    result?.status === "needs_extra_check" && result.method === "otp";
   async function send() {
     if (preview || validation.status !== "match") return;
     if (
@@ -66,7 +70,12 @@ export function V5Payment({
     let executing = false;
     let unresolved = false;
     try {
-      pending.current ??= await preparePayment(draft, controller.signal, validation);
+      pending.current ??= await preparePayment(
+        draft,
+        controller.signal,
+        validation,
+        requireOtp,
+      );
       controller.signal.throwIfAborted();
       executing = true;
       const reply = await submitPayment(
@@ -149,14 +158,23 @@ export function V5Payment({
         </label>
       )}
       {needsFingerprint && (
-        <div className="v5-fingerprint-prompt" role="alertdialog" aria-label="Fingerprint verification">
+        <div
+          className="v5-fingerprint-prompt"
+          role="alertdialog"
+          aria-label="Fingerprint verification"
+        >
           <p>{result.message}</p>
           <button
             type="button"
             className={
-              "v5-fingerprint-btn" + (fingerprintConfirmed ? " v5-fingerprint-done" : "")
+              "v5-fingerprint-btn" +
+              (fingerprintConfirmed ? " v5-fingerprint-done" : "")
             }
-            aria-label={fingerprintConfirmed ? "Fingerprint confirmed" : "Confirm with fingerprint"}
+            aria-label={
+              fingerprintConfirmed
+                ? "Fingerprint confirmed"
+                : "Confirm with fingerprint"
+            }
             disabled={busy || uncertain || fingerprintConfirmed}
             onClick={() => setFingerprintConfirmed(true)}
           >
@@ -166,7 +184,11 @@ export function V5Payment({
         </div>
       )}
       <div className="v5-actions">
-        <button className="v5-secondary" onClick={onCancel} disabled={busy || uncertain}>
+        <button
+          className="v5-secondary"
+          onClick={onCancel}
+          disabled={busy || uncertain}
+        >
           Cancel
         </button>
         <button
