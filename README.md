@@ -42,6 +42,23 @@ stub; type requests instead. The first "Transfer now" pins that browser's device
 To work on the front end with live reload, run `npm run dev` in `web/` alongside the
 server and open http://127.0.0.1:3000/v5/ instead.
 
+## Deploy for judges
+
+One Ubuntu box (Tencent Cloud Lighthouse, Singapore, 2 vCPU / 4 GB is enough), a domain
+pointing at it, and `scripts/deploy.sh`. HTTPS is required: the browser only allows device
+signing and the microphone on `https://`.
+
+```bash
+git clone https://github.com/winstony29/tencenthackathon.git && cd tencenthackathon/dcta
+cp .env.example .env            # fill in MAKERS_MODELS_KEY, Tencent ASR, LLM_API_KEY
+DOMAIN=demo.example.com bash scripts/deploy.sh
+```
+
+The script installs Python, Node and Caddy, generates any blank secrets, builds the front
+end, and runs uvicorn as a systemd service behind Caddy. Re-run it after `git pull`.
+`journalctl -u dcta -f` shows the server log. Judges share one demo user, so run
+`rm var/devices.json && sudo systemctl restart dcta` between judging sessions.
+
 ## Test
 
 ```bash
