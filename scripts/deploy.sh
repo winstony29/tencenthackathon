@@ -39,6 +39,12 @@ for key in MASK_KEY VALIDATION_RECEIPT_KEY AUDIT_EVIDENCE_KEY AUDIT_ADMIN_TOKEN;
 done
 grep -qE "^API_DOCS=0" .env || sed -i 's|^API_DOCS=.*|API_DOCS=0|' .env
 
+# Swap: a 2 GB box runs out of memory during `next build` without it.
+if [ ! -f /swapfile ] && [ "$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)" -lt 3500 ]; then
+  sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+  echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
+fi
+
 # Build.
 [ -d .venv ] || "$PY" -m venv .venv
 .venv/bin/pip install -q -r requirements.txt
