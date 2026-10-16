@@ -81,6 +81,54 @@ def fake_jev(monkeypatch: pytest.MonkeyPatch) -> FakeJev:
     return fake
 
 
+@pytest.fixture(autouse=True)
+def _isolated_voiceprints(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test touches var/voiceprints.json or downloads the speaker model (D-054)."""
+    monkeypatch.setattr(config, "VOICEPRINT_ENABLED", False)
+    monkeypatch.setattr(config, "VOICEPRINT_PATH", str(tmp_path / "voiceprints.json"))
+
+
+class FakeVoice:
+    """Stands in for voiceprint._embed: returns scripted unit vectors, one per call."""
+
+    def __init__(self) -> None:
+        self.vectors: list[list[float]] = []
+        self.error: Exception | None = None
+        self.delay = 0.0
+        self.calls = 0
+
+    def embed(self, wav_bytes: bytes) -> list[float]:
+        import time as _time
+
+        self.calls += 1
+        _time.sleep(self.delay)
+        if self.error:
+            raise self.error
+        return self.vectors.pop(0) if self.vectors else SAME_VOICE
+
+
+def _unit(*values: float) -> list[float]:
+    import math
+
+    norm = math.sqrt(sum(v * v for v in values))
+    return [v / norm for v in values] + [0.0] * (256 - len(values))
+
+
+SAME_VOICE = _unit(1.0)
+CLOSE_VOICE = _unit(0.9, 0.436)  # cosine 0.9 with SAME_VOICE
+OTHER_VOICE = _unit(0.0, 1.0)  # cosine 0 with SAME_VOICE
+
+
+@pytest.fixture
+def fake_voice(monkeypatch: pytest.MonkeyPatch) -> FakeVoice:
+    from app.intent import voiceprint
+
+    fake = FakeVoice()
+    monkeypatch.setattr(config, "VOICEPRINT_ENABLED", True)
+    monkeypatch.setattr(voiceprint, "_embed", fake.embed)
+    return fake
+
+
 class FakeAsr:
     """Stands in for Tencent ASR HTTP calls: tests script task statuses and results.
 

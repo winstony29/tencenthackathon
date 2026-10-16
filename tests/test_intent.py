@@ -2247,7 +2247,11 @@ def test_valid_wav_transcribes_correctly(client, fake_asr) -> None:
     from tests.conftest import _wav_bytes
 
     reply = _transcribe(client, _wav_bytes(1.0)).json()
-    assert reply == {"transcript": "send fifty to john", "confidence": None}
+    assert reply == {
+        "transcript": "send fifty to john",
+        "confidence": None,
+        "speaker": {"status": "unavailable", "score": None},  # voice checks off in tests
+    }
 
 
 def test_polling_returns_after_status_0_1_2(client, fake_asr) -> None:
@@ -2466,7 +2470,7 @@ def test_meralion_mode_returns_its_transcript_and_deletes_the_wav(client, fake_m
 
     fake_meralion.text = '<Speaker1>: "Send fifty to John lah."'
     reply = _transcribe(client, _wav_bytes(1.0)).json()
-    assert reply == {"transcript": "Send fifty to John lah.", "confidence": None}
+    assert reply["transcript"] == "Send fifty to John lah."
     assert fake_meralion.paths and not os.path.exists(fake_meralion.paths[0])
 
 
@@ -2595,3 +2599,128 @@ def test_similarity_ignores_number_spelling() -> None:
     assert asr.similarity("Send 50 to John.", "Send fifty to John.") == 1.0
     assert asr.similarity("750 to John.", "Seven fifty to John.") == 1.0
     assert asr.similarity("send fifty to john", "send fifty to jon") == 0.75
+
+
+# --- Speaker verification (D-054) ---
+
+
+def _audit_events(audit_log) -> list[tuple[str, str]]:
+    events = [json.loads(line) for line in audit_log.read_text().splitlines()]
+    return [(e["event"], e["data"].get("reason", "")) for e in events]
+
+
+def test_first_voice_command_enrols_the_speaker(client, fake_asr, fake_voice, audit_log) -> None:
+    from app.intent import voiceprint
+    from tests.conftest import _wav_bytes
+
+    reply = _transcribe(client, _wav_bytes(1.0)).json()
+    assert reply["speaker"] == {"status": "enrolled", "score": None}
+    assert reply["transcript"] == "send fifty to john"
+    stored = json.loads(voiceprint._store_path().read_text())["u_demo"]
+    assert stored["clips"] == 1 and len(stored["embedding"]) == 256
+    assert _audit_events(audit_log) == [("speaker_checked", "enrolled"), ("transcribed", "ok")]
+
+
+def test_matching_voice_is_verified_and_folded_into_the_mean(client, fake_asr, fake_voice) -> None:
+    from app.intent import voiceprint
+    from tests.conftest import CLOSE_VOICE, _wav_bytes
+
+    _transcribe(client, _wav_bytes(1.0))
+    fake_voice.vectors = [CLOSE_VOICE]
+    fake_asr.result = "send fifty to john"  # the fake serves one scripted result per call
+    reply = _transcribe(client, _wav_bytes(1.0)).json()
+    assert reply["speaker"] == {"status": "verified", "score": 0.9}
+    assert reply["transcript"] == "send fifty to john"
+    stored = json.loads(voiceprint._store_path().read_text())["u_demo"]
+    assert stored["clips"] == 2
+    assert abs(sum(v * v for v in stored["embedding"]) - 1) < 1e-6  # still unit length
+
+
+def test_different_voice_is_rejected_before_any_asr_call(
+    client, fake_asr, fake_voice, audit_log
+) -> None:
+    from tests.conftest import OTHER_VOICE, _wav_bytes
+
+    _transcribe(client, _wav_bytes(1.0))
+    asr_calls = len(fake_asr.calls)
+    fake_voice.vectors = [OTHER_VOICE]
+    reply = _transcribe(client, _wav_bytes(1.0)).json()
+    assert reply == {
+        "transcript": "",
+        "confidence": None,
+        "speaker": {"status": "rejected", "score": 0.0},
+    }
+    assert len(fake_asr.calls) == asr_calls  # Tencent never heard the stranger
+    assert _audit_events(audit_log)[-1] == ("speaker_checked", "mismatch")
+    assert _audit_events(audit_log).count(("transcribed", "ok")) == 1
+
+
+def test_voice_check_failure_is_unavailable_and_still_transcribes(
+    client, fake_asr, fake_voice
+) -> None:
+    from tests.conftest import _wav_bytes
+
+    fake_voice.error = RuntimeError("model exploded")
+    reply = _transcribe(client, _wav_bytes(1.0)).json()
+    assert reply["speaker"] == {"status": "unavailable", "score": None}
+    assert reply["transcript"] == "send fifty to john"
+
+
+def test_voice_check_timeout_is_unavailable(client, fake_asr, fake_voice, monkeypatch) -> None:
+    from tests.conftest import _wav_bytes
+
+    monkeypatch.setattr(config, "VOICEPRINT_TIMEOUT_SECONDS", 0.01)
+    fake_voice.delay = 0.2
+    reply = _transcribe(client, _wav_bytes(1.0)).json()
+    assert reply["speaker"]["status"] == "unavailable"
+
+
+def test_voice_check_disabled_makes_no_embedding(client, fake_asr, fake_voice, monkeypatch) -> None:
+    from tests.conftest import _wav_bytes
+
+    monkeypatch.setattr(config, "VOICEPRINT_ENABLED", False)
+    reply = _transcribe(client, _wav_bytes(1.0)).json()
+    assert reply["speaker"] == {"status": "unavailable", "score": None}
+    assert fake_voice.calls == 0
+
+
+def test_enrolled_mean_stops_at_the_cap_and_reset_forgets(
+    client, fake_asr, fake_voice, monkeypatch
+) -> None:
+    from app.intent import voiceprint
+    from tests.conftest import CLOSE_VOICE, _wav_bytes
+
+    monkeypatch.setattr(config, "VOICE_MAX_CLIPS", 2)
+    fake_voice.vectors = [CLOSE_VOICE, CLOSE_VOICE, CLOSE_VOICE]
+    for _ in range(4):
+        _transcribe(client, _wav_bytes(1.0))
+    assert json.loads(voiceprint._store_path().read_text())["u_demo"]["clips"] == 2
+    assert voiceprint.reset("u_demo") is True
+    assert voiceprint.reset("u_demo") is False
+    assert "u_demo" not in json.loads(voiceprint._store_path().read_text())
+
+
+def test_bad_wav_is_refused_before_the_voice_check(client, fake_asr, fake_voice) -> None:
+    reply = _transcribe(client, b"not a wav file")
+    assert reply.status_code == 400
+    assert fake_voice.calls == 0
+
+
+def test_speaker_model_hash_mismatch_removes_the_file(tmp_path, monkeypatch) -> None:
+    from app.intent import voiceprint
+
+    bogus = tmp_path / "model.onnx"
+    bogus.write_bytes(b"not the model")
+    monkeypatch.setattr(voiceprint, "_model_path", lambda: bogus)
+    with pytest.raises(RuntimeError, match="hash"):
+        voiceprint.ensure_model()
+    assert not bogus.exists()
+
+
+def test_unreadable_voiceprint_store_re_enrols(client, fake_asr, fake_voice) -> None:
+    from app.intent import voiceprint
+    from tests.conftest import _wav_bytes
+
+    voiceprint._store_path().write_text("{corrupt")
+    reply = _transcribe(client, _wav_bytes(1.0)).json()
+    assert reply["speaker"]["status"] == "enrolled"

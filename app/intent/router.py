@@ -29,7 +29,7 @@ from app.contracts import (
     UnderstandRequest,
     UnderstandResponse,
 )
-from app.intent import asr, draft, gate, jev, options, session, shield
+from app.intent import asr, draft, gate, jev, options, session, shield, voiceprint
 
 router = APIRouter(prefix="/api", tags=["intent"])
 
@@ -195,14 +195,22 @@ async def transcribe(audio: UploadFile, user_id: str = Form("u_demo")) -> dict[s
     """Turn recorded speech into text via Tencent Cloud ASR (D-006, W-09).
 
     Multipart form: field ``audio`` (16 kHz mono 16-bit PCM WAV), optional
-    ``user_id`` (default ``u_demo``). Returns ``{"transcript": str, "confidence": null}`` —
-    the international-site API does not return a confidence score (CONTRACTS §3.1).
+    ``user_id`` (default ``u_demo``). The clip is checked against the enrolled voice first
+    (D-054); a stranger's clip is never transcribed. Returns ``{"transcript", "confidence":
+    null, "speaker": {"status", "score"}}`` (CONTRACTS §3.1).
     """
     if not re.fullmatch(r"u_[A-Za-z0-9_-]{1,80}", user_id):
         raise HTTPException(400, "Invalid user ID.")
     data = await audio.read()
     try:
-        result = await asr.transcribe(user_id, data)
+        asr.validate_wav(data)  # 400 before any model work
+        speaker = await voiceprint.check(user_id, data)
+        _event("speaker_checked", reason=_SPEAKER_REASON[speaker["status"]])
+        if speaker["status"] == "rejected":
+            return {"transcript": "", "confidence": None, "speaker": speaker}
+        result = await asr.transcribe(
+            user_id, data, {"speaker_status": speaker["status"], "speaker_score": speaker["score"]}
+        )
     except asr.AsrError as error:
         raise HTTPException(error.status, error.message) from error
     _event(
@@ -210,7 +218,15 @@ async def transcribe(audio: UploadFile, user_id: str = Form("u_demo")) -> dict[s
         reason="ok" if result["transcript"] else "empty",
         count=len(result["transcript"].split()),
     )
-    return result
+    return {**result, "speaker": speaker}
+
+
+_SPEAKER_REASON = {
+    "enrolled": "enrolled",
+    "verified": "match",
+    "rejected": "mismatch",
+    "unavailable": "unavailable",
+}
 
 
 @router.post("/understand", response_model=UnderstandResponse)

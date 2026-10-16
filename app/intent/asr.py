@@ -68,7 +68,7 @@ class AsrError(Exception):
         super().__init__(message)
 
 
-def _validate_wav(data: bytes) -> float:
+def validate_wav(data: bytes) -> float:
     """Return the audio duration in seconds, or raise AsrError(400) if the WAV is invalid.
 
     Requires PCM, 1 channel, 16000 Hz, 2 bytes per sample, within the configured
@@ -402,13 +402,16 @@ def similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, normalised(a), normalised(b)).ratio()
 
 
-async def transcribe(user_id: str, audio_bytes: bytes) -> dict[str, Any]:
-    """Transcribe a WAV audio blob with the configured provider.
+async def transcribe(
+    user_id: str, audio_bytes: bytes, extra: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Transcribe a WAV audio blob with the configured provider. `extra` joins the evidence
+    record (the router passes the speaker check result, D-054).
 
     Returns {"transcript": str, "confidence": None}; confidence is always null (D-006).
     In "compare" mode Tencent's transcript is returned and MERaLiON's goes to evidence only.
     """
-    duration = _validate_wav(audio_bytes)
+    duration = validate_wav(audio_bytes)
     provider = config.ASR_PROVIDER
     if provider == "meralion":
         result = await _meralion(audio_bytes)
@@ -435,6 +438,7 @@ async def transcribe(user_id: str, audio_bytes: bytes) -> dict[str, Any]:
         "transcribed",
         {
             **result,
+            **(extra or {}),
             "provider": provider,
             "audio_duration": round(duration, 3),
             "audio_saved": False,
