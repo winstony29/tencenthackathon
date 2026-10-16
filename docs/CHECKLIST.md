@@ -41,8 +41,14 @@ IDs: `S` setup · `W` Winston · `J` Jayanth · `D` Darren · `I` integration ·
   *Note (12 Oct):* number words, digits, "50k", "a grand" and spellings like "fiddy" are parsed. Relative amounts ("half my savings", "everything in current") are offered as fractions of each balance; "whatever is left" means the whole balance, not what remains after other actions.
 - [x] **W-08** · Mon · `shield.py`: flag instructions aimed at the system; `/api/understand` returns `blocked`.
   *Done when:* demo command 3 is blocked and command 1 is not.
-- [ ] **W-09** · Mon · `asr.py`: Tencent ASR; decide the audio format with Darren (D-006).
+- [x] **W-09** · Mon · `asr.py`: Tencent ASR; decide the audio format with Darren (D-006).
   *Done when:* a recorded clip of command 1 transcribes correctly through `/api/transcribe`.
+  *Status (16 Oct):* D-006 decided (16 kHz mono 16-bit PCM WAV). `app/intent/asr.py` implemented: TC3-HMAC-SHA256 signing, CreateRecTask + DescribeTaskStatus polling, hotwords from bank data, WAV validation, error handling. Signing checked against tencentcloud-sdk-python; ResTextFormat 0 timestamp prefixes stripped. 17 unit tests pass. Live on 16 Oct with a sub-user key and `ap-singapore`: the macOS `say` voice reading command 1 came back as "Send 50 to John." in 2.3 s on `16k_zh_large` (now the default); `16k_en` heard "Jon" in 6–7 s. TaskId must be sent as an integer; a string gets `InvalidParameter`. Audit chain shows `transcribed` count 4, reason ok. Winston's own recording of command 1: "Seven fifty to John." before the verb hotwords, "Send fifty to John." after (`16k_en` also got it right, but heard "Jon" on the synthetic voice). Ticked 16 Oct; try the other demo commands in your voice the same way. V5 mic (prompt 2) built 16 Oct: `web/src/lib/recorder.ts`, orb tap records, mic button beside both text inputs, browser test with Chromium's fake microphone. MERaLiON compare mode (D-053) also live on 16 Oct with the 3B weights: `ASR_PROVIDER=compare MERALION_MODEL=MERaLiON/MERaLiON-2-3B-MLX` in `.env`, then `scripts/compare_asr.py <folder>` for the WER table. To test:
+  ```
+  say -o command1.aiff "send fifty to John" && afconvert -f WAVE -d LEI16@16000 -c 1 command1.aiff command1.wav
+  curl -F "audio=@command1.wav" -F "user_id=u_demo" http://localhost:8000/api/transcribe
+  ```
+  W-09 stays unchecked until command 1's real recording transcribes correctly.
 - [ ] **W-10** · Mon · `tests/commands.jsonl`: ~30 commands with expected outcome (draft, question, blocked or unsupported), including slang, accents spelt out, multi-intent and attacks.
   *Done when:* the file has at least 30 lines, and Jayanth has added 5 mismatch cases.
   *Status (12 Oct):* 33 commands written, each with `expect`, `tags` and expected `actions`; `known-gap` tags mark what should work but doesn't yet. Waiting for Jayanth's 5 cases (`"expect": "mismatch"`).

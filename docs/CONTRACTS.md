@@ -126,8 +126,8 @@ Response:
 - One Jev call on the text with numbers swapped for stand-ins (D-026), no rewrites, cached by normalised text per browser (§14). It names the main action only; a multi-action command shows all its actions in the draft.
 
 **`POST /api/transcribe`**: speech to text.
-Request: multipart form, field `audio` (format agreed in D-006).
-Response: `{"transcript": "send fifty to john", "confidence": 0.93}` (`confidence` may be `null`).
+Request: multipart form, field `audio` (16 kHz mono 16-bit PCM WAV, D-006), optional field `user_id` (default `u_demo`, must match `u_…`). The `user_id` supplies hotwords from that user's bank data to improve recognition accuracy.
+Response: `{"transcript": "send fifty to john", "confidence": null}`. The international-site Tencent ASR API does not return a confidence score, so `confidence` is always `null`.
 Typed input skips this endpoint and goes straight to `/api/understand`.
 
 **`POST /api/understand`**: turns text into a question or a draft. Called again with the user's answer.
@@ -395,8 +395,9 @@ The audit chain (`app/audit.py`) accepts only a flat allowlist of non-sensitive 
 | `answer_given` (*v0.6, proposed*) | `reason` (the kind) |
 | `blocked` | `reason` |
 | `cancelled` | `reason` |
+| `transcribed` | `reason` (`ok` or `empty`), `count` (words) |
 
-`transcribed` waits for live ASR (W-09). Jev's answers per question are in the evidence store, as the stand-in text Jev saw, never the transcript (D-026). Jayanth adds `fx_converted` (actor `bank`) with `draft_id`, `sell_amount`, `sell_currency`, `buy_amount`, `buy_currency`, `rate`.
+Jev's answers per question are in the evidence store, as the stand-in text Jev saw, never the transcript (D-026). Jayanth adds `fx_converted` (actor `bank`) with `draft_id`, `sell_amount`, `sell_currency`, `buy_amount`, `buy_currency`, `rate`.
 
 ## 9. Timing
 

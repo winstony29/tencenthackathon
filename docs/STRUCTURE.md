@@ -80,6 +80,7 @@ dcta/
 │
 ├── scripts/
 │   ├── chat.py               text conversation with /api/understand (live Jev)  Winston
+│   ├── compare_asr.py        Tencent vs MERaLiON word error rate on a folder    Winston
 │   └── eval_intent.py        single Jev vs Jev × K comparison report           Winston
 │
 └── var/                      runtime state (ledger, audit, nonces); git-ignored
@@ -126,10 +127,12 @@ web/
 │       ├── draft-editor.ts  immutable edits, validation and projections
 │       ├── contracts.ts     runtime schemas matching contracts v0.2
 │       ├── api.ts           cancellable JSON requests
+│       ├── recorder.ts      microphone to 16 kHz mono WAV for /api/transcribe (D-006)
 │       ├── examples.ts      explicitly selected UI demo fixtures
 │       └── money.ts         exact estimated stock totals
 └── tests/
     ├── contracts.test.ts    boundary and exact-money checks
+    ├── recorder.test.ts     WAV header and downsampling checks
     └── browser.test.mjs     browser integration and layout checks
 ```
 
