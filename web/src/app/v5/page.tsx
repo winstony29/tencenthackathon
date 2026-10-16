@@ -107,7 +107,12 @@ async function handoffFor(reply: DraftReply, signal: AbortSignal): Promise<Hando
     intent: reply.presentation,
     // V5's catalog has no recipient-check layout; prepare carries the recipient details.
     objective: reply.objective === "check_recipient" ? "prepare" : reply.objective,
-    data: { accounts, quotes, source: "supplied", ...(financial ? { financial } : {}) },
+    data: {
+      accounts,
+      quotes,
+      source: "supplied",
+      ...(financial ? { financial } : {}),
+    },
     ...(reply.scenario ? { scenario: reply.scenario as Record<string, Record<string, string>> } : {}),
   };
 }
@@ -129,7 +134,7 @@ export default function V5() {
   const [level, setLevel] = useState(0); // microphone level while listening
   const [notice, setNotice] = useState(""); // voice problems, shown beside the fallback input
   const [enrolled, setEnrolled] = useState(false); // this request enrolled the speaker (D-054)
-  const [voiceUnsure, setVoiceUnsure] = useState(false); // voice between the two thresholds (D-054)
+  const [voiceUnsure, setVoiceUnsure] = useState(false); // unverified voice; retained across clarification turns
   const enrolling = useRef(false); // the current recording is a voice sample, not a command
   const [stage, setStage] = useState(0);
   const [bankLocked, setBankLocked] = useState(false);
@@ -495,14 +500,9 @@ export default function V5() {
         signal: abort.signal,
       });
       if (version !== generation.current) return;
-      // D-054: a voice that isn't the enrolled speaker is refused; nothing was transcribed.
-      if (speaker.status === "rejected") {
-        stop("Nothing was sent.", "That doesn't sound like you. Type your request or start over.");
-        return;
-      }
-      if (speaker.status === "unavailable") setNotice("Voice check unavailable, continuing without it.");
+      // Keep step-up required across clarification turns, even if a later clip matches.
       setEnrolled(speaker.status === "enrolled");
-      setVoiceUnsure(speaker.status === "unsure");
+      setVoiceUnsure((previous) => previous || speaker.status !== "verified");
       if (transcript.trim().length < 2) {
         setNotice("I didn't catch that. Try again or type.");
         setPhase(from);
@@ -578,10 +578,10 @@ export default function V5() {
             <div className="v5-heard">
               <span>Your request</span>
               <p>“{heard}”</p>
-              {enrolled && <small>Voice enrolled for this demo</small>}
+              {enrolled && <small>Voice enrolled</small>}
               {voiceUnsure && (
                 <small className="v5-unsure" role="status">
-                  Voice not confirmed. A one-time code is needed before anything is sent.
+                  Voice not confirmed. Fingerprint confirmation is needed before sending.
                 </small>
               )}
             </div>
@@ -777,7 +777,7 @@ export default function V5() {
                     composition={composition}
                     onCancel={reset}
                     onLock={setBankLocked}
-                    requireOtp={voiceUnsure}
+                    requireFingerprint={voiceUnsure}
                     onAfford={() => void understand({ transcript: "Can I afford that?" })}
                   />
                 </>

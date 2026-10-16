@@ -38,6 +38,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Keep one warm connection to the Jev gateway for the server's life (app/intent/jev.py).
     await jev.open_connection()
     await presentation_v4.open_connection()
+    await llm.open_connection()
     if config.ASR_PROVIDER != "tencent":
         await asyncio.to_thread(asr.preload)  # MERaLiON weights take a while (D-053)
     if config.VOICEPRINT_ENABLED:
@@ -45,7 +46,6 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             await asyncio.to_thread(voiceprint.preload)  # 26 MB download on first start (D-054)
         except Exception:
             logging.getLogger(__name__).warning("Speaker model unavailable; voice checks fail open")
-    await llm.open_connection()
 
     async def retention():
         while True:

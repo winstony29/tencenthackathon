@@ -160,3 +160,19 @@ IDs: `S` setup · `W` Winston · `J` Jayanth · `D` Darren · `I` integration ·
   check. Repository-wide Prettier flags 36 untouched files; the merged root page is formatted.
 - Execution policy remains limited to configured SGD transfers; this merge does not enable
   bill, stock, FX or own-account execution policies or remove signing/validation requirements.
+
+
+### Voice and stricter validator integration - 16 October 2026
+
+- Integrated Winston b00be35 and Jayanth 4fe118b into Darren, preserving financial
+  context, signing, fingerprint handling and pooled OpenAI validation.
+- Backend suite: 1203 passed, 6 skipped. Expanded OpenAI adapter schema checks:
+  13 passed. Frontend: 39 unit tests and 18 V5 browser tests passed; TypeScript,
+  ESLint, production build, Ruff lint and Ruff format checks passed.
+- Windows sherpa-onnx 1.13.8 installed and checksum-pinned speaker model loaded.
+  Browser voice tests use synthetic recordings and scripted ASR; no new live
+  Tencent speech accuracy or speaker-identity accuracy claim is made.
+- Live isolated gpt-4.1 validation: three correct transfers approved, wrong amount
+  and recipient rejected; five model-backed checks averaged 2.810 seconds.
+  Conditional execution remains blocked under Jayanth's stricter policy.
+- Voice enrollment and client-requested OTP retain D-054's documented limitations.

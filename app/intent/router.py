@@ -198,7 +198,8 @@ async def transcribe(audio: UploadFile, user_id: str = Form("u_demo")) -> dict[s
 
     Multipart form: field ``audio`` (16 kHz mono 16-bit PCM WAV), optional
     ``user_id`` (default ``u_demo``). The clip is checked against the enrolled voice first
-    (D-054); a stranger's clip is never transcribed. Returns ``{"transcript", "confidence":
+    (D-054); an unverified clip requires the V5 payment step-up.
+    Returns ``{"transcript", "confidence":
     null, "speaker": {"status", "score"}}`` (CONTRACTS §3.1).
     """
     if not re.fullmatch(r"u_[A-Za-z0-9_-]{1,80}", user_id):
@@ -208,8 +209,6 @@ async def transcribe(audio: UploadFile, user_id: str = Form("u_demo")) -> dict[s
         asr.validate_wav(data)  # 400 before any model work
         speaker = await voiceprint.check(user_id, data)
         _event("speaker_checked", reason=_SPEAKER_REASON[speaker["status"]])
-        if speaker["status"] == "rejected":
-            return {"transcript": "", "confidence": None, "speaker": speaker}
         result = await asr.transcribe(
             user_id, data, {"speaker_status": speaker["status"], "speaker_score": speaker["score"]}
         )

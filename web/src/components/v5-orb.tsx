@@ -22,11 +22,18 @@ export function V5Orb({
       className={`v5-orb ${active ? "is-active" : ""} ${busy ? "is-busy" : ""} ${listening ? "is-listening" : ""}`}
       style={{ borderRadius: "50%" }}
       animate={{ scale }}
-      transition={{ duration: reduced ? 0 : listening ? 0.08 : 0.45, ease: [0.22, 1, 0.36, 1] }}
+      transition={{
+        duration: reduced ? 0 : listening ? 0.08 : 0.45,
+        ease: [0.22, 1, 0.36, 1],
+      }}
       onClick={onClick}
       disabled={busy}
       aria-label={
-        busy ? "Working on your request" : listening ? "Listening, tap to stop" : "Speak your request"
+        busy
+          ? "Working on your request"
+          : listening
+            ? "Listening, tap to stop"
+            : "Speak your request"
       }
       aria-pressed={listening}
     >
