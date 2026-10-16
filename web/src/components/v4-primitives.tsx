@@ -1,6 +1,8 @@
 import { useId, type ReactNode } from "react";
 import { displayMoney } from "@/lib/money";
 
+export const activityLabel = (value: string) => value.replace(/^(?:Fictional|Synthetic) (?:scheduled )?/i, "");
+
 export function Heading({ eyebrow, title, aside }: { eyebrow?: string; title: string; aside?: ReactNode }) {
   return (
     <header className="v4-section-heading">

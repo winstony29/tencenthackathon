@@ -113,6 +113,12 @@ def test_expansion_preserves_original_records_exactly(
         count = {"payees": 4, "holdings": 2, "transaction_history": 12}.get(section)
         if count is not None:
             original = original[:count]
+    # New descriptive metadata must not alter any original financial or identity fields.
+    if section in {"accounts", "transaction_history"}:
+        original = [
+            {k: v for k, v in row.items() if k not in {"reserve", "category", "is_spending"}}
+            for row in original
+        ]
     payload = json.dumps(original, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     assert hashlib.sha256(payload.encode()).hexdigest() == expected
     assert user["display_name"] == "Alex Demo"
@@ -3350,6 +3356,7 @@ def test_risk_transfer_and_step_up_threshold_boundaries(
     assert _risk_evaluate(risk_policy, risk_state, risk_now, amount).model_dump() == {
         "status": status,
         "reason": reason,
+        "method": "otp",
     }
 
 
@@ -3671,7 +3678,7 @@ def test_risk_unsupported_policies_fail_closed(
 ) -> None:
     assert _risk_evaluate(
         risk_policy, risk_state, risk_now, draft=_ledger_draft(action)
-    ).model_dump() == {"status": "reject", "reason": "policy_unsupported"}
+    ).model_dump() == {"status": "reject", "reason": "policy_unsupported", "method": "otp"}
 
 
 def test_risk_mixed_batch_cannot_silently_exempt_unsupported_action(
@@ -3779,7 +3786,7 @@ def test_risk_identical_retry_returns_already_committed_without_new_usage(
     for _ in range(3):
         assert _risk_evaluate(
             risk_policy, risk_state, risk_now, draft=draft, execution_id="ex_repeat"
-        ).model_dump() == {"status": "allow", "reason": "already_committed"}
+        ).model_dump() == {"status": "allow", "reason": "already_committed", "method": "otp"}
     assert risk_state == before
     assert _risk_evaluate(risk_policy, risk_state, risk_now).reason == "daily_limit_exceeded"
 
@@ -3891,6 +3898,7 @@ def test_risk_evaluation_never_mutates_snapshots_or_persistent_data(
         assert set(_risk_evaluate(risk_policy, risk_state, risk_now, amount).model_dump()) == {
             "status",
             "reason",
+            "method",
         }
     assert risk_state == before
     assert {
@@ -3907,7 +3915,7 @@ def test_risk_decisions_expose_only_controlled_internal_codes(
         update={"transcript": "Fictional private instruction OTP-secret"}
     )
     result = _risk_evaluate(risk_policy, risk_state, risk_now, draft=draft)
-    assert result.model_dump() == {"status": "allow", "reason": "allowed"}
+    assert result.model_dump() == {"status": "allow", "reason": "allowed", "method": "otp"}
     assert "OTP-secret" not in result.model_dump_json()
     with pytest.raises(ValidationError):
         result.status = "reject"
@@ -4680,7 +4688,13 @@ def test_enforcement_controls_have_no_public_or_ai_access_and_no_bypass_argument
     assert "ledger" not in vars(router)
     assert not any("pause" in route.path for route in router.router.routes)
     arguments = inspect.signature(ledger.execute_batch).parameters
-    assert set(arguments) == {"draft", "execution_id", "storage_path", "audit_path"}
+    assert set(arguments) == {
+        "draft",
+        "execution_id",
+        "storage_path",
+        "audit_path",
+        "step_up_satisfied",
+    }
     assert set(inspect.signature(rules.execution_policy).parameters) == set()
 
 
@@ -6788,3 +6802,122 @@ def test_gateway_without_require_otp_ignores_a_supplied_code(
     _, _, request = _gateway_challenge(env)
     reply = gateway.execute(request.model_copy(update={"otp": "000000"}), **env.paths)
     assert reply.status == "executed"
+
+
+@pytest.mark.usefixtures("financial_kernel")
+def test_live_history_tracks_committed_actions_without_replaying_balances(
+    ledger_store, monkeypatch
+):
+    monkeypatch.setattr(readonly, "_ledger_path", lambda path: path or ledger_store["storage_path"])
+    draft = _ledger_draft(
+        _ledger_action(), _ledger_action("stock_order", quantity=1), _ledger_action("fx_conversion")
+    )
+    ledger.execute_batch(draft, "ex_history_view", **ledger_store)
+    ledger.execute_batch(draft, "ex_history_view", **ledger_store)
+    before = ledger_store["storage_path"].read_bytes()
+    history = readonly.list_transactions("u_demo")
+    new = [t for t in history if not t.transaction_id.startswith("tx_seed_")]
+    assert len(new) == 4
+    assert len({t.transaction_id for t in new}) == 4
+    fx = [t for t in new if t.transaction_id.startswith("tx_00000003")]
+    assert {(t.direction, t.currency, t.amount) for t in fx} == {
+        ("debit", "SGD", Decimal("1000.00")),
+        ("credit", "USD", Decimal("740.00")),
+    }
+    insights = readonly.get_account_insights("u_demo")
+    assert insights["accounts"][0]["balance"] == "3100.00"
+    assert {t["id"] for t in insights["transactions"]} == {t.transaction_id for t in history}
+    assert not any(
+        t["is_spending"] for t in insights["transactions"] if t["id"].startswith("tx_000")
+    )
+    assert ledger_store["storage_path"].read_bytes() == before
+
+
+@pytest.mark.usefixtures("financial_kernel")
+def test_financial_context_uses_current_obligations_and_explicit_categories(
+    ledger_store, monkeypatch
+):
+    monkeypatch.setattr(readonly, "_ledger_path", lambda path: path or ledger_store["storage_path"])
+    original = readonly.get_account_insights("u_demo")
+    rows = original["financial"]["accounts"]
+    assert rows[0]["reserve"] == "500.00"
+    assert "reserve" not in rows[1]
+    for period in original["spending"]:
+        for name in ("previous", "current"):
+            data = period[name]
+            assert sum((Decimal(c["amount"]) for c in data["categories"]), Decimal(0)) == Decimal(
+                data["total"]
+            )
+            assert not {"Transfers", "Investments"} & {c["label"] for c in data["categories"]}
+    ledger.execute_batch(
+        _ledger_draft(_ledger_action("bill_payment")), "ex_bill_view", **ledger_store
+    )
+    assert not any("9012" in b.label for b in readonly.list_bills("u_demo"))
+    updated = readonly.get_account_insights("u_demo")
+    assert updated["accounts"][0]["balance"] == "1960.00"
+    assert all(
+        not any("DBS" in b["label"] for b in a.get("commitments", {}).get("bills", []))
+        for a in updated["financial"]["accounts"]
+    )
+    new = next(t for t in updated["transactions"] if t["id"] == "tx_00000001")
+    assert new["category"] == "Bills" and new["is_spending"] is True
+
+
+def test_old_runtime_accepts_only_matching_category_annotations(bank_seed, monkeypatch):
+    user = copy.deepcopy(bank_seed["users"]["u_demo"])
+    user["transaction_history"] = user["transaction_history"][:12]
+    user["accounts"][0].pop("reserve")
+    for record in user["transaction_history"]:
+        record.pop("category")
+        record.pop("is_spending")
+    monkeypatch.setattr(readonly, "_current_user", lambda *args, **kwargs: user)
+    data = readonly.get_account_insights("u_demo")
+    assert data["financial"]["accounts"][0]["reserve"] == "500.00"
+    assert (
+        next(t for t in data["transactions"] if t["id"] == "tx_seed_0003")["category"] == "Housing"
+    )
+    user["transaction_history"][2]["amount"] = "1.00"
+    user["accounts"][0]["reserve"] = "250.00"
+    data = readonly.get_account_insights("u_demo")
+    assert data["financial"]["accounts"][0]["reserve"] == "250.00"
+    assert (
+        next(t for t in data["transactions"] if t["id"] == "tx_seed_0003")["category"]
+        == "Uncategorised"
+    )
+
+    assert data["spending"] is None
+
+
+def test_statement_projects_internal_moves_and_sales_without_cross_user_leaks(bank_seed):
+    user = bank_seed["users"]["u_demo"]
+    move = {
+        "type": "account_transfer",
+        "from_account_id": "acc_1234",
+        "from_account_label": "Savings",
+        "to_account_id": "acc_5678",
+        "to_account_label": "Current",
+        "currency": "SGD",
+        "amount": "20.00",
+    }
+    transaction = {
+        "user_id": "u_demo",
+        "reference": "tx_00000001",
+        "completed_at": "2026-10-16T10:00:00+08:00",
+        "action": move,
+        "execution_details": {},
+    }
+    other = {**transaction, "user_id": "other", "reference": "tx_00000002"}
+    sale = {
+        **transaction,
+        "reference": "tx_00000003",
+        "action": _ledger_action("stock_order", side="sell", quantity=1),
+        "execution_details": {"gross_amount": "227.50"},
+    }
+    history = readonly._committed_history(user, [transaction, other, sale])[19:]
+    assert len(history) == 3
+    assert [(r["direction"], r["amount"]) for r in history] == [
+        ("debit", "20.00"),
+        ("credit", "20.00"),
+        ("credit", "227.50"),
+    ]
+    assert all(r["is_spending"] is False for r in history)

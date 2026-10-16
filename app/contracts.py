@@ -544,6 +544,7 @@ class ExecuteRequest(ContractModel):
     nonce: str
     signature: str
     otp: str | None = None
+    fingerprint: bool | None = None
 
 
 class ActionResult(ContractModel):
@@ -558,7 +559,7 @@ class ExecutedResponse(ContractModel):
 
 class NeedsExtraCheckResponse(ContractModel):
     status: Literal["needs_extra_check"]
-    method: Literal["otp"]
+    method: Literal["otp", "fingerprint"]
     message: str
 
 
@@ -572,6 +573,7 @@ RejectReason = Literal[
     "kyc_incomplete",
     "insufficient_funds",
     "bad_otp",
+    "bad_fingerprint",
     "rate_changed",
 ]
 

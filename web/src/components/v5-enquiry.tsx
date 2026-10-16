@@ -1,16 +1,19 @@
 "use client";
+import { financialSchema } from "@/lib/v4-financial";
+import { activityLabel } from "./v4-primitives";
 import { useState } from "react";
 import { z } from "zod";
 import { quoteSchema } from "@/lib/contracts";
 import { displayMoney } from "@/lib/money";
 const money = z.string().regex(/^-?\d+\.\d{2}$/);
-const period = z.object({ from: z.string(), through: z.string(), total: money, count: z.number().int() });
+const period = z.object({ from: z.string(), through: z.string(), total: money, count: z.number().int(), categories: z.array(z.object({ label: z.string(), amount: money })).optional() });
 const item = z.object({
   occurrence_id: z.string(),
   label: z.string(),
   amount: money,
   currency: z.string(),
   due_at: z.string(),
+  biller_id: z.string().optional(),
 });
 const forecast = z.union([
   z.object({ account_id: z.string(), unavailable: z.literal(true) }),
@@ -42,6 +45,7 @@ export const enquirySchema = z
     source: z.enum(["jev", "fallback"]),
     latency_ms: z.number(),
     data: z.object({
+      financial: financialSchema.optional(),
       quotes: z.array(quoteSchema).optional(),
       source: z.literal("synthetic"),
       as_of: z.string(),
@@ -140,6 +144,7 @@ function Empty({ children }: { children: React.ReactNode }) {
 export function V5Enquiry({ value }: { value: Enquiry }) {
   const [account, setAccount] = useState("all");
   const [direction, setDirection] = useState("all");
+  const [spendingPeriod, setSpendingPeriod] = useState<"current" | "previous" | "latest">("latest");
   const data = value.data,
     root = value.spec.elements[value.spec.root];
   function content(type: z.infer<typeof component>, expanded: boolean, variant: string) {
@@ -184,7 +189,7 @@ export function V5Enquiry({ value }: { value: Enquiry }) {
             {data.forecasts.some((f) => "unavailable" in f) && (
               <Empty>Some account schedules are unavailable.</Empty>
             )}
-            {!bills.length && <Empty>No upcoming bills in the available schedules.</Empty>}
+            {!bills.length && <Empty>No bills due in this period.</Empty>}
             {bills
               .sort((a, b) => a.due_at.localeCompare(b.due_at))
               .map((b) => (
@@ -194,7 +199,7 @@ export function V5Enquiry({ value }: { value: Enquiry }) {
                 >
                   <span>
                     <small>{date(b.due_at)}</small>
-                    {b.label}
+                    {activityLabel(b.label)}
                   </span>
                   <strong>{displayMoney(b.amount, b.currency)}</strong>
                 </div>
@@ -224,9 +229,7 @@ export function V5Enquiry({ value }: { value: Enquiry }) {
                       />
                     )}
                     <Empty>
-                      Estimate at {date(f.window_end)} - scheduled income of{" "}
-                      {displayMoney(f.scheduled_income_total, f.currency)} and recorded bills of{" "}
-                      {displayMoney(f.commitment_total, f.currency)}.
+                      By {date(f.window_end)}: +{displayMoney(f.scheduled_income_total, f.currency)} income, -{displayMoney(f.commitment_total, f.currency)} bills.
                     </Empty>
                     {cents(f.projected_balance_before) < 0n && (
                       <p className="v5-warning">Projected shortfall</p>
@@ -235,7 +238,7 @@ export function V5Enquiry({ value }: { value: Enquiry }) {
                 )}
               </div>
             ))}
-            <Empty>Other spending is excluded. Funds may be needed before income arrives.</Empty>
+            <Empty>Excludes other spending. Income may arrive after bills are due.</Empty>
           </>
         );
       case "TransactionList": {
@@ -260,7 +263,7 @@ export function V5Enquiry({ value }: { value: Enquiry }) {
                 </select>
               </label>
               <label>
-                Direction
+                Money in / out
                 <select value={direction} onChange={(e) => setDirection(e.target.value)}>
                   <option value="all">All</option>
                   <option value="debit">Money out</option>
@@ -268,12 +271,12 @@ export function V5Enquiry({ value }: { value: Enquiry }) {
                 </select>
               </label>
             </div>
-            {!transactions.length && <Empty>No matching records.</Empty>}
+            {!transactions.length && <Empty>No transactions found.</Empty>}
             {transactions.slice(0, expanded ? 50 : 5).map((t) => (
               <div className="v5-enquiry-row" key={t.id}>
                 <span>
                   <small>{date(t.time)}</small>
-                  {t.description}
+                  {activityLabel(t.description)}
                 </span>
                 <strong>
                   {t.direction === "debit" ? "-" : "+"}
@@ -287,7 +290,7 @@ export function V5Enquiry({ value }: { value: Enquiry }) {
                 {transactions.slice(5).map((t) => (
                   <div className="v5-enquiry-row" key={t.id}>
                     <span>
-                      {date(t.time)} - {t.description}
+                      {date(t.time)} - {activityLabel(t.description)}
                     </span>
                     <strong>
                       {t.direction === "debit" ? "-" : "+"}
@@ -305,19 +308,28 @@ export function V5Enquiry({ value }: { value: Enquiry }) {
         if (data.spending === null) return <Empty>Spending history unavailable.</Empty>;
         return (
           <>
-            {data.spending.map((s) => (
+            {type === "SpendingBreakdown" && <label className="v5-caption">Period{" "}
+              <select aria-label="Spending period" value={spendingPeriod} onChange={e => setSpendingPeriod(e.target.value as typeof spendingPeriod)}>
+                <option value="latest">Latest activity</option><option value="current">This month</option><option value="previous">Last month</option>
+              </select>
+            </label>}
+            {data.spending.map((s) => {
+              const selectedPeriod = spendingPeriod === "latest" ? (s.current.count ? s.current : s.previous) : s[spendingPeriod];
+              return (
               <div key={s.currency}>
                 <h3>{s.currency}</h3>
                 {type === "SpendingBreakdown" ? (
                   <>
                     <Empty>
-                      {date(s.current.from)} to {date(s.current.through)} - categories are not supplied by the
-                      bank.
+                      {date(selectedPeriod.from)} to {date(selectedPeriod.through)}
                     </Empty>
-                    <div className="v5-enquiry-row">
-                      <span>Uncategorised outflows</span>
-                      <strong>{displayMoney(s.current.total, s.currency)}</strong>
-                    </div>
+                    {(selectedPeriod.categories ?? [{ label: "Recorded spending", amount: selectedPeriod.total }]).map(c => (
+                      <div className="v5-bars" key={c.label}>
+                        <div className="v5-enquiry-row"><span>{c.label}</span><strong>{displayMoney(c.amount, s.currency)}</strong></div>
+                        <div className="v5-track" aria-hidden="true"><i style={{ width: `${cents(selectedPeriod.total) > 0n ? Number(cents(c.amount) * 100n / cents(selectedPeriod.total)) : 0}%`, background: "#c8102e" }} /></div>
+                      </div>
+                    ))}
+                    {selectedPeriod.categories?.length === 0 && <Empty>No recorded spending in this period.</Empty>}
                   </>
                 ) : (
                   <>
@@ -352,11 +364,11 @@ export function V5Enquiry({ value }: { value: Enquiry }) {
                         </div>
                       );
                     })}
-                    <Empty>Partial month versus a full month; not a like-for-like trend.</Empty>
+                    <Empty>Current month is incomplete.</Empty>
                   </>
                 )}
               </div>
-            ))}
+            ); })}
           </>
         );
     }
@@ -364,8 +376,7 @@ export function V5Enquiry({ value }: { value: Enquiry }) {
   return (
     <div className="v5-card-content" data-source={value.source}>
       <p className="v5-caption">
-        Synthetic bank data - {date(data.as_of)}
-        {value.source === "fallback" ? " - standard view" : ""}
+        As of {date(data.as_of)}
       </p>
       <div className={`v5-tree v5-tree-${root.variant}`}>
         {root.children.map((id) => {
@@ -378,12 +389,6 @@ export function V5Enquiry({ value }: { value: Enquiry }) {
           );
         })}
       </div>
-      {root.children.some(id => ["TransactionList", "SpendingBreakdown", "PeriodComparison"].includes(value.spec.elements[id].type)) && (
-        <p className="v5-caption">
-          History contains sample records, not a complete bank statement. Transfers and investments may be
-          included in outflows.
-        </p>
-      )}
     </div>
   );
 }

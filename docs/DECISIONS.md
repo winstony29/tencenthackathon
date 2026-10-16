@@ -618,3 +618,47 @@ prefix. No ledger, device or payment-policy reset. Malformed spoken decimals req
 - **Docs to update with the code:** CONTRACTS §3.1 and §8, STRUCTURE (`voiceprint.py`, `var/models/`, `var/voiceprints.json`), `requirements.txt` (`sherpa-onnx`), BRIEF demo row 7 (a second speaker is refused), CHECKLIST W-11.
 **Why:** Voice is the whole product, so binding each spoken command to the enrolled speaker is the biometric judges expect. A local embedding model needs no account, runs on the Linux server and the Mac alike, and costs nothing per call. Fail-open on `unavailable` because a dead model file must not take the demo down; the device signature still gates execution.
 **Limits:** Typed input bypasses the voice check by design (the device key is the gate for everyone). The threshold is calibrated on one speaker and synthetic impostors; a real second speaker may move it. A replay of a recording would pass; liveness is out of scope. The first-speaker rule means whoever speaks first after a reset owns the demo account, as with device keys. The 26 MB model is downloaded at first start, so the first boot on a new server needs network access to GitHub.
+### 2026-10-16: Account context uses committed bank state
+
+Read-only transaction history combines the opening statement sample with committed ledger
+legs, including both sides of account transfers and FX. It never replays historical amounts
+into balances. Insights derive balances, current bill states and history from one snapshot.
+Spending includes explicitly classified consumer debits; transfers, FX and investments stay
+in history but are excluded from spending. The seed assigns categories and a Savings reserve
+of SGD 500.00. These are fixture metadata, not inferred user instructions. Older ledgers can
+read matching seed annotations and reserve defaults without any financial-state migration;
+runtime metadata takes precedence. No existing balances, keys or execution records change.
+V5 obtains optional financial context alongside its existing account/quote reads, and binds
+bill commitments to draft actions by biller identity to avoid counting payments twice.
+Context failure leaves optional analysis unavailable; it never blocks an otherwise valid
+handoff or bypasses payment authorization. No extra JEV request is introduced.
+
+Remaining limits: statement history is still a partial sample, recurrence labels do not
+expand into future occurrences, and investment cost basis/card statement detail are absent.
+
+
+### 2026-10-16: Direct OpenAI validator connection
+
+The local validator is configured with VALIDATOR_PROVIDER=openai,
+LLM_BASE_URL=https://api.openai.com/v1, VALIDATOR_MODEL=gpt-4.1-mini and
+LLM_API_KEY supplied privately in .env. Codex and compatible-api remain selectable.
+The OpenAI adapter reuses a lifespan-managed HTTP connection, makes one request with
+strict JSON schema, temperature zero, store=false and a 4096-token output ceiling.
+The existing 12-second API deadline remains. Refusals, truncated output, HTTP failures,
+missing keys and malformed/incomplete audits cannot authorize payment. There are no
+hidden retries or CLI fallbacks. Concise per-field results reduce generation time;
+semantic rules, field coverage, deterministic checks, receipts and bank enforcement remain.
+Model latency and semantic accuracy require a live evaluation after credentials are added;
+transport regression tests use synthetic responses and cannot establish either.
+
+
+### 2026-10-16: Live validator smoke test selects GPT-4.1
+
+The OpenAI key authenticated successfully. GPT-4.1-mini twice reported match on a
+synthetic SGD 500 draft whose instruction explicitly requested SGD 50; one reply even
+contained expected=50.00 while marking the amount match. It is not the selected default.
+GPT-4.1 detected that mismatch, then passed three isolated full-validator cases: correct
+transfer (match, 2.791s), wrong amount (mismatch, 2.477s), and wrong recipient (mismatch,
+2.807s). Local .env and .env.example now select gpt-4.1. These are a small smoke cohort,
+not an accuracy or latency guarantee. Tests disabled execution, isolated approval/audit
+state, used synthetic identities and left the runtime ledger unchanged.

@@ -1753,3 +1753,80 @@ def test_intent_picks_are_not_independent_validator_evidence(draft, monkeypatch)
         },
     )
     assert asyncio.run(validator.validate(draft))["status"] == "match"
+
+
+@pytest.mark.parametrize(
+    "failure", [None, "length", "refusal", "malformed", "rate_limit", "timeout"]
+)
+def test_openai_validator_uses_strict_output_and_fails_closed(monkeypatch, failure):
+    import httpx
+
+    from app import llm
+
+    monkeypatch.setattr(config, "VALIDATOR_PROVIDER", "openai")
+    monkeypatch.setattr(config, "VALIDATOR_MODEL", "gpt-4.1-mini")
+    monkeypatch.setattr(config, "LLM_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setattr(config, "LLM_API_KEY", "test-only-key")
+    monkeypatch.setattr(config, "REWRITER_MODEL", "different-model")
+    calls = []
+    expected = {"checks": [{"field": "actions", "verdict": "match", "expected": "1", "note": ""}]}
+
+    def respond(request):
+        calls.append(request)
+        body = json.loads(request.content)
+        assert str(request.url) == "https://api.openai.com/v1/chat/completions"
+        assert body["response_format"]["json_schema"]["strict"] is True
+        assert body["response_format"]["json_schema"]["schema"] == llm.AUDIT_SCHEMA
+        assert body["store"] is False and body["max_completion_tokens"] == 4096
+        assert body["temperature"] == 0
+        assert "tools" not in body
+        if failure == "timeout":
+            raise httpx.ReadTimeout("test timeout", request=request)
+        if failure == "rate_limit":
+            return httpx.Response(429, json={"error": "rate limited"})
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "length" if failure == "length" else "stop",
+                        "message": {
+                            "content": "broken" if failure == "malformed" else json.dumps(expected),
+                            "refusal": "Cannot answer" if failure == "refusal" else None,
+                        },
+                    }
+                ]
+            },
+        )
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            monkeypatch.setattr(llm, "_client", client)
+            if failure:
+                with pytest.raises((llm.Unavailable, httpx.HTTPError, ValueError)):
+                    await llm.audit("Independent checks", {"required_fields": ["actions"]})
+                assert len(calls) == 1  # no hidden retry or CLI fallback
+            else:
+                for _ in range(2):
+                    assert (
+                        await llm.audit("Independent checks", {"required_fields": ["actions"]})
+                        == expected
+                    )
+                assert len(calls) == 2 and llm._client is client
+
+    asyncio.run(run())
+
+
+def test_openai_missing_key_never_calls_network_or_codex(monkeypatch):
+    from app import llm
+
+    monkeypatch.setattr(config, "VALIDATOR_PROVIDER", "openai")
+    monkeypatch.setattr(config, "LLM_API_KEY", "")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("No model may run without the API key")
+
+    monkeypatch.setattr(llm, "_new_client", forbidden)
+    monkeypatch.setattr(llm, "_codex", forbidden)
+    with pytest.raises(llm.Unavailable):
+        asyncio.run(llm.audit("Independent checks", {}))

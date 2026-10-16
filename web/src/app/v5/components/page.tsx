@@ -140,18 +140,16 @@ export default function Components() {
   }
   const [active, setActive] = useState(false);
   return (
-    <main className="v5-shell v5-gallery">
+    <main className="v4-shell v5-shell v5-gallery">
       <header>
         <Link href="/v5/">Back to app</Link>
         <h1>Component library</h1>
-        <p>Current V5 components ? sample data ? payments disabled</p>
-        <Link href="/v4/components/">Explore the earlier V4 library</Link>
+        <p>Component previews</p>
       </header>
       <section aria-label="Read-only components">
         <h2>Account insights</h2>
-        <p>Seven read-only blocks using the virtual bank&apos;s synthetic data.</p>
         <button className="v5-secondary" onClick={() => void loadInsights()}>
-          Show account components
+          Show account insights
         </button>
         {error && <p role="alert">{error}</p>}
         {insights && (

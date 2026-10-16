@@ -208,12 +208,6 @@
   color: #68736b;
   margin: 14px 0 0;
 }
-.v5-secure {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-}
 .v5-warning {
   font-size: 13px;
   color: #78450a;
@@ -280,6 +274,43 @@
 .v5-otp span {
   color: #58635b;
   font-size: 12px;
+}
+.v5-fingerprint-prompt {
+  display: grid;
+  gap: 12px;
+  margin-top: 20px;
+  text-align: center;
+}
+.v5-fingerprint-prompt p {
+  font-size: 14px;
+  color: #38433b;
+  margin: 0;
+}
+.v5-fingerprint-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 16px 24px;
+  border: 2px solid #b5beb7;
+  border-radius: 14px;
+  background: #f5f7f5;
+  color: #38433b;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+}
+.v5-fingerprint-btn:hover:not(:disabled) {
+  border-color: #38433b;
+  background: #e8ebe8;
+}
+.v5-fingerprint-btn:disabled {
+  cursor: default;
+}
+.v5-fingerprint-done {
+  border-color: #2d8a4e;
+  background: #e8f5ed;
+  color: #2d8a4e;
 }
 .v5-bank-result {
   padding-top: 20px;
@@ -558,23 +589,6 @@
   cursor: pointer;
   padding: 8px 0;
 }
-.v5-footer {
-  max-width: 1500px;
-  margin: auto;
-  padding: 20px 4vw;
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  color: #9ca79f;
-  font-size: 11px;
-}
-.v5-footer a {
-  color: inherit;
-  display: inline-flex;
-  gap: 6px;
-  align-items: center;
-  text-decoration: none;
-}
 .v5-shell .v4-grid {
   gap: 16px;
 }
@@ -663,9 +677,6 @@
   }
   .v5-shell .v4-panel {
     padding: 18px 14px;
-  }
-  .v5-footer {
-    padding-inline: 20px;
   }
   .v5-heard p {
     font-size: 17px;

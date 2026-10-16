@@ -109,7 +109,7 @@ GATE_HIGH_AMOUNT = Decimal("1000")  # where the stricter threshold starts
 GATE_DELTA = 0.15  # most a pick's probability may vary across phrasings
 AUDIT_DEFAULT_LIMIT = 50  # entries GET /api/audit returns when no limit is given (CONTRACTS §3.3)
 
-VALIDATOR_PROVIDER = os.getenv("VALIDATOR_PROVIDER", "codex")  # local demo, or compatible-api
+VALIDATOR_PROVIDER = os.getenv("VALIDATOR_PROVIDER", "codex")  # codex, openai, or compatible-api
 VALIDATOR_CODEX_MODEL = os.getenv("VALIDATOR_CODEX_MODEL", "")  # blank uses CLI default
 VALIDATOR_TIMEOUT_SECONDS = 45 if VALIDATOR_PROVIDER == "codex" else 12
 VALIDATOR_RETRY_SECONDS = 10  # an "unavailable" check is reused this long before a model rerun

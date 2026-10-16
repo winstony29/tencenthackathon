@@ -62,8 +62,9 @@ class LedgerAuditPending(RuntimeError):
 class LedgerRiskRejected(LedgerRejected):
     """No financial commit; J-06 must map status and reason to its public response."""
 
-    def __init__(self, reason: str, status: str = "reject") -> None:
+    def __init__(self, reason: str, status: str = "reject", method: str = "otp") -> None:
         self.status = status
+        self.method = method
         super().__init__(reason)
 
 
@@ -438,6 +439,8 @@ def _enforce_risk(
     now: datetime,
     path: Path,
     audit_path: Path | None,
+    *,
+    step_up_satisfied: str | None = None,
 ) -> None:
     # No request-supplied policy/proof/skip flag. This call is mandatory and remains
     # under the same lock through staging, replacement and audit acknowledgement.
@@ -447,6 +450,14 @@ def _enforce_risk(
     paused = state.get("payment_control", {"paused": True})["paused"]
     reason = "payments_paused" if paused else decision.reason
     status = "reject" if paused else decision.status
+    method = "otp" if paused else decision.method
+    # Allow the gateway to confirm a step-up the ledger itself requested.
+    if (
+        step_up_satisfied is not None
+        and status == "needs_extra_check"
+        and method == step_up_satisfied
+    ):
+        return
     if status == "allow":
         return
     identity = json.dumps(["risk", execution_id, fingerprint, reason], separators=(",", ":"))
@@ -463,7 +474,7 @@ def _enforce_risk(
         path,
         audit_path,
     )
-    raise LedgerRiskRejected(reason, status)
+    raise LedgerRiskRejected(reason, status, method)
 
 
 def _record(records: list[dict[str, Any]], field: str, identifier: str) -> dict[str, Any]:
@@ -654,6 +665,7 @@ def execute_batch(
     *,
     storage_path: Path | None = None,
     audit_path: Path | None = None,
+    step_up_satisfied: str | None = None,
 ) -> ExecutedResponse:
     """Apply an authorised draft once; only J-06's gateway should call this function.
 
@@ -664,6 +676,7 @@ def execute_batch(
     Internal reasons require gateway mapping to the existing public error contract.
     Risk checks are mandatory against committed state and backend time under the
     ledger lock. Missing controls mean paused; no client proof or bypass is accepted.
+    The gateway may confirm a step-up it previously requested via step_up_satisfied.
     """
     if not isinstance(execution_id, str) or not re.fullmatch(
         r"ex_[A-Za-z0-9_-]{1,80}", execution_id
@@ -687,7 +700,16 @@ def execute_batch(
         prior = state["executions"].get(execution_id)
         if prior is None:
             now = datetime.now(UTC)
-            _enforce_risk(state, draft, execution_id, fingerprint, now, path, audit_path)
+            _enforce_risk(
+                state,
+                draft,
+                execution_id,
+                fingerprint,
+                now,
+                path,
+                audit_path,
+                step_up_satisfied=step_up_satisfied,
+            )
         try:
             if prior is not None:
                 _require(prior["fingerprint"] == fingerprint, "execution_conflict")

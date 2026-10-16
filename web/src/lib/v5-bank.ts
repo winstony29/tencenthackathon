@@ -14,7 +14,11 @@ export const executionSchema = z.discriminatedUnion("status", [
       .array(z.strictObject({ action_index: z.number().int().nonnegative(), reference: z.string().min(1) }))
       .min(1),
   }),
-  z.strictObject({ status: z.literal("needs_extra_check"), method: z.literal("otp"), message: z.string() }),
+  z.strictObject({
+    status: z.literal("needs_extra_check"),
+    method: z.union([z.literal("otp"), z.literal("fingerprint")]),
+    message: z.string(),
+  }),
   z.strictObject({ status: z.literal("rejected"), reason: z.string(), message: z.string() }),
 ]);
 export type Execution = z.infer<typeof executionSchema>;
@@ -126,13 +130,18 @@ export async function preparePayment(
     };
   });
 }
-export async function submitPayment(payment: Payment, otp: string | null, signal: AbortSignal) {
+export async function submitPayment(
+  payment: Payment,
+  otp: string | null,
+  signal: AbortSignal,
+  fingerprint?: boolean | null,
+) {
   // The gateway may recover an already committed payment after nonce expiry.
   // An uncommitted expired approval is rejected server-side.
   const result = await post(
     "/execute",
     executionSchema,
-    { nonce: payment.nonce, signature: payment.signature, otp },
+    { nonce: payment.nonce, signature: payment.signature, otp, fingerprint: fingerprint ?? null },
     signal,
   );
   if (

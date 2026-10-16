@@ -21,7 +21,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException
 
-from app import config, evidence, transaction_state
+from app import config, evidence, llm, transaction_state
 from app.audit import AuditError
 from app.audit_http import AuditMiddleware
 from app.audit_http import router as audit_router
@@ -45,6 +45,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             await asyncio.to_thread(voiceprint.preload)  # 26 MB download on first start (D-054)
         except Exception:
             logging.getLogger(__name__).warning("Speaker model unavailable; voice checks fail open")
+    await llm.open_connection()
 
     async def retention():
         while True:
@@ -61,6 +62,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         maintenance.cancel()
         with suppress(asyncio.CancelledError):
             await maintenance
+        await llm.close_connection()
         await presentation_v4.close_connection()
         await jev.close_connection()
 

@@ -36,6 +36,10 @@ class TransferPolicy(BaseModel):
     velocity_max_transfers: int = Field(strict=True, gt=0)
     velocity_window_minutes: int = Field(strict=True, gt=0)
     daily_timezone: Literal["Asia/Singapore"]
+    # When recent transfers in the velocity window reach this count, require
+    # biometric step-up (fingerprint) instead of waiting for the hard reject.
+    # 0 disables velocity-based step-up; must be below velocity_max_transfers.
+    velocity_step_up_at: int = Field(default=0, strict=True, ge=0)
 
     @model_validator(mode="after")
     def _consistent_limits(self) -> "TransferPolicy":
@@ -45,6 +49,8 @@ class TransferPolicy(BaseModel):
             timedelta(minutes=self.velocity_window_minutes)
         except OverflowError:
             raise ValueError("Velocity window is outside supported dates") from None
+        if self.velocity_step_up_at > 0 and self.velocity_step_up_at >= self.velocity_max_transfers:
+            raise ValueError("velocity_step_up_at must be below velocity_max_transfers when set")
         return self
 
 
@@ -94,15 +100,16 @@ class RiskDecision(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     status: Literal["allow", "reject", "needs_extra_check"]
     reason: RiskReason
+    method: Literal["otp", "fingerprint"] = "otp"
 
 
-def _decision(reason: RiskReason) -> RiskDecision:
+def _decision(reason: RiskReason, method: str = "otp") -> RiskDecision:
     status = "reject"
     if reason in {"allowed", "already_committed"}:
         status = "allow"
     elif reason == "step_up_required":
         status = "needs_extra_check"
-    return RiskDecision(status=status, reason=reason)
+    return RiskDecision(status=status, reason=reason, method=method)
 
 
 def _fingerprint(draft: Draft) -> str:
@@ -186,11 +193,12 @@ def _transfer_usage(
 
 def _limits(
     amount: Decimal, spent: list[Decimal], recent: int, policy: TransferPolicy
-) -> RiskReason:
+) -> tuple[RiskReason, str]:
+    """Return (reason, method) for a single SGD transfer against policy limits."""
     if amount <= 0:
-        return "invalid_amount"
+        return ("invalid_amount", "otp")
     if amount > policy.per_transfer_max:
-        return "per_transfer_limit_exceeded"
+        return ("per_transfer_limit_exceeded", "otp")
     # Keep cents exact even when the caller's Decimal context has very low precision.
     with localcontext() as context:
         context.prec = (
@@ -202,12 +210,14 @@ def _limits(
             + 1
         )
         if sum(spent, Decimal("0.00")) + amount > policy.daily_transfer_max:
-            return "daily_limit_exceeded"
+            return ("daily_limit_exceeded", "otp")
     if recent >= policy.velocity_max_transfers:
-        return "velocity_exceeded"
+        return ("velocity_exceeded", "otp")
+    if policy.velocity_step_up_at > 0 and recent >= policy.velocity_step_up_at:
+        return ("step_up_required", "fingerprint")
     if amount > policy.step_up_above:
-        return "step_up_required"
-    return "allowed"
+        return ("step_up_required", "otp")
+    return ("allowed", "otp")
 
 
 def evaluate_risk(
@@ -282,7 +292,8 @@ def evaluate_risk(
         if failure is not None:
             return _decision(failure)
         spent, recent = _transfer_usage(state, draft.user_id, now, policy)
-        return _decision(_limits(draft.actions[0].amount, spent, recent, policy))
+        reason, method = _limits(draft.actions[0].amount, spent, recent, policy)
+        return _decision(reason, method)
     except (
         ValueError,
         TypeError,

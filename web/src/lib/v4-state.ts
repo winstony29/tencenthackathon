@@ -1,4 +1,4 @@
-import { financialSchema } from "./v4-financial";
+import { financialSchema, cents } from "./v4-financial";
 import { z } from "zod";
 import { accountsSchema, draftSchema, quoteSchema, presentationIntentSchema, type Draft } from "./contracts";
 import { editedActions, updateEdit, type DraftEdits } from "./draft-editor";
@@ -57,7 +57,8 @@ function validHandoff(h: Handoff) {
         c.commitments?.bills.some((b) => {
           if (b.covered_by_draft_action === undefined) return false;
           const a = h.draft.actions[b.covered_by_draft_action];
-          return a?.type !== "bill_payment" || a.from_account_id !== c.account_id || a.amount !== b.amount;
+          return a?.type !== "bill_payment" || a.from_account_id !== c.account_id ||
+            (b.biller_id ? a.biller_id !== b.biller_id || cents(a.amount) > cents(b.amount) : a.amount !== b.amount);
         }),
     )
   )
