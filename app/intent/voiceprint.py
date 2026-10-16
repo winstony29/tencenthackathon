@@ -4,7 +4,7 @@ Owner: Winston
 Diagram box: Speech to text (Intent detection column)
 Contract: the `speaker` object in CONTRACTS §3.1; called by app/intent/router.py before ASR
 
-A speaker embedding (sherpa-onnx, 3D-Speaker ERes2NetV2 trained on CN-Celeb) is compared by
+A speaker embedding (sherpa-onnx, 3D-Speaker CAM++ trained on Chinese and English) is compared by
 cosine similarity with the user's enrolled mean embedding. The first speaker after a reset
 enrols `u_demo`, like device keys. Any failure of the model is "unavailable" and the request
 continues: a dead model file never takes the demo down; the device key still gates execution.
