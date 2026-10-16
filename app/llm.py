@@ -12,6 +12,50 @@ import httpx
 
 from app import config
 
+AUDIT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["checks"],
+    "properties": {
+        "checks": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["field", "verdict", "expected", "note"],
+                "properties": {
+                    "field": {"type": "string"},
+                    "verdict": {"type": "string", "enum": ["match", "mismatch", "uncertain"]},
+                    "expected": {"type": "string"},
+                    "note": {"type": "string"},
+                },
+            },
+        }
+    },
+}
+
+_client: httpx.AsyncClient | None = None
+
+
+def _new_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        timeout=httpx.Timeout(config.VALIDATOR_TIMEOUT_SECONDS, connect=3.0, pool=1.0),
+        limits=httpx.Limits(max_connections=20, max_keepalive_connections=10, keepalive_expiry=60),
+    )
+
+
+async def open_connection() -> None:
+    global _client
+    if _client is None or _client.is_closed:
+        _client = _new_client()
+
+
+async def close_connection() -> None:
+    global _client
+    if _client is not None:
+        await _client.aclose()
+        _client = None
+
 
 class Unavailable(RuntimeError):
     pass
@@ -29,22 +73,55 @@ async def audit(system: str, payload: dict) -> dict:
         or model == config.REWRITER_MODEL
     ):
         raise Unavailable("Configure an independent validator model.")
-    async with httpx.AsyncClient(timeout=config.VALIDATOR_TIMEOUT_SECONDS) as client:
+    if config.VALIDATOR_PROVIDER not in {"openai", "compatible-api"}:
+        raise Unavailable("Unknown validator provider.")
+    body = {
+        "model": model,
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": system},
+            {
+                "role": "user",
+                "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            },
+        ],
+    }
+    if config.VALIDATOR_PROVIDER == "openai":
+        if config.LLM_BASE_URL.rstrip("/") != "https://api.openai.com/v1":
+            raise Unavailable("OpenAI validator requires the official HTTPS endpoint.")
+        body.update(
+            store=False,
+            max_completion_tokens=4096,
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "banking_audit",
+                    "strict": True,
+                    "schema": AUDIT_SCHEMA,
+                },
+            },
+        )
+
+    async def send(client: httpx.AsyncClient) -> dict:
         response = await client.post(
             config.LLM_BASE_URL.rstrip("/") + "/chat/completions",
             headers={"Authorization": f"Bearer {config.LLM_API_KEY}"},
-            json={
-                "model": model,
-                "temperature": 0,
-                "response_format": {"type": "json_object"},
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-                ],
-            },
+            json=body,
         )
         response.raise_for_status()
-        return json.loads(response.json()["choices"][0]["message"]["content"])
+        choice = response.json()["choices"][0]
+        if choice.get("finish_reason") != "stop" or choice["message"].get("refusal"):
+            raise Unavailable("Validator did not complete its audit.")
+        result = json.loads(choice["message"]["content"])
+        if not isinstance(result, dict):
+            raise Unavailable("Invalid validator response.")
+        return result
+
+    if _client is not None:
+        return await send(_client)
+    async with _new_client() as client:
+        return await send(client)
 
 
 def _codex(system: str, payload: dict) -> dict:
@@ -52,30 +129,9 @@ def _codex(system: str, payload: dict) -> dict:
     executable = shutil.which("codex")
     if not executable:
         raise Unavailable("Local Codex is not installed or not on PATH.")
-    schema = {
-        "type": "object",
-        "additionalProperties": False,
-        "required": ["checks"],
-        "properties": {
-            "checks": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["field", "verdict", "expected", "note"],
-                    "properties": {
-                        "field": {"type": "string"},
-                        "verdict": {"type": "string", "enum": ["match", "mismatch", "uncertain"]},
-                        "expected": {"type": "string"},
-                        "note": {"type": "string"},
-                    },
-                },
-            }
-        },
-    }
     with tempfile.TemporaryDirectory(prefix="jevolve-audit-") as directory:
         root = Path(directory)
-        (root / "schema.json").write_text(json.dumps(schema), encoding="utf-8")
+        (root / "schema.json").write_text(json.dumps(AUDIT_SCHEMA), encoding="utf-8")
         args = [
             executable,
             "exec",

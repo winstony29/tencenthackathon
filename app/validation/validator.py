@@ -1351,6 +1351,7 @@ Return ONLY JSON {"checks":[{"field":"...","verdict":"match|mismatch|uncertain",
 "expected":"what the user's intent and bank facts support","note":"short explanation"}]}.
 Include EXACTLY one check for every required_field, including 'actions' for overall coverage.
 A single contradiction must be mismatch. Never claim confidence guarantees correctness.
+Keep expected concise. For match use an empty note; otherwise give one short actionable sentence.
 """
 
 
@@ -1437,7 +1438,9 @@ async def validate(draft: Draft) -> dict:
                 "prompt": PROMPT,
                 "payload": payload,
                 "provider": config.VALIDATOR_PROVIDER,
-                "model": config.VALIDATOR_CODEX_MODEL or config.VALIDATOR_MODEL or "cli_default",
+                "model": (config.VALIDATOR_CODEX_MODEL or "cli_default")
+                if config.VALIDATOR_PROVIDER == "codex"
+                else config.VALIDATOR_MODEL,
                 "policy_digest": evidence.sha(PROMPT.encode()),
             },
             **links,

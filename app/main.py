@@ -21,7 +21,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException
 
-from app import config, evidence, transaction_state
+from app import config, evidence, llm, transaction_state
 from app.audit import AuditError
 from app.audit_http import AuditMiddleware
 from app.audit_http import router as audit_router
@@ -38,6 +38,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Keep one warm connection to the Jev gateway for the server's life (app/intent/jev.py).
     await jev.open_connection()
     await presentation_v4.open_connection()
+    await llm.open_connection()
 
     async def retention():
         while True:
@@ -54,6 +55,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         maintenance.cancel()
         with suppress(asyncio.CancelledError):
             await maintenance
+        await llm.close_connection()
         await presentation_v4.close_connection()
         await jev.close_connection()
 
