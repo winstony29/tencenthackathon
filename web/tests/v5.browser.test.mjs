@@ -826,7 +826,13 @@ test(
           bits: body.readUInt16LE(start + 34),
           bytes: body.readUInt32LE(start + 40),
         };
-        await route.fulfill({ json: { transcript: "Send $50 to John", confidence: null } });
+        await route.fulfill({
+          json: {
+            transcript: "Send $50 to John",
+            confidence: null,
+            speaker: { status: "enrolled", score: null },
+          },
+        });
       });
       await page.route("**/api/understand", (route) =>
         route.fulfill({ json: understand(route.request().postDataJSON(), sessions) }),
@@ -843,9 +849,47 @@ test(
       );
       assert.ok(wav.bytes >= 16000 * 2 * 0.3, `only ${wav.bytes} bytes of audio`); // server minimum 0.3 s
       assert.match(await page.locator(".v5-heard p").innerText(), /Send \$50 to John/);
+      await page.getByText("Voice enrolled for this demo").waitFor();
       // A spoken clarify answer goes through the same send() path, so the mic is beside the answer box.
       assert.equal(await page.getByRole("button", { name: "Speak instead" }).count(), 1);
       assert.deepEqual(errors, []);
+    } finally {
+      await browser.close();
+    }
+  },
+);
+
+test(
+  "V5 refuses a voice that is not the enrolled speaker and sends nothing (D-054)",
+  { timeout: 30000 },
+  async () => {
+    const browser = await chromium.launch({
+      executablePath,
+      headless: true,
+      args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"],
+    });
+    try {
+      const page = await browser.newPage({ reducedMotion: "reduce", permissions: ["microphone"] });
+      const forbidden = [];
+      await page.route("**/api/transcribe", (route) =>
+        route.fulfill({
+          json: { transcript: "", confidence: null, speaker: { status: "rejected", score: 0.31 } },
+        }),
+      );
+      await page.route("**/api/understand", (route) => {
+        forbidden.push("understand");
+        return route.abort();
+      });
+      await page.goto(`${process.env.APP_URL ?? "http://127.0.0.1:3000"}/v5/`);
+      await page.getByRole("button", { name: "Speak your request" }).click();
+      await page.getByRole("button", { name: "Listening, tap to stop" }).waitFor();
+      await page.waitForTimeout(800);
+      await page.getByRole("button", { name: "Listening, tap to stop" }).click();
+      await page.getByRole("heading", { name: "Nothing was sent." }).waitFor();
+      await page.getByText("That doesn't sound like you").waitFor();
+      assert.deepEqual(forbidden, []);
+      await page.getByRole("button", { name: "Start over" }).first().click();
+      await page.getByRole("button", { name: "Speak your request" }).waitFor();
     } finally {
       await browser.close();
     }

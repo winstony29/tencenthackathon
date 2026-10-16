@@ -112,6 +112,7 @@ export default function V5() {
   const [heard, setHeard] = useState("");
   const [level, setLevel] = useState(0); // microphone level while listening
   const [notice, setNotice] = useState(""); // voice problems, shown beside the fallback input
+  const [enrolled, setEnrolled] = useState(false); // this request enrolled the speaker (D-054)
   const [stage, setStage] = useState(0);
   const [bankLocked, setBankLocked] = useState(false);
   const [text, setText] = useState("");
@@ -166,6 +167,7 @@ export default function V5() {
     setComposition(null);
     setHeard("");
     setNotice("");
+    setEnrolled(false);
     setText("");
     setQuestion(null);
     setPlan(null);
@@ -450,12 +452,19 @@ export default function V5() {
     const form = new FormData();
     form.append("audio", audio, "speech.wav"); // the browser sets the multipart boundary
     try {
-      const { transcript } = await request("/transcribe", transcribeSchema, {
+      const { transcript, speaker } = await request("/transcribe", transcribeSchema, {
         method: "POST",
         body: form,
         signal: abort.signal,
       });
       if (version !== generation.current) return;
+      // D-054: a voice that isn't the enrolled speaker is refused; nothing was transcribed.
+      if (speaker.status === "rejected") {
+        stop("Nothing was sent.", "That doesn't sound like you. Type your request or start over.");
+        return;
+      }
+      if (speaker.status === "unavailable") setNotice("Voice check unavailable, continuing without it.");
+      setEnrolled(speaker.status === "enrolled");
       if (transcript.trim().length < 2) {
         setNotice("I didn't catch that. Try again or type.");
         setPhase(from);
@@ -531,6 +540,7 @@ export default function V5() {
             <div className="v5-heard">
               <span>Your request</span>
               <p>“{heard}”</p>
+              {enrolled && <small>Voice enrolled for this demo</small>}
             </div>
           ) : (
             <p className="v5-lede">

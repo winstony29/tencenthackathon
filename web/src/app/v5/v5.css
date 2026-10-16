@@ -1001,3 +1001,10 @@
   background: #c8102e;
   color: #fff;
 }
+
+.v5-heard small {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  color: #b0bbb3;
+}

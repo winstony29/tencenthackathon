@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { draftSchema, understandSchema } from "../src/lib/contracts";
+import { draftSchema, transcribeSchema, understandSchema } from "../src/lib/contracts";
 import { exampleDraft } from "../src/lib/examples";
 import { estimatedTotal } from "../src/lib/money";
 import { conversationReducer, initialConversation } from "../src/lib/v2-conversation";
@@ -407,4 +407,26 @@ test("v0.7 own-account moves parse, edit only the amount, and project both accou
       ["acc_9999", "500.00"],
     ],
   );
+});
+
+test("transcribe replies carry the speaker check and reject unknown statuses (D-054)", () => {
+  const ok = {
+    transcript: "send fifty to john",
+    confidence: null,
+    speaker: { status: "verified", score: 0.78 },
+  };
+  assert.equal(transcribeSchema.safeParse(ok).success, true);
+  assert.equal(
+    transcribeSchema.safeParse({
+      transcript: "",
+      confidence: null,
+      speaker: { status: "rejected", score: 0.31 },
+    }).success,
+    true,
+  );
+  assert.equal(
+    transcribeSchema.safeParse({ ...ok, speaker: { status: "maybe", score: null } }).success,
+    false,
+  );
+  assert.equal(transcribeSchema.safeParse({ transcript: "x", confidence: null }).success, false);
 });
