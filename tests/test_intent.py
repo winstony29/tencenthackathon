@@ -2636,6 +2636,18 @@ def test_matching_voice_is_verified_and_folded_into_the_mean(client, fake_asr, f
     assert abs(sum(v * v for v in stored["embedding"]) - 1) < 1e-6  # still unit length
 
 
+def test_borderline_match_never_joins_the_mean(client, fake_asr, fake_voice) -> None:
+    from app.intent import voiceprint
+    from tests.conftest import _unit, _wav_bytes
+
+    _transcribe(client, _wav_bytes(1.0))
+    fake_voice.vectors = [_unit(0.55, 0.835)]  # cosine 0.55: above 0.50, under 0.50 + 0.10
+    fake_asr.result = "send fifty to john"
+    reply = _transcribe(client, _wav_bytes(1.0)).json()
+    assert reply["speaker"]["status"] == "verified"
+    assert json.loads(voiceprint._store_path().read_text())["u_demo"]["clips"] == 1  # unchanged
+
+
 def test_different_voice_is_rejected_before_any_asr_call(
     client, fake_asr, fake_voice, audit_log
 ) -> None:
@@ -2724,3 +2736,15 @@ def test_unreadable_voiceprint_store_re_enrols(client, fake_asr, fake_voice) -> 
     voiceprint._store_path().write_text("{corrupt")
     reply = _transcribe(client, _wav_bytes(1.0)).json()
     assert reply["speaker"]["status"] == "enrolled"
+
+
+def test_enrol_from_existing_clips_stores_their_mean(fake_voice) -> None:
+    from app.intent import voiceprint
+    from tests.conftest import CLOSE_VOICE, SAME_VOICE, _wav_bytes
+
+    fake_voice.vectors = [SAME_VOICE, CLOSE_VOICE]
+    assert voiceprint.enrol("u_demo", [_wav_bytes(1.0), _wav_bytes(1.0)]) == 2
+    stored = json.loads(voiceprint._store_path().read_text())["u_demo"]
+    assert stored["clips"] == 2
+    assert abs(sum(v * v for v in stored["embedding"]) - 1) < 1e-6
+    assert stored["embedding"][0] > stored["embedding"][1] > 0  # between the two voices

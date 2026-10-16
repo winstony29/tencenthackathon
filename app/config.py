@@ -72,13 +72,14 @@ ASR_AGREE_MIN = 0.8  # word-sequence similarity below this counts as disagreemen
 VOICEPRINT_ENABLED = True
 VOICEPRINT_PATH = os.getenv("VOICEPRINT_PATH", "")  # blank uses var/voiceprints.json
 VOICEPRINT_TIMEOUT_SECONDS = 5  # ASR's 10 s + this stays under the UI's 15 s fetch timeout
-VOICE_THRESHOLD = 0.65  # cosine similarity; from Winston's clips vs synthetic voices, recheck live
+VOICE_THRESHOLD = 0.50  # cosine; ERes2NetV2 scored Winston 0.74+ vs impostors 0.25- (D-054)
 VOICE_MAX_CLIPS = 10  # verified clips folded into the enrolled mean
+VOICE_UPDATE_MARGIN = 0.10  # a clip joins the mean only this far above the threshold
 VOICE_MODEL_URL = (
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/"
-    "wespeaker_en_voxceleb_resnet34_LM.onnx"
+    "3dspeaker_speech_eres2netv2_sv_zh-cn_16k-common.onnx"
 )
-VOICE_MODEL_SHA256 = "e9848563da86f263117134dfd7ad63c92355b37de492b55e325400c9d9c39012"
+VOICE_MODEL_SHA256 = "bf1a75b9930474cf3389ef415e6e5d38ca96fea4a3a00f7e301d080a58ee2239"
 
 _strong("VALIDATION_RECEIPT_KEY", os.getenv("VALIDATION_RECEIPT_KEY", ""))
 VALIDATION_RECEIPT_KEY = os.getenv("VALIDATION_RECEIPT_KEY", "") or (

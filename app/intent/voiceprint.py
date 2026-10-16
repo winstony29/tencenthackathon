@@ -4,7 +4,7 @@ Owner: Winston
 Diagram box: Speech to text (Intent detection column)
 Contract: the `speaker` object in CONTRACTS §3.1; called by app/intent/router.py before ASR
 
-A 256-dimension speaker embedding (sherpa-onnx, WeSpeaker ResNet34 VoxCeleb) is compared by
+A speaker embedding (sherpa-onnx, 3D-Speaker ERes2NetV2 trained on CN-Celeb) is compared by
 cosine similarity with the user's enrolled mean embedding. The first speaker after a reset
 enrols `u_demo`, like device keys. Any failure of the model is "unavailable" and the request
 continues: a dead model file never takes the demo down; the device key still gates execution.
@@ -137,13 +137,28 @@ async def check(user_id: str, wav_bytes: bytes) -> dict[str, Any]:
     score = sum(a * b for a, b in zip(entry["embedding"], vector, strict=True))
     if score < config.VOICE_THRESHOLD:
         return {"status": "rejected", "score": round(score, 2)}
-    if entry["clips"] < config.VOICE_MAX_CLIPS:  # fold the clip into the running mean
+    confident = score >= config.VOICE_THRESHOLD + config.VOICE_UPDATE_MARGIN
+    if confident and entry["clips"] < config.VOICE_MAX_CLIPS:  # fold the clip into the running mean
         n = entry["clips"]
         pairs = zip(entry["embedding"], vector, strict=True)
         entry["embedding"] = _unit([(m * n + v) / (n + 1) for m, v in pairs])
         entry["clips"] = n + 1
         _write(store)
     return {"status": "verified", "score": round(score, 2)}
+
+
+def enrol(user_id: str, clips: list[bytes]) -> int:
+    """Enrol from recordings already in hand: the mean of their embeddings replaces any entry.
+    Returns the number of clips used ()."""
+    vectors = [_embed(clip) for clip in clips]
+    store = _read()
+    store[user_id] = {
+        "embedding": _unit([sum(column) / len(vectors) for column in zip(*vectors, strict=True)]),
+        "clips": len(vectors),
+        "enrolled_at": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+    _write(store)
+    return len(vectors)
 
 
 def reset(user_id: str) -> bool:
@@ -155,8 +170,14 @@ def reset(user_id: str) -> bool:
     return True
 
 
-if __name__ == "__main__":  # python -m app.intent.voiceprint reset u_demo
+if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "reset":
         print("removed" if reset(sys.argv[2]) else "nothing enrolled")
+    elif len(sys.argv) > 3 and sys.argv[1] == "enrol":
+        count = enrol(sys.argv[2], [Path(p).read_bytes() for p in sys.argv[3:]])
+        print(f"enrolled {sys.argv[2]} from {count} clips")
     else:
-        sys.exit("usage: python -m app.intent.voiceprint reset <user_id>")
+        sys.exit(
+            "usage: python -m app.intent.voiceprint reset <user_id>\n"
+            "       python -m app.intent.voiceprint enrol <user_id> <wav>..."
+        )
