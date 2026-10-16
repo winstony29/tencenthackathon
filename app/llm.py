@@ -61,6 +61,30 @@ class Unavailable(RuntimeError):
     pass
 
 
+def _decode(text: str) -> dict:
+    """Reject oversized, duplicate-key or non-integer numeric model output."""
+    if len(text.encode("utf-8")) > config.EVIDENCE_MAX_ITEM_BYTES:
+        raise ValueError("Validator output exceeds the evidence bound")
+
+    def unique(pairs: list[tuple]) -> dict:
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("Duplicate validator JSON key")
+            result[key] = value
+        return result
+
+    def invalid_number(value: str) -> None:
+        raise ValueError("Validator financial numbers must be strings")
+
+    result = json.loads(
+        text, object_pairs_hook=unique, parse_float=invalid_number, parse_constant=invalid_number
+    )
+    if not isinstance(result, dict):
+        raise ValueError("Validator output must be an object")
+    return result
+
+
 async def audit(system: str, payload: dict) -> dict:
     if config.VALIDATOR_PROVIDER == "codex":
         return await asyncio.to_thread(_codex, system, payload)
@@ -98,7 +122,7 @@ async def audit(system: str, payload: dict) -> dict:
                 "json_schema": {
                     "name": "banking_audit",
                     "strict": True,
-                    "schema": AUDIT_SCHEMA,
+                    "schema": payload.get("response_schema", AUDIT_SCHEMA),
                 },
             },
         )
@@ -113,7 +137,7 @@ async def audit(system: str, payload: dict) -> dict:
         choice = response.json()["choices"][0]
         if choice.get("finish_reason") != "stop" or choice["message"].get("refusal"):
             raise Unavailable("Validator did not complete its audit.")
-        result = json.loads(choice["message"]["content"])
+        result = _decode(choice["message"]["content"])
         if not isinstance(result, dict):
             raise Unavailable("Invalid validator response.")
         return result
@@ -131,7 +155,9 @@ def _codex(system: str, payload: dict) -> dict:
         raise Unavailable("Local Codex is not installed or not on PATH.")
     with tempfile.TemporaryDirectory(prefix="jevolve-audit-") as directory:
         root = Path(directory)
-        (root / "schema.json").write_text(json.dumps(AUDIT_SCHEMA), encoding="utf-8")
+        (root / "schema.json").write_text(
+            json.dumps(payload.get("response_schema", AUDIT_SCHEMA)), encoding="utf-8"
+        )
         args = [
             executable,
             "exec",
@@ -211,4 +237,7 @@ def _codex(system: str, payload: dict) -> dict:
             raise Unavailable("Local Codex is unavailable or timed out.") from error
         if result.returncode or not (root / "answer.json").exists():
             raise Unavailable("Local Codex could not complete the audit. Check CLI login.")
-        return json.loads((root / "answer.json").read_text(encoding="utf-8"))
+        answer = root / "answer.json"
+        if answer.stat().st_size > config.EVIDENCE_MAX_ITEM_BYTES:
+            raise ValueError("Validator output exceeds the evidence bound")
+        return _decode(answer.read_text(encoding="utf-8"))

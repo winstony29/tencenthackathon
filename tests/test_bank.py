@@ -6495,6 +6495,7 @@ def test_combined_http_validation_sign_execute(combined_bank, monkeypatch):
 
     env = combined_bank
     draft = _risk_draft("50.00")
+    draft.transcript = "Transfer SGD 50 from Current to John Doe."
     client = TestClient(app)
     client.get("/api/accounts?user_id=u_demo")
     owner = transaction_state.client.set(client.cookies.get("dcta_client"))
