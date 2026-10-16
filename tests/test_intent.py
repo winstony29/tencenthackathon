@@ -2641,7 +2641,7 @@ def test_borderline_match_never_joins_the_mean(client, fake_asr, fake_voice) -> 
     from tests.conftest import _unit, _wav_bytes
 
     _transcribe(client, _wav_bytes(1.0))
-    fake_voice.vectors = [_unit(0.55, 0.835)]  # cosine 0.55: above 0.50, under 0.50 + 0.10
+    fake_voice.vectors = [_unit(0.65, 0.76)]  # cosine 0.65: above 0.60, under 0.60 + 0.10
     fake_asr.result = "send fifty to john"
     reply = _transcribe(client, _wav_bytes(1.0)).json()
     assert reply["speaker"]["status"] == "verified"
