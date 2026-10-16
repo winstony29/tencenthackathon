@@ -190,7 +190,7 @@ class PreviewResponse(ContractModel):
 
 
 class SpeakerCheck(ContractModel):
-    status: Literal["enrolled", "verified", "rejected", "unavailable"]
+    status: Literal["enrolled", "verified", "unsure", "rejected", "unavailable"]
     score: float | None  # cosine similarity, or null when nothing was compared
 
 
@@ -531,6 +531,7 @@ class DeviceRegisterResponse(ContractModel):
 class ChallengeRequest(ContractModel):
     draft: Draft
     receipt: str
+    require_otp: bool = False  # the client may add the one-time-code step, never remove it (D-054)
 
 
 class ChallengeResponse(ContractModel):

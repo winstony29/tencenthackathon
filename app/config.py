@@ -72,10 +72,12 @@ ASR_AGREE_MIN = 0.8  # word-sequence similarity below this counts as disagreemen
 VOICEPRINT_ENABLED = True
 VOICEPRINT_PATH = os.getenv("VOICEPRINT_PATH", "")  # blank uses var/voiceprints.json
 VOICEPRINT_TIMEOUT_SECONDS = 1.5  # embedding takes ~15 ms; this plus ASR's 13 s stays under 15 s
-VOICE_THRESHOLD = 0.68  # cosine; browser enrolment: Winston 0.76+, friend 0.60 live (D-054)
+VOICE_THRESHOLD = 0.68  # verified at or above; Winston's full sentences 0.70–0.85 live (D-054)
+VOICE_UNSURE_THRESHOLD = 0.50  # unsure between this and VOICE_THRESHOLD; rejected below
 VOICE_MAX_CLIPS = 10  # verified clips folded into the enrolled mean
 VOICE_UPDATE_MARGIN = 0.10  # a clip joins the mean only this far above the threshold
 VOICEPRINT_ENROLMENT_OPEN = True  # POST /api/voiceprint/enrol accepts clips; demo only (D-054)
+DEMO_OTP = "123456"  # one-time code the gateway accepts for a require_otp challenge (D-007, D-054)
 VOICE_MODEL_URL = (
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/"
     "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
