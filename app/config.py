@@ -48,7 +48,7 @@ TENCENTCLOUD_REGION = os.getenv("TENCENTCLOUD_REGION", "ap-singapore")  # Tencen
 # International-site ASR settings (D-006, W-09). The intl API is file-upload + poll.
 ASR_ENGINE = "16k_zh_large"  # live 16 Oct: heard "John" in 2 s; "16k_en" heard "Jon" in 6 s
 ASR_POLL_SECONDS = 0.3  # how often to poll DescribeTaskStatus
-ASR_TIMEOUT_SECONDS = 10  # give up before the frontend's 15 s request timeout
+ASR_TIMEOUT_SECONDS = 13  # under the UI's 15 s fetch; a 6 s sentence timed out at 10 s live
 ASR_MIN_SECONDS = 0.3  # shortest WAV the server accepts
 ASR_MAX_SECONDS = 15  # longest WAV the server accepts (MAX_AUDIO_BYTES caps size)
 ASR_HOST = "asr.intl.tencentcloudapi.com"  # international-site endpoint
@@ -71,7 +71,7 @@ ASR_AGREE_MIN = 0.8  # word-sequence similarity below this counts as disagreemen
 # Speaker verification on every voice command (D-054); fails open when the model is unavailable.
 VOICEPRINT_ENABLED = True
 VOICEPRINT_PATH = os.getenv("VOICEPRINT_PATH", "")  # blank uses var/voiceprints.json
-VOICEPRINT_TIMEOUT_SECONDS = 5  # ASR's 10 s + this stays under the UI's 15 s fetch timeout
+VOICEPRINT_TIMEOUT_SECONDS = 1.5  # embedding takes ~15 ms; this plus ASR's 13 s stays under 15 s
 VOICE_THRESHOLD = 0.68  # cosine; browser enrolment: Winston 0.76+, friend 0.60 live (D-054)
 VOICE_MAX_CLIPS = 10  # verified clips folded into the enrolled mean
 VOICE_UPDATE_MARGIN = 0.10  # a clip joins the mean only this far above the threshold
