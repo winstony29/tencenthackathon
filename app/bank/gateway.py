@@ -661,11 +661,20 @@ def _establish(
 
 
 def _commit(
-    draft: Draft, execution_id: str, ledger_path: Path | None, audit_path: Path | None
+    draft: Draft,
+    execution_id: str,
+    ledger_path: Path | None,
+    audit_path: Path | None,
+    *,
+    step_up_satisfied: str | None = None,
 ) -> ExecutedResponse:
     try:
         return ledger.execute_batch(
-            draft, execution_id, storage_path=ledger_path, audit_path=audit_path
+            draft,
+            execution_id,
+            storage_path=ledger_path,
+            audit_path=audit_path,
+            step_up_satisfied=step_up_satisfied,
         )
     except (readonly.LedgerStorageError, ledger.LedgerAuditPending):
         raise GatewayUnavailable("execution_recovery_required") from None
@@ -798,10 +807,15 @@ def _record_event(
 
 def _risk_response(error: ledger.LedgerRejected) -> ExecuteResponse:
     if isinstance(error, ledger.LedgerRiskRejected) and error.status == "needs_extra_check":
+        method = error.method if hasattr(error, "method") else "otp"
         return NeedsExtraCheckResponse(
             status="needs_extra_check",
-            method="otp",
-            message="Additional verification is required; verified step-up is not available.",
+            method=method,
+            message=(
+                "Unusual transaction activity detected. Confirm with your fingerprint."
+                if method == "fingerprint"
+                else "Additional verification is required; verified step-up is not available."
+            ),
         )
     reason = error.reason
     if reason in {"per_transfer_limit_exceeded", "daily_limit_exceeded"}:
@@ -972,7 +986,13 @@ def execute(
                 audit_path,
             )
             try:
-                result = _commit(draft, record["execution_id"], ledger_path, audit_path)
+                result = _commit(
+                    draft,
+                    record["execution_id"],
+                    ledger_path,
+                    audit_path,
+                    step_up_satisfied="fingerprint" if request.fingerprint else None,
+                )
             except ledger.LedgerRejected as error:
                 record["status"] = (
                     "step_up"
@@ -980,7 +1000,10 @@ def execute(
                     and error.status == "needs_extra_check"
                     else "rejected"
                 )
-                if record["status"] == "step_up" and request.otp is not None:
+                # OTP and fingerprint step-up both count attempts under the same lock.
+                if record["status"] == "step_up" and (
+                    request.otp is not None or request.fingerprint is not None
+                ):
                     record["step_up_attempts"] = min(
                         record["step_up_attempts"] + 1, policy.max_attempts
                     )
@@ -1005,9 +1028,10 @@ def execute(
                     str(record["step_up_attempts"]),
                 )
                 if record["status"] == "locked":
+                    method = error.method if hasattr(error, "method") else "otp"
                     return RejectedResponse(
                         status="rejected",
-                        reason="bad_otp",
+                        reason="bad_fingerprint" if method == "fingerprint" else "bad_otp",
                         message="Additional verification is unavailable; start a new request.",
                     )
                 return _risk_response(error)

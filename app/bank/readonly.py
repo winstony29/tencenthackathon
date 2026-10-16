@@ -252,7 +252,9 @@ def _read_ledger_state(path: Path) -> dict[str, Any]:
         raise LedgerStorageError("Banking runtime storage is missing or invalid") from None
 
 
-def get_ledger_snapshot(user_id: str, *, storage_path: Path | None = None) -> dict[str, Any] | None:
+def get_ledger_snapshot(
+    user_id: str, *, storage_path: Path | None = None, include_history: bool = False
+) -> dict[str, Any] | None:
     """Return a detached internal user snapshot, including current bills and balances.
 
     None means neither state nor marker exists; this cannot prove a first installation
@@ -266,17 +268,83 @@ def get_ledger_snapshot(user_id: str, *, storage_path: Path | None = None) -> di
             return None
     except OSError:
         raise LedgerStorageError("Cannot inspect banking runtime storage") from None
-    users = _read_ledger_state(path)["users"]
+    state = _read_ledger_state(path)
+    users = state["users"]
     if user_id not in users:
         raise HTTPException(status_code=404, detail="User not found.")
-    return users[user_id]
+    user = users[user_id]
+    if include_history:
+        user["transaction_history"] = _committed_history(user, state["transactions"])
+    return user
 
 
-def _current_user(user_id: str) -> dict[str, Any]:
+def _committed_history(user: dict[str, Any], transactions: list[dict]) -> list[dict]:
+    """Project committed actions into statement legs; never replay them into balances."""
+    history = list(user.get("transaction_history", []))
+    for transaction in transactions:
+        if transaction["user_id"] != user["user_id"]:
+            continue
+        action = transaction["action"]
+        kind = action["type"]
+        direction = "debit"
+        account_id = action["from_account_id"]
+        if kind == "stock_order":
+            amount = transaction["execution_details"]["gross_amount"]
+            currency = action["currency"]
+            direction = "credit" if action["side"] == "sell" else "debit"
+            description = f"{action['side'].title()} {action['quantity']} {action['ticker']}"
+            category, spending = "Investments", False
+        elif kind == "fx_conversion":
+            amount, currency = action["sell_amount"], action["sell_currency"]
+            description = f"{currency} to {action['buy_currency']}"
+            category, spending = "Currency exchange", False
+        elif kind == "account_transfer":
+            amount, currency = action["amount"], action["currency"]
+            description = f"{action['from_account_label']} to {action['to_account_label']}"
+            category, spending = "Transfers", False
+        else:
+            amount, currency = action["amount"], action["currency"]
+            description = action.get("to_payee_label") or action["biller_label"]
+            category, spending = ("Transfers", False) if kind == "transfer" else ("Bills", True)
+        reference = transaction["reference"]
+        record = {
+            "transaction_id": reference,
+            "reference": reference,
+            "account_id": account_id,
+            "direction": direction,
+            "amount": amount,
+            "currency": currency,
+            "time": transaction["completed_at"],
+            "status": "completed",
+            "description": description,
+            "category": category,
+            "is_spending": spending,
+            "payee_id": action.get("to_payee_id"),
+        }
+        history.append(record)
+        if kind in {"fx_conversion", "account_transfer"}:
+            history.append(
+                {
+                    **record,
+                    "transaction_id": reference + ":credit",
+                    "account_id": action["to_account_id"],
+                    "direction": "credit",
+                    "amount": action.get("buy_amount", amount),
+                    "currency": action.get("buy_currency", currency),
+                }
+            )
+    return history
+
+
+def _current_user(user_id: str, *, include_history: bool = False) -> dict[str, Any]:
     from app import config
 
     try:
-        user = get_ledger_snapshot(user_id)
+        user = (
+            get_ledger_snapshot(user_id, include_history=True)
+            if include_history
+            else get_ledger_snapshot(user_id)
+        )
         if user is None:
             if not config.BANK_EXECUTION_ENABLED:
                 users = _load_database()["users"]
@@ -506,6 +574,7 @@ def _forecast_items(
                 "currency": account.currency,
                 "due_at": due.isoformat(),
                 "synthetic": True,
+                **({"biller_id": record["biller_id"]} if "biller_id" in record else {}),
             }
             (expenses if kind == "expense" else income).append(item)
     for items in (expenses, income):
@@ -639,9 +708,10 @@ def get_account_insights(user_id: str) -> dict[str, Any]:
     """
     from zoneinfo import ZoneInfo
 
-    public = get_accounts(user_id)
-    user = _load_database()["users"][user_id]
-    accounts = {a.account_id: a for a in public.accounts}
+    user, accounts = _user_and_accounts(user_id)
+    # Additive profile metadata can enrich older ledgers without rewriting money or history.
+    profile = _load_database()["users"].get(user_id, {})
+    seed_history = {r["transaction_id"]: r for r in profile.get("transaction_history", [])}
     now = datetime.now(UTC).astimezone(ZoneInfo("Asia/Singapore"))
     start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     previous = (start - timedelta(days=1)).replace(day=1)
@@ -664,6 +734,18 @@ def get_account_insights(user_id: str) -> dict[str, Any]:
                 raise ForecastDataError("Invalid history direction")
             if when > now or item.get("status") != "completed":
                 continue
+            annotation = seed_history.get(identifier, {})
+            if any(
+                item.get(k) != annotation.get(k)
+                for k in ("account_id", "amount", "currency", "direction", "description")
+            ):
+                annotation = {}
+            category = item.get("category", annotation.get("category", "Uncategorised"))
+            is_spending = item.get("is_spending", annotation.get("is_spending"))
+            if not isinstance(category, str) or not category or len(category) > 40:
+                raise ForecastDataError("Invalid spending category")
+            if is_spending is not None and type(is_spending) is not bool:
+                raise ForecastDataError("Invalid spending classification")
             transactions.append(
                 {
                     "id": identifier,
@@ -673,12 +755,13 @@ def get_account_insights(user_id: str) -> dict[str, Any]:
                     "direction": item["direction"],
                     "time": when.isoformat(),
                     "description": str(item["description"]),
-                    "category": "Uncategorised",
+                    "category": category,
+                    "is_spending": is_spending,
                 }
             )
         transactions.sort(key=lambda t: t["time"], reverse=True)
     forecasts = []
-    for account in public.accounts:
+    for account in accounts.values():
         try:
             forecasts.append(
                 get_cashflow_forecast(
@@ -687,12 +770,18 @@ def get_account_insights(user_id: str) -> dict[str, Any]:
                     as_of=now,
                     horizon_days=30,
                     proposed_amount=Decimal("0.00"),
+                    runtime_snapshot=user,
                 )
             )
         except ForecastDataError:
             forecasts.append({"account_id": account.account_id, "unavailable": True})
+    classified = transactions is not None and all(
+        t["direction"] != "debit" or t["is_spending"] is not None
+        for t in transactions or []
+        if previous <= _forecast_time(t["time"]) <= now
+    )
     spending = []
-    for currency in sorted({a.currency for a in public.accounts}):
+    for currency in sorted({a.currency for a in accounts.values()}):
         periods = []
         for lower, upper in [(previous, start), (start, now)]:
             records = [
@@ -700,6 +789,7 @@ def get_account_insights(user_id: str) -> dict[str, Any]:
                 for t in transactions or []
                 if t["currency"] == currency
                 and t["direction"] == "debit"
+                and t["is_spending"] is True
                 and lower <= _forecast_time(t["time"]) < upper
             ]
             total = sum((Decimal(t["amount"]) for t in records), Decimal("0.00"))
@@ -709,24 +799,80 @@ def get_account_insights(user_id: str) -> dict[str, Any]:
                     "through": upper.isoformat(),
                     "total": f"{total:.2f}",
                     "count": len(records),
+                    "categories": _spending_categories(records),
                 }
             )
         spending.append({"currency": currency, "previous": periods[0], "current": periods[1]})
+    financial = []
+    profile_accounts = {a["account_id"]: a for a in profile.get("accounts", [])}
+    for account in accounts.values():
+        row = {"account_id": account.account_id}
+        stored = next(a for a in user["accounts"] if a["account_id"] == account.account_id)
+        defaults = profile_accounts.get(account.account_id, {})
+        reserve = stored.get("reserve")
+        if "reserve" not in stored and defaults.get("currency") == account.currency:
+            reserve = defaults.get("reserve")
+        if reserve is not None:
+            row["reserve"] = f"{_forecast_money(reserve):.2f}"
+        forecast = next(f for f in forecasts if f["account_id"] == account.account_id)
+        if not forecast.get("unavailable"):
+            row["commitments"] = {
+                "through": forecast["window_end"][:10],
+                "bills": [
+                    {
+                        "id": b["occurrence_id"],
+                        "label": b["label"][:80],
+                        "due": b["due_at"][:10],
+                        "amount": b["amount"],
+                        **({"biller_id": b["biller_id"]} if "biller_id" in b else {}),
+                    }
+                    for b in forecast["commitments"]
+                ],
+            }
+        if transactions is not None and all(
+            t["direction"] != "debit" or t["is_spending"] is not None
+            for t in transactions
+            if t["account_id"] == account.account_id and start <= _forecast_time(t["time"]) <= now
+        ):
+            row["spending"] = {
+                "from": start.date().isoformat(),
+                "through": now.date().isoformat(),
+                "categories": _spending_categories(
+                    [
+                        t
+                        for t in transactions
+                        if t["account_id"] == account.account_id
+                        and t["direction"] == "debit"
+                        and t["is_spending"] is True
+                        and start <= _forecast_time(t["time"]) <= now
+                    ]
+                ),
+            }
+        financial.append(row)
     return {
         "source": "synthetic",
         "as_of": now.isoformat(),
-        "accounts": public.model_dump()["accounts"],
+        "financial": {"as_of": now.date().isoformat(), "accounts": financial},
+        "accounts": [a.model_dump(mode="json") for a in accounts.values()],
         "transactions": transactions,
         "forecasts": forecasts,
-        "spending": spending if transactions is not None else None,
+        "spending": spending if classified else None,
     }
 
 
+def _spending_categories(records: list[dict]) -> list[dict[str, str]]:
+    totals: dict[str, Decimal] = {}
+    for record in records:
+        label = record["category"]
+        totals[label] = totals.get(label, Decimal("0.00")) + Decimal(record["amount"])
+    return [
+        {"label": label, "amount": f"{amount:.2f}"}
+        for label, amount in sorted(totals.items(), key=lambda item: (-item[1], item[0]))
+    ]
+
+
 def _user_and_accounts(user_id: str) -> tuple[dict[str, Any], dict[str, Account]]:
-    users = _load_database()["users"]
-    if user_id not in users:
-        raise HTTPException(status_code=404, detail="User not found.")
-    user = users[user_id]
+    user = _current_user(user_id, include_history=True)
     accounts = {
         record["account_id"]: Account.model_validate(
             {field: record[field] for field in Account.model_fields}
