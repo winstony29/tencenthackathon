@@ -52,6 +52,12 @@ fi
 chmod 600 .env
 mkdir -p var
 
+# Fresh ledger: with BANK_EXECUTION_ENABLED=1 the app needs var/ledger.json (README "Local bank execution").
+if grep -qE "^BANK_EXECUTION_ENABLED=1" .env && [ ! -f var/ledger.json ]; then
+  .venv/bin/python -m app.bank.gateway initialize --confirm-fresh-install
+  .venv/bin/python -m app.bank.gateway resume
+fi
+
 # Service.
 sudo tee /etc/systemd/system/dcta.service >/dev/null <<UNIT
 [Unit]
