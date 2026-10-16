@@ -1,4 +1,4 @@
-import { financialRows, decimal } from "../src/lib/v4-financial";
+import { financialRows, decimal, bindFinancialToDraft } from "../src/lib/v4-financial";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { initialState, reducer, effective } from "../src/lib/v4-state";
@@ -162,4 +162,24 @@ test("single-call tree refuses missing mandatory fields and unapproved choices",
   assert.throws(() => selectedTree(ctx, result), /required/);
   result.answers.root.choice = "unapproved";
   assert.throws(() => selectedTree(ctx, result), /root/);
+});
+
+
+test("bank financial context binds exact bill identities and partial payments only once", () => {
+  const h = demoHandoff("multi", 0, initialState);
+  const action = h.draft.actions[0];
+  assert.equal(action.type, "bill_payment");
+  if (action.type !== "bill_payment") return;
+  action.amount = "1000.00";
+  h.data.financial!.accounts[0].commitments!.bills = [
+    { id: "card", biller_id: action.biller_id, label: "Card", due: "2026-10-20", amount: "1240.00" },
+    { id: "other", biller_id: "another_biller", label: "Card", due: "2026-10-20", amount: "100.00" },
+  ];
+  h.data.financial = bindFinancialToDraft(h.data.financial!, h.draft);
+  assert.equal(h.data.financial.accounts[0].commitments!.bills[0].covered_by_draft_action, 0);
+  assert.equal(h.data.financial.accounts[0].commitments!.bills[1].covered_by_draft_action, undefined);
+  const state = reducer(initialState, { type: "handoff", value: h });
+  assert.equal(state.error, "");
+  assert.equal(financialRows(state)[0].committed, 34000n);
+  assert.equal(financialRows(state)[0].afterBills, 186000n);
 });

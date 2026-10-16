@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { Check, LockKeyhole } from "lucide-react";
+import { Check, Fingerprint, LockKeyhole } from "lucide-react";
 import type { Draft, Validation } from "@/lib/contracts";
 import {
   preparePayment,
@@ -28,6 +28,7 @@ export function V5Payment({
     [error, setError] = useState("");
   const [result, setResult] = useState<Execution | null>(null),
     [otp, setOtp] = useState("");
+  const [fingerprintConfirmed, setFingerprintConfirmed] = useState(false);
   const pending = useRef<Payment | null>(null),
     locked = useRef(false);
   const abort = useRef<AbortController | null>(null);
@@ -46,6 +47,8 @@ export function V5Payment({
             : a.type === "fx_conversion"
               ? "Convert now"
               : "Place order";
+  const needsFingerprint = result?.status === "needs_extra_check" && result.method === "fingerprint";
+  const needsOtp = result?.status === "needs_extra_check" && result.method === "otp";
   async function send() {
     if (preview || validation.status !== "match") return;
     if (
@@ -68,13 +71,15 @@ export function V5Payment({
       executing = true;
       const reply = await submitPayment(
         pending.current,
-        result?.status === "needs_extra_check" ? otp : null,
+        needsOtp ? otp : null,
         controller.signal,
+        needsFingerprint ? fingerprintConfirmed : null,
       );
       if (!controller.signal.aborted) {
         setResult(reply);
         setUncertain(false);
         setOtp("");
+        setFingerprintConfirmed(false);
         if (reply.status !== "needs_extra_check")
           onSettled(reply.status === "executed");
       }
@@ -129,7 +134,7 @@ export function V5Payment({
           {error}
         </p>
       )}
-      {result?.status === "needs_extra_check" && (
+      {needsOtp && (
         <label className="v5-otp">
           Enter your one-time code
           <input
@@ -143,6 +148,23 @@ export function V5Payment({
           <span>{result.message}</span>
         </label>
       )}
+      {needsFingerprint && (
+        <div className="v5-fingerprint-prompt" role="alertdialog" aria-label="Fingerprint verification">
+          <p>{result.message}</p>
+          <button
+            type="button"
+            className={
+              "v5-fingerprint-btn" + (fingerprintConfirmed ? " v5-fingerprint-done" : "")
+            }
+            aria-label={fingerprintConfirmed ? "Fingerprint confirmed" : "Confirm with fingerprint"}
+            disabled={busy || uncertain || fingerprintConfirmed}
+            onClick={() => setFingerprintConfirmed(true)}
+          >
+            <Fingerprint size={28} />
+            {fingerprintConfirmed ? "Confirmed" : "Tap to confirm"}
+          </button>
+        </div>
+      )}
       <div className="v5-actions">
         <button className="v5-secondary" onClick={onCancel} disabled={busy || uncertain}>
           Cancel
@@ -153,7 +175,8 @@ export function V5Payment({
             preview ||
             validation.status !== "match" ||
             busy ||
-            (result?.status === "needs_extra_check" && !otp.trim())
+            (needsOtp && !otp.trim()) ||
+            (needsFingerprint && !fingerprintConfirmed)
           }
           onClick={() => void send()}
         >
@@ -161,9 +184,11 @@ export function V5Payment({
             ? "Confirming…"
             : uncertain
               ? "Check status"
-              : result?.status === "needs_extra_check"
-                ? "Confirm code"
-                : label}
+              : needsFingerprint
+                ? "Confirm fingerprint"
+                : needsOtp
+                  ? "Confirm code"
+                  : label}
           {!busy && <LockKeyhole size={14} />}
         </button>
       </div>

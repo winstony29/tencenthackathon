@@ -16,8 +16,8 @@ export function BalanceProjection({ state, variant }: ComponentProps) {
   return (
     <>
       <Heading
-        eyebrow={hypothetical ? "WHAT IF" : "AFTER YOUR PLAN"}
-        title="What stays with you"
+        eyebrow={hypothetical ? "WHAT IF" : undefined}
+        title="Balance after"
         aside={<span className="v4-badge">Estimate</span>}
       />
       {!rows.length && <Notice error>Check the amounts to see your projection.</Notice>}
@@ -76,7 +76,7 @@ export function BalanceProjection({ state, variant }: ComponentProps) {
                     <dd>{displayMoney(a.balance, a.currency)}</dd>
                   </div>
                   <div>
-                    <dt>Plan impact</dt>
+                    <dt>Change</dt>
                     <dd>{a.projected === null ? "Unavailable" : displayMoney(a.change, a.currency)}</dd>
                   </div>
                 </dl>
@@ -86,8 +86,7 @@ export function BalanceProjection({ state, variant }: ComponentProps) {
         })}
       </div>
       <Notice>
-        {hypothetical ? "Hypothetical. " : ""}Excludes fees and other commitments.
-        {rows.length > 1 ? " Currencies stay separate." : ""}
+        Excludes fees and upcoming bills.
       </Notice>
     </>
   );
@@ -99,7 +98,7 @@ export function AmountSimulator({ state, dispatch }: ComponentProps) {
     <>
       <Heading
         eyebrow="WHAT IF"
-        title="Find your amount"
+        title="Adjust amount"
         aside={<SlidersHorizontal size={21} aria-hidden="true" />}
       />
       {values.actions.map((a, i) => {
@@ -118,7 +117,7 @@ export function AmountSimulator({ state, dispatch }: ComponentProps) {
         return (
           <div className="v4-scenario-control" key={i}>
             <Amount
-              label={`Scenario ${stock ? "shares" : "amount"} for task ${i + 1}`}
+              label={`${stock ? "Shares" : "Amount"} for task ${i + 1}`}
               value={raw}
               currency={a.currency}
               quantity={stock}
@@ -141,7 +140,7 @@ export function AmountSimulator({ state, dispatch }: ComponentProps) {
               />
             )}
             <p className="v4-note">
-              Draft:{" "}
+              Current:{" "}
               {committed.type === "stock_order"
                 ? `${committed.quantity} ${committed.ticker} shares`
                 : committed.type === "fx_conversion"
@@ -156,7 +155,7 @@ export function AmountSimulator({ state, dispatch }: ComponentProps) {
         disabled={!Object.keys(state.scenario).length || !!Object.keys(values.errors).length}
         onClick={() => dispatch({ type: "apply" })}
       >
-        Use these values <ArrowRight size={16} />
+        Apply changes <ArrowRight size={16} />
       </button>
     </>
   );
@@ -173,13 +172,13 @@ export function StockEstimate({ state, action: index }: ComponentProps) {
     <>
       <Heading eyebrow="ORDER ESTIMATE" title={`${a.quantity} ${a.ticker} shares`} />
       <Metric
-        label={a.order_type === "limit" ? "At your limit price" : "At the quoted price"}
+        label={a.order_type === "limit" ? "Limit total" : "Estimated total"}
         value={price && !values.errors[index] ? estimatedTotal(price, a.quantity) : null}
         currency={a.currency}
       />
       <Notice>
         {price ? `${displayMoney(price, a.currency)} / share. ` : "Price unavailable. "}
-        Fees excluded; market prices may change.
+        Fees excluded. Price may change.
       </Notice>
     </>
   );
@@ -189,7 +188,6 @@ export function RecipientDetails({ state, action: index }: ComponentProps) {
   return a?.type === "transfer" ? (
     <>
       <Heading eyebrow="RECIPIENT" title={a.to_payee_label} />
-      <Notice>Listed recipient. Bank verification pending.</Notice>
     </>
   ) : null;
 }
@@ -199,7 +197,7 @@ export function FundingOptions({ state }: ComponentProps) {
   const accounts = state.handoff.data.accounts.accounts;
   return (
     <>
-      <Heading eyebrow="FUNDING" title="Your account options" />
+      <Heading title="Available accounts" />
       {accounts
         .filter(
           (a) => currencies.has(a.currency) && accounts.filter((b) => b.currency === a.currency).length > 1,

@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { ArrowUpRight, Check } from "lucide-react";
+import { ArrowUpRight } from "lucide-react";
 import type { Composition } from "@/lib/v4-composition";
 import type { State } from "@/lib/v4-state";
 import { financialRows } from "@/lib/v4-financial";
@@ -19,6 +19,7 @@ import { effective, type Event } from "@/lib/v4-state";
 import type { ReactNode } from "react";
 import { fallbackAnswerPresentation, acceptPlanView, fallbackPlanView, type PlanView, type AnswerPresentation } from "./v5-enquiry";
 import { V5Payment } from "./v5-payment";
+import { activityLabel } from "./v4-primitives";
 
 const money = (value: string, currency: string) =>
   displayMoney(value, currency).replace(/^SGD /, "S$").replace(/^USD /, "US$");
@@ -70,7 +71,7 @@ function Task({
           </div>
           <div>
             <strong>{money(a.amount, a.currency)}</strong>
-            <span aria-hidden="true">?</span>
+            <span aria-hidden="true">&rarr;</span>
           </div>
           <div>
             <small>To</small>
@@ -90,7 +91,6 @@ function Task({
                   ? "Move money"
                   : "Bill payment"}
         </span>
-        <span>Not sent</span>
       </div>
       <h2 className={`v5-figure ${auditFields.some(f => ["amount", "sell_amount", "quantity"].includes(f)) ? "v5-field-error" : ""}`}>
         {stock ? (
@@ -361,12 +361,11 @@ export function V5Cards({
         <p className="v5-caption">Only if</p>
         <h2>{condition.ticker} {{lt: "is below", lte: "is at most", gt: "is above", gte: "is at least", eq: "equals", ne: "does not equal"}[condition.operator]} {money(condition.threshold, condition.currency)}</h2>
         <p role="status">Condition met when prepared</p>
-        {conditionQuote && <p className="v5-caption">{money(conditionQuote.price, conditionQuote.currency)} ? {new Date(conditionQuote.as_of).toLocaleString("en-SG")}</p>}
-        <p className="v5-caption">Checked against the virtual bank when prepared.</p>
+        {conditionQuote && <p className="v5-caption">{money(conditionQuote.price, conditionQuote.currency)} · {new Date(conditionQuote.as_of).toLocaleString("en-SG")}</p>}
       </section>}
       {composing && (
         <p className="v5-caption" role="status">
-          Preparing your view?
+          Preparing your view...
         </p>
       )}
       <div className={`v5-tree v5-tree-${composition.layout}`} hidden={completed}>
@@ -386,7 +385,7 @@ export function V5Cards({
       {!preview && <div className="v5-validation" role={issues.length ? "alert" : "status"}>
         {validation.status === "match" ? <p className="v5-caption">Request checked</p>
           : "message" in validation ? <p>{validation.message}</p>
-          : <><p className="v5-warning">Request paused. Please correct or clarify these details.</p>
+          : <><p className="v5-warning">Check these details to continue.</p>
             {issues.map((f, i) => <p className="v5-field-error" key={i}>
               <strong>{f.field.replace(/^actions\[(\d+)\]\./, (_, n) => `Task ${Number(n) + 1}: `).replaceAll("_", " ")}</strong>: {f.note}
               {f.transcript_says && <span> Expected: {f.transcript_says}</span>}
@@ -409,9 +408,6 @@ export function V5Cards({
           onLock(value);
         }}
       />
-      <p className="v5-caption v5-secure">
-        <Check size={12} /> Sandbox bank · no real money
-      </p>
     </div>
   );
 }
@@ -423,7 +419,7 @@ const answerTitles: Record<Answer["kind"], string> = {
   holdings: "Your shares",
   quote: "Share price",
   fx_rate: "Exchange rate",
-  payees: "Who you can pay",
+  payees: "Your recipients",
   help: "What I can do",
 };
 const day = (iso: string) => new Date(iso).toLocaleDateString("en-SG", { timeZone: "Asia/Singapore", day: "numeric", month: "short" });
@@ -444,12 +440,12 @@ export function V5Answer({ answer: a, onDone, presentation = fallbackAnswerPrese
       ? a.accounts.map((x) => [label(x.label), money(x.balance, x.currency)])
       : a.kind === "transactions"
         ? a.transactions.map((t) => [
-            `${day(t.time)} · ${t.description}`,
+            `${day(t.time)} · ${activityLabel(t.description)}`,
             `${t.direction === "credit" ? "+" : "−"}${money(t.amount, t.currency)}`,
           ])
         : a.kind === "bills"
           ? (timeline ? [...a.bills].sort((x, y) => Date.parse(x.due_at) - Date.parse(y.due_at)) : a.bills).map((b) => [
-              `${label(b.label)} · ${b.recurrence ? `${b.recurrence}, next ` : ""}due ${day(b.due_at)}`,
+              `${activityLabel(label(b.label))} · ${b.recurrence ? `${b.recurrence}, next ` : ""}due ${day(b.due_at)}`,
               money(b.amount, b.currency),
             ])
           : a.kind === "holdings"
@@ -468,9 +464,7 @@ export function V5Answer({ answer: a, onDone, presentation = fallbackAnswerPrese
     <section className="v5-task v5-answer" data-source={presentation.source} data-variant={timeline ? "timeline" : cards ? "cards" : "list"} aria-label={answerTitles[a.kind]}>
       <div className="v5-task-title">
         <span>{answerTitles[a.kind]}</span>
-        <span>Nothing to sign</span>
       </div>
-      <p className="v5-caption">Synthetic bank data{presentation.source === "fallback" ? " - standard view" : ""}</p>
       {[...totals].map(([currency, amount]) => <p className="v5-enquiry-number" key={currency}>
         {money(`${amount / 100n}.${(amount % 100n).toString().padStart(2, "0")}`, currency)}
       </p>)}
@@ -493,10 +487,10 @@ export function V5Answer({ answer: a, onDone, presentation = fallbackAnswerPrese
           </details>}
         </>
       ) : (
-        <p>Nothing to show for that.</p>
+        <p>No results found.</p>
       )}
       {(a.kind === "holdings" || a.kind === "quote") && (
-        <p className="v5-caption">Mock prices · estimates exclude fees.</p>
+        <p className="v5-caption">Prices may change. Fees excluded.</p>
       )}
       <button className="v4-button" onClick={onDone}>
         New request
@@ -529,7 +523,7 @@ export function V5Plan({plan, view, onDone}: {plan: RequestPlan; view: PlanView;
         <time dateTime={c.quote.as_of}>{new Date(c.quote.as_of).toLocaleString("en-SG", {dateStyle: "medium", timeStyle: "short"})}</time>
       </section>;
       if (n.component === "Relationship") return <div className="v5-plan-connector" key={key}>
-        <span aria-hidden="true">↓</span><span>{!c.operator ? "Requested dependency" : n.variant === "steps" ? "2. Then, only if the condition is met" : "Then, only if met"}</span>
+        <span aria-hidden="true">↓</span><span>{!c.operator ? "Then" : "Then, if met"}</span>
       </div>;
       if (n.component === "PlannedAction") return <div className="v5-planned-action" key={key}>
         <Task action={plan.actions[Number(n.binding)]} compact={n.variant === "compact"} />

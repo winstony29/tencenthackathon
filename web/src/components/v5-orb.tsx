@@ -20,7 +20,7 @@ export function V5Orb({
       onClick={onClick}
       disabled={busy}
       aria-label={
-        busy ? "Composing your workspace" : active ? "Close demo requests" : "Choose a banking request"
+        busy ? "Preparing your request" : active ? "Close requests" : "Choose a banking request"
       }
       aria-expanded={busy ? undefined : active}
       aria-controls={busy ? undefined : "v5-requests"}
