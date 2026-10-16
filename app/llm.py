@@ -17,6 +17,30 @@ class Unavailable(RuntimeError):
     pass
 
 
+def _decode(text: str) -> dict:
+    """Reject oversized, duplicate-key or non-integer numeric model output."""
+    if len(text.encode("utf-8")) > config.EVIDENCE_MAX_ITEM_BYTES:
+        raise ValueError("Validator output exceeds the evidence bound")
+
+    def unique(pairs: list[tuple]) -> dict:
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("Duplicate validator JSON key")
+            result[key] = value
+        return result
+
+    def invalid_number(value: str) -> None:
+        raise ValueError("Validator financial numbers must be strings")
+
+    result = json.loads(
+        text, object_pairs_hook=unique, parse_float=invalid_number, parse_constant=invalid_number
+    )
+    if not isinstance(result, dict):
+        raise ValueError("Validator output must be an object")
+    return result
+
+
 async def audit(system: str, payload: dict) -> dict:
     if config.VALIDATOR_PROVIDER == "codex":
         return await asyncio.to_thread(_codex, system, payload)
@@ -44,7 +68,7 @@ async def audit(system: str, payload: dict) -> dict:
             },
         )
         response.raise_for_status()
-        return json.loads(response.json()["choices"][0]["message"]["content"])
+        return _decode(response.json()["choices"][0]["message"]["content"])
 
 
 def _codex(system: str, payload: dict) -> dict:
@@ -73,6 +97,8 @@ def _codex(system: str, payload: dict) -> dict:
             }
         },
     }
+    # Backend callers may request stronger evidence without changing the legacy adapter.
+    schema = payload.get("response_schema", schema)
     with tempfile.TemporaryDirectory(prefix="jevolve-audit-") as directory:
         root = Path(directory)
         (root / "schema.json").write_text(json.dumps(schema), encoding="utf-8")
@@ -155,4 +181,7 @@ def _codex(system: str, payload: dict) -> dict:
             raise Unavailable("Local Codex is unavailable or timed out.") from error
         if result.returncode or not (root / "answer.json").exists():
             raise Unavailable("Local Codex could not complete the audit. Check CLI login.")
-        return json.loads((root / "answer.json").read_text(encoding="utf-8"))
+        answer = root / "answer.json"
+        if answer.stat().st_size > config.EVIDENCE_MAX_ITEM_BYTES:
+            raise ValueError("Validator output exceeds the evidence bound")
+        return _decode(answer.read_text(encoding="utf-8"))
