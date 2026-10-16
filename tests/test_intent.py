@@ -2648,23 +2648,23 @@ def test_borderline_match_never_joins_the_mean(client, fake_asr, fake_voice) -> 
     assert json.loads(voiceprint._store_path().read_text())["u_demo"]["clips"] == 1  # unchanged
 
 
-def test_different_voice_is_rejected_before_any_asr_call(
+def test_different_voice_is_transcribed_with_rejected_status_for_step_up(
     client, fake_asr, fake_voice, audit_log
 ) -> None:
     from tests.conftest import OTHER_VOICE, _wav_bytes
 
     _transcribe(client, _wav_bytes(1.0))
     asr_calls = len(fake_asr.calls)
+    fake_asr.result = "send fifty to john"
     fake_voice.vectors = [OTHER_VOICE]
     reply = _transcribe(client, _wav_bytes(1.0)).json()
     assert reply == {
-        "transcript": "",
+        "transcript": "send fifty to john",
         "confidence": None,
         "speaker": {"status": "rejected", "score": 0.0},
     }
-    assert len(fake_asr.calls) == asr_calls  # Tencent never heard the stranger
-    assert _audit_events(audit_log)[-1] == ("speaker_checked", "mismatch")
-    assert _audit_events(audit_log).count(("transcribed", "ok")) == 1
+    assert len(fake_asr.calls) == asr_calls + 2
+    assert _audit_events(audit_log)[-2:] == [("speaker_checked", "mismatch"), ("transcribed", "ok")]
 
 
 def test_rejection_score_is_kept_in_evidence(client, fake_asr, fake_voice, evidence_events) -> None:

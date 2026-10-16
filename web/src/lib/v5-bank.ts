@@ -84,7 +84,7 @@ export async function preparePayment(
   value: Draft,
   signal: AbortSignal,
   approved?: Extract<Validation, { status: "match" }>,
-  requireOtp = false, // D-054: the voice check was unsure, so the bank must ask for the one-time code
+  requireFingerprint = false, // Unverified voice adds the simulated fingerprint step.
 ): Promise<Payment> {
   const draft = draftSchema.parse(value);
   const validation = approved ?? (await post("/validate", validationSchema, { draft }, signal));
@@ -107,7 +107,7 @@ export async function preparePayment(
     const reply = await post(
       "/challenge",
       challengeSchema,
-      { draft, receipt: validation.receipt, ...(requireOtp ? { require_otp: true } : {}) },
+      { draft, receipt: validation.receipt, ...(requireFingerprint ? { require_fingerprint: true } : {}) },
       signal,
     );
     const challenge = checkChallenge(reply, draft);

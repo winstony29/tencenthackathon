@@ -489,7 +489,10 @@ def _read(path: Path, established: bool, policy: GatewayPolicy) -> dict[str, Any
 def _validate_record(nonce: str, record: dict[str, Any], policy: GatewayPolicy) -> None:
     if not re.fullmatch(r"n_[A-Za-z0-9_-]{43}", nonce) or len(_decode(nonce[2:])) != 32:
         raise ValueError
-    if set(record) - {"require_otp"} != {  # require_otp is absent on records before D-054
+    if set(record) - {
+        "require_otp",
+        "require_fingerprint",
+    } != {  # require_otp is absent on records before D-054
         "draft",
         "receipt",
         "execution_id",
@@ -542,7 +545,9 @@ def _validate_record(nonce: str, record: dict[str, Any], policy: GatewayPolicy) 
         for f in ("attempts", "step_up_attempts")
     ):
         raise ValueError
-    if type(record.get("require_otp", False)) is not bool:  # absent on records before D-054
+    if any(
+        type(record.get(key, False)) is not bool for key in ("require_otp", "require_fingerprint")
+    ):  # absent on records before D-054
         raise ValueError
     if record["status"] == "committed":
         ExecutedResponse.model_validate(record["result"])
@@ -761,6 +766,7 @@ def issue_challenge(
                 "step_up_attempts": 0,
                 "result": None,
                 "require_otp": request.require_otp,
+                "require_fingerprint": request.require_fingerprint,
             }
             _queue(
                 state,
@@ -988,6 +994,35 @@ def execute(
                 policy,
                 audit_path,
             )
+            if record.get("require_fingerprint") and request.fingerprint is not True:
+                # shortcut: demo confirmation only, replace with WebAuthn for biometric proof.
+                record["status"] = "step_up"
+                _record_event(
+                    state,
+                    record,
+                    request.nonce,
+                    "gateway_step_up_required",
+                    "simulated_fingerprint_required",
+                    path,
+                    policy,
+                    audit_path,
+                )
+                return NeedsExtraCheckResponse(
+                    status="needs_extra_check",
+                    method="fingerprint",
+                    message="Voice not confirmed. Confirm with your fingerprint to continue.",
+                )
+            if request.fingerprint is True:
+                _record_event(
+                    state,
+                    record,
+                    request.nonce,
+                    "gateway_step_up_confirmed",
+                    "simulated_fingerprint",
+                    path,
+                    policy,
+                    audit_path,
+                )
             if record.get("require_otp"):
                 # D-054: the client asked for the one-time-code step (the voice check was
                 # unsure). The demo code is verified here; the ledger's own risk step-up

@@ -6922,3 +6922,36 @@ def test_gateway_without_require_otp_ignores_a_supplied_code(
     _, _, request = _gateway_challenge(env)
     reply = gateway.execute(request.model_copy(update={"otp": "000000"}), **env.paths)
     assert reply.status == "executed"
+
+
+@pytest.mark.parametrize("require_otp", [False, True])
+def test_voice_fingerprint_step_up_preserves_signature_otp_and_exactly_once(
+    gateway_environment: SimpleNamespace,
+    require_otp: bool,
+) -> None:
+    env = gateway_environment
+    draft = _risk_draft("500.00")
+    context = env.approve(draft)
+    challenge = gateway.issue_challenge(
+        ChallengeRequest(
+            draft=draft,
+            receipt=_synthetic_receipt(draft, context),
+            require_fingerprint=True,
+            require_otp=require_otp,
+        ),
+        **env.paths,
+    )
+    request = _sign_payment(env.private, challenge)
+    first = gateway.execute(request, **env.paths)
+    assert first.status == "needs_extra_check" and first.method == "fingerprint"
+    assert len(_ledger_state(env.ledger_paths)["transactions"]) == 0
+    confirmed = request.model_copy(update={"fingerprint": True})
+    if require_otp:
+        extra = gateway.execute(confirmed, **env.paths)
+        assert extra.status == "needs_extra_check" and extra.method == "otp"
+        assert len(_ledger_state(env.ledger_paths)["transactions"]) == 0
+        confirmed = confirmed.model_copy(update={"otp": config.DEMO_OTP})
+    done = gateway.execute(confirmed, **env.paths)
+    assert done.status == "executed"
+    assert gateway.execute(confirmed, **env.paths) == done
+    assert len(_ledger_state(env.ledger_paths)["transactions"]) == 1

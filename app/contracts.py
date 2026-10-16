@@ -2,7 +2,7 @@
 
 Owner: Winston (shared; all three agree before any change)
 Diagram box: none; the shapes that cross every arrow
-Contract: docs/CONTRACTS.md v0.14, which wins if the two disagree
+Contract: docs/CONTRACTS.md v0.16, which wins if the two disagree
 """
 
 import json
@@ -201,7 +201,7 @@ class VoiceEnrolResponse(ContractModel):
 class TranscribeResponse(ContractModel):
     transcript: str
     confidence: float | None
-    speaker: SpeakerCheck  # D-054; on "rejected" the transcript is ""
+    speaker: SpeakerCheck  # V5 requires step-up when voice is unverified.
 
 
 class Answer(ContractModel):
@@ -532,6 +532,7 @@ class ChallengeRequest(ContractModel):
     draft: Draft
     receipt: str
     require_otp: bool = False  # the client may add the one-time-code step, never remove it (D-054)
+    require_fingerprint: bool = False  # simulated step-up when voice was not verified
 
 
 class ChallengeResponse(ContractModel):

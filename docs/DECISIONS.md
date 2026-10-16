@@ -689,3 +689,22 @@ client-requested OTP step enforced by the bank once requested. This merge does n
 server-bound biometric authentication. Tencent remains the default cross-platform ASR;
 MERaLiON's installation is restricted to Apple Silicon. No local secrets or existing bank
 balances, device registrations or ledger entries are changed by the integration tests.
+
+
+### 2026-10-16: Simulated fingerprint fallback for unverified voice
+
+Darren authorized the demo fingerprint click as fallback for voice verification failures
+and elevated transaction velocity. Existing velocity step-up remains bank-controlled;
+hard rate, amount, validation, nonce and signature checks remain enforced. Voice clips
+with rejected status may now be transcribed, but V5 requires fingerprint confirmation
+for every non-verified status (including unavailable/enrolled) and retains that requirement
+across clarification turns. Normal typed/verified flows do not acquire this requirement.
+Explicit OTP challenges still require their code. Clicking the fingerprint submits the
+existing exact signed challenge once; uncertain outcomes reuse it for status recovery.
+The click is simulated authorization, not hardware biometric signing. The client-requested
+voice step-up retains D-054's trust limitation and is not a production security claim.
+
+Verification: 1,211 backend tests passed (6 skipped), 39 frontend unit tests and
+19 V5 browser tests passed. Production build, TypeScript, ESLint and Ruff passed.
+Browser tests used scripted voice/bank responses and real WebCrypto signatures;
+no live bank transactions or hardware biometric verification were performed.

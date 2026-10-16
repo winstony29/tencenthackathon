@@ -259,7 +259,7 @@ export function V5Cards({
   onCancel,
   onAfford,
   onLock,
-  requireOtp = false,
+  requireFingerprint = false,
   preview = false,
   composing = false,
   dispatch = () => {},
@@ -272,7 +272,7 @@ export function V5Cards({
   onCancel: () => void;
   onAfford: () => void;
   onLock: (locked: boolean) => void;
-  requireOtp?: boolean; // D-054
+  requireFingerprint?: boolean; // D-054
 }) {
   const h = state.handoff!;
   const [quotes, setQuotes] = useState<Record<string, Quote>>(h.data.quotes);
@@ -578,7 +578,7 @@ export function V5Cards({
       )}
       <V5Payment
         key={auditKey}
-        requireOtp={requireOtp}
+        requireFingerprint={requireFingerprint}
         validation={validation}
         preview={preview || composing || Object.keys(values.errors).length > 0}
         draft={draft}
