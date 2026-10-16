@@ -180,6 +180,7 @@ export const speakerSchema = z.strictObject({
   status: z.enum(["enrolled", "verified", "rejected", "unavailable"]),
   score: z.number().min(-1).max(1).nullable(),
 });
+export const voiceEnrolSchema = z.strictObject({ clips: z.number().int().min(1) });
 export const transcribeSchema = z.strictObject({
   transcript: z.string(),
   confidence: probability.nullable(),

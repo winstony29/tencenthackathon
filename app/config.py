@@ -75,6 +75,7 @@ VOICEPRINT_TIMEOUT_SECONDS = 5  # ASR's 10 s + this stays under the UI's 15 s fe
 VOICE_THRESHOLD = 0.55  # cosine; 10-clip enrolment: Winston 0.68+, friend 0.43- (D-054)
 VOICE_MAX_CLIPS = 10  # verified clips folded into the enrolled mean
 VOICE_UPDATE_MARGIN = 0.10  # a clip joins the mean only this far above the threshold
+VOICEPRINT_ENROLMENT_OPEN = True  # POST /api/voiceprint/enrol accepts clips; demo only (D-054)
 VOICE_MODEL_URL = (
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/"
     "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"

@@ -28,6 +28,7 @@ import {
   answerSchema,
   quoteSchema,
   transcribeSchema,
+  voiceEnrolSchema,
   understandSchema,
   type Answer,
   type Understand,
@@ -113,6 +114,7 @@ export default function V5() {
   const [level, setLevel] = useState(0); // microphone level while listening
   const [notice, setNotice] = useState(""); // voice problems, shown beside the fallback input
   const [enrolled, setEnrolled] = useState(false); // this request enrolled the speaker (D-054)
+  const enrolling = useRef(false); // the current recording is a voice sample, not a command
   const [stage, setStage] = useState(0);
   const [bankLocked, setBankLocked] = useState(false);
   const [text, setText] = useState("");
@@ -417,7 +419,7 @@ export default function V5() {
   }
   // Voice (D-006): record a 16 kHz WAV in the browser, transcribe it, then treat the text
   // exactly like a typed request or a typed clarify answer.
-  async function listen() {
+  async function listen(mode: "command" | "enrol" = "command") {
     if (phase === "listening") {
       controller.current?.abort(); // a second tap stops early; record() resolves with what it heard
       return;
@@ -428,6 +430,7 @@ export default function V5() {
     const version = generation.current;
     const recording = new AbortController();
     controller.current = recording;
+    enrolling.current = mode === "enrol";
     setNotice("");
     setLevel(0);
     setPhase("listening");
@@ -451,6 +454,23 @@ export default function V5() {
     controller.current = abort;
     const form = new FormData();
     form.append("audio", audio, "speech.wav"); // the browser sets the multipart boundary
+    if (enrolling.current) {
+      // D-054: a voice sample joins the voiceprint through the same microphone path as commands.
+      try {
+        const { clips } = await request("/voiceprint/enrol", voiceEnrolSchema, {
+          method: "POST",
+          body: form,
+          signal: abort.signal,
+        });
+        if (version !== generation.current) return;
+        setNotice(`Voice sample ${clips} added. Say another, or tap the orb to begin.`);
+      } catch (e) {
+        if (version !== generation.current) return;
+        setNotice(e instanceof Error ? e.message : "Enrolment failed. Please try again.");
+      }
+      setPhase("choose");
+      return;
+    }
     try {
       const { transcript, speaker } = await request("/transcribe", transcribeSchema, {
         method: "POST",
@@ -616,6 +636,9 @@ export default function V5() {
                   onMic={() => void listen()}
                   label="What would you like to do?"
                 />
+                <button className="v5-quiet v5-enrol" onClick={() => void listen("enrol")}>
+                  Enrol my voice
+                </button>
                 <p className="v5-eyebrow">OR TRY ONE</p>
                 {requests.map((r) => (
                   <button key={r.label} onClick={() => send(r.text)}>

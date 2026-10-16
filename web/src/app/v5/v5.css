@@ -1008,3 +1008,16 @@
   font-size: 12px;
   color: #b0bbb3;
 }
+
+.v5-requests .v5-enrol {
+  width: auto;
+  margin: -6px 0 16px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #b0bbb3;
+  font: inherit;
+  font-size: 13px;
+  text-decoration: underline;
+  cursor: pointer;
+}

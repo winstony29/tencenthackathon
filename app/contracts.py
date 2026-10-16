@@ -194,6 +194,10 @@ class SpeakerCheck(ContractModel):
     score: float | None  # cosine similarity, or null when nothing was compared
 
 
+class VoiceEnrolResponse(ContractModel):
+    clips: int  # recordings now in the enrolled voiceprint (D-054)
+
+
 class TranscribeResponse(ContractModel):
     transcript: str
     confidence: float | None

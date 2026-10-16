@@ -153,6 +153,25 @@ async def check(user_id: str, wav_bytes: bytes) -> dict[str, Any]:
     return {"status": "verified", "score": round(score, 2)}
 
 
+def add(user_id: str, wav_bytes: bytes) -> int:
+    """Fold one clip into the user's voiceprint whatever it scores (explicit enrolment through
+    the browser, so the enrolment hears the same microphone path as live commands). Returns
+    the clip count. Runs in a worker thread."""
+    vector = _embed(wav_bytes)
+    store = _read()
+    entry = store.get(user_id)
+    if entry is None:
+        entry = {"embedding": vector, "clips": 1}
+    else:
+        n = entry["clips"]
+        pairs = zip(entry["embedding"], vector, strict=True)
+        entry = {"embedding": _unit([(m * n + v) / (n + 1) for m, v in pairs]), "clips": n + 1}
+    entry["enrolled_at"] = datetime.now(UTC).isoformat(timespec="seconds")
+    store[user_id] = entry
+    _write(store)
+    return entry["clips"]
+
+
 def enrol(user_id: str, clips: list[bytes]) -> int:
     """Enrol from recordings already in hand: the mean of their embeddings replaces any entry.
     Returns the number of clips used ()."""

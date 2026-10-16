@@ -2758,3 +2758,40 @@ def test_enrol_from_existing_clips_stores_their_mean(fake_voice) -> None:
     assert stored["clips"] == 2
     assert abs(sum(v * v for v in stored["embedding"]) - 1) < 1e-6
     assert stored["embedding"][0] > stored["embedding"][1] > 0  # between the two voices
+
+
+def _enrol(client, wav_bytes: bytes, user_id: str = "u_demo"):
+    return client.post(
+        "/api/voiceprint/enrol",
+        files={"audio": ("speech.wav", wav_bytes, "audio/wav")},
+        data={"user_id": user_id},
+    )
+
+
+def test_browser_enrolment_adds_clips_whatever_they_score(client, fake_voice, audit_log) -> None:
+    from app.intent import voiceprint
+    from tests.conftest import OTHER_VOICE, SAME_VOICE, _wav_bytes
+
+    fake_voice.vectors = [SAME_VOICE, OTHER_VOICE]
+    assert _enrol(client, _wav_bytes(1.0)).json() == {"clips": 1}
+    assert _enrol(client, _wav_bytes(1.0)).json() == {"clips": 2}
+    stored = json.loads(voiceprint._store_path().read_text())["u_demo"]
+    assert stored["clips"] == 2 and abs(sum(v * v for v in stored["embedding"]) - 1) < 1e-6
+    assert _audit_events(audit_log) == [("speaker_checked", "enrolled")] * 2
+
+
+def test_browser_enrolment_is_closed_when_configured(client, fake_voice, monkeypatch) -> None:
+    from tests.conftest import _wav_bytes
+
+    monkeypatch.setattr(config, "VOICEPRINT_ENROLMENT_OPEN", False)
+    assert _enrol(client, _wav_bytes(1.0)).status_code == 404
+    assert fake_voice.calls == 0
+
+
+def test_browser_enrolment_rejects_bad_wav_and_broken_model(client, fake_voice) -> None:
+    from tests.conftest import _wav_bytes
+
+    assert _enrol(client, b"nope").status_code == 400
+    fake_voice.error = RuntimeError("no model")
+    reply = _enrol(client, _wav_bytes(1.0))
+    assert (reply.status_code, reply.json()["error"]["code"]) == (502, "upstream_error")

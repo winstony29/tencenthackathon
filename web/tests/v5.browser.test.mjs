@@ -895,3 +895,30 @@ test(
     }
   },
 );
+
+test("V5 enrols a voice sample through the same recorder path (D-054)", { timeout: 30000 }, async () => {
+  const browser = await chromium.launch({
+    executablePath,
+    headless: true,
+    args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"],
+  });
+  try {
+    const page = await browser.newPage({ reducedMotion: "reduce", permissions: ["microphone"] });
+    let posted = false;
+    await page.route("**/api/voiceprint/enrol", (route) => {
+      posted = route.request().postDataBuffer().indexOf("RIFF") >= 0;
+      return route.fulfill({ json: { clips: 3 } });
+    });
+    await page.goto(`${process.env.APP_URL ?? "http://127.0.0.1:3000"}/v5/`);
+    await page.getByRole("button", { name: "Choose a banking request" }).click();
+    await page.getByRole("button", { name: "Enrol my voice" }).click();
+    await page.getByRole("button", { name: "Listening, tap to stop" }).waitFor();
+    await page.waitForTimeout(800);
+    await page.getByRole("button", { name: "Listening, tap to stop" }).click();
+    await page.getByText("Voice sample 3 added").waitFor();
+    assert.equal(posted, true);
+    assert.equal(await page.getByRole("button", { name: "Enrol my voice" }).count(), 1); // back in choose
+  } finally {
+    await browser.close();
+  }
+});

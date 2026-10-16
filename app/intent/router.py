@@ -5,6 +5,7 @@ Diagram box: Speech to text, Confidence gate, Draft builder (Intent detection co
 Contract: docs/CONTRACTS.md §3.1
 """
 
+import asyncio
 import re
 import secrets
 import time
@@ -28,6 +29,7 @@ from app.contracts import (
     TranscribeResponse,
     UnderstandRequest,
     UnderstandResponse,
+    VoiceEnrolResponse,
 )
 from app.intent import asr, draft, gate, jev, options, session, shield, voiceprint
 
@@ -219,6 +221,27 @@ async def transcribe(audio: UploadFile, user_id: str = Form("u_demo")) -> dict[s
         count=len(result["transcript"].split()),
     )
     return {**result, "speaker": speaker}
+
+
+@router.post("/voiceprint/enrol", response_model=VoiceEnrolResponse)
+async def enrol_voice(audio: UploadFile, user_id: str = Form("u_demo")) -> dict[str, Any]:
+    """Add one recording to the user's voiceprint through the browser's own microphone path
+    (D-054). Open on the demo like device registration; a real bank would authenticate first.
+    """
+    if not config.VOICEPRINT_ENROLMENT_OPEN:
+        raise HTTPException(404, "Not found.")
+    if not re.fullmatch(r"u_[A-Za-z0-9_-]{1,80}", user_id):
+        raise HTTPException(400, "Invalid user ID.")
+    data = await audio.read()
+    try:
+        asr.validate_wav(data)
+        clips = await asyncio.to_thread(voiceprint.add, user_id, data)
+    except asr.AsrError as error:
+        raise HTTPException(error.status, error.message) from error
+    except Exception as error:  # model missing or broken
+        raise HTTPException(502, "Voice enrolment isn't available right now.") from error
+    _event("speaker_checked", reason="enrolled", count=clips)
+    return {"clips": clips}
 
 
 _SPEAKER_REASON = {

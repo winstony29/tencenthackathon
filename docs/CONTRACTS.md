@@ -130,6 +130,9 @@ Request: multipart form, field `audio` (16 kHz mono 16-bit PCM WAV, D-006), opti
 Response: `{"transcript": "send fifty to john", "confidence": null, "speaker": {"status": "verified", "score": 0.78}}`. The international-site Tencent ASR API does not return a confidence score, so `confidence` is always `null`. `speaker` (D-054) is the voice check run on the same clip before transcription: `status` is `enrolled` (the first speaker after a reset now owns this user's voice), `verified`, `rejected` (the transcript is `""`; nothing was transcribed) or `unavailable` (the model could not run; the transcript is still produced); `score` is the cosine similarity to the enrolled voice, or `null` when nothing was compared.
 Typed input skips this endpoint and goes straight to `/api/understand`.
 
+**`POST /api/voiceprint/enrol`**: adds one recording to the user's voiceprint (D-054).
+Request: multipart form, field `audio` (same WAV as above), optional `user_id`. The clip is folded into the enrolled mean whatever it scores, so enrolment hears the same microphone path as live commands. Response: `{"clips": 3}`, the recordings now in the voiceprint. Open on the demo like device registration (`VOICEPRINT_ENROLMENT_OPEN`); 404 when closed. Audit: `speaker_checked` with reason `enrolled` and `count` = clips.
+
 **`POST /api/understand`**: turns text into a question or a draft. Called again with the user's answer.
 
 Request, first call: `{"user_id": "u_demo", "session_id": "s_41b9", "transcript": "send fifty to john"}`
