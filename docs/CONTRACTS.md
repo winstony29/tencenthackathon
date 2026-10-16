@@ -127,7 +127,7 @@ Response:
 
 **`POST /api/transcribe`**: speech to text.
 Request: multipart form, field `audio` (16 kHz mono 16-bit PCM WAV, D-006), optional field `user_id` (default `u_demo`, must match `u_…`). The `user_id` supplies hotwords from that user's bank data to improve recognition accuracy.
-Response: `{"transcript": "send fifty to john", "confidence": null}`. The international-site Tencent ASR API does not return a confidence score, so `confidence` is always `null`.
+Response: `{"transcript": "send fifty to john", "confidence": null, "speaker": {"status": "verified", "score": 0.78}}`. The international-site Tencent ASR API does not return a confidence score, so `confidence` is always `null`. `speaker` (D-054) is the voice check run on the same clip before transcription: `status` is `enrolled` (the first speaker after a reset now owns this user's voice), `verified`, `rejected` (the transcript is `""`; nothing was transcribed) or `unavailable` (the model could not run; the transcript is still produced); `score` is the cosine similarity to the enrolled voice, or `null` when nothing was compared.
 Typed input skips this endpoint and goes straight to `/api/understand`.
 
 **`POST /api/understand`**: turns text into a question or a draft. Called again with the user's answer.
@@ -395,6 +395,7 @@ The audit chain (`app/audit.py`) accepts only a flat allowlist of non-sensitive 
 | `answer_given` (*v0.6, proposed*) | `reason` (the kind) |
 | `blocked` | `reason` |
 | `cancelled` | `reason` |
+| `speaker_checked` | `reason` (`enrolled`, `match`, `mismatch` or `unavailable`); on `mismatch` it is the only event for that request (D-054) |
 | `transcribed` | `reason` (`ok` or `empty`), `count` (words) |
 
 Jev's answers per question are in the evidence store, as the stand-in text Jev saw, never the transcript (D-026). Jayanth adds `fx_converted` (actor `bank`) with `draft_id`, `sell_amount`, `sell_currency`, `buy_amount`, `buy_currency`, `rate`.

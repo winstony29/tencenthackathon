@@ -42,6 +42,7 @@ dcta/
 │   │   ├── __init__.py
 │   │   ├── router.py         /api/transcribe, /api/understand
 │   │   ├── asr.py            Tencent ASR client
+│   │   ├── voiceprint.py     speaker verification on every voice clip (D-054)
 │   │   ├── shield.py         injection check (Jev yes/no)
 │   │   ├── rewriter.py       LLM writes K plain rewrites
 │   │   ├── jev.py            the only file that calls TypeSafe's API
@@ -223,6 +224,7 @@ V4 financial-context additions (Darren):
 - `app/audit_http.py`: bounded HTTP audit capture and protected evidence routes.
 - `tests/test_evidence.py`: persistence, redaction, retention and request timeline tests.
 - `var/evidence.sqlite3`: ignored encrypted runtime evidence and metadata chain.
+- `var/voiceprints.json`, `var/models/`: ignored enrolled speaker embeddings and the downloaded speaker model (D-054).
 
 
 Bank integration runtime additions (git-ignored, under existing `var/`):

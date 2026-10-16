@@ -48,6 +48,7 @@ Plus: injection attempts are flagged by the input shield, and risk rules (limits
 | 4 | "send fifty thousand to Mei Ling" | Risk rule triggers extra check |
 | 5 | Forced mismatch (test mode) | Validation agent freezes the draft |
 | 6 | Unsigned call to `/api/execute` | Gateway rejects |
+| 7 | A second person says "send fifty to John" | Speaker verification refuses: "Nothing was sent." (D-054) |
 
 ## 6. What we must submit (Friday 16 Oct; exact time TBC with organisers)
 

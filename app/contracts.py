@@ -189,9 +189,15 @@ class PreviewResponse(ContractModel):
     meta: Meta
 
 
+class SpeakerCheck(ContractModel):
+    status: Literal["enrolled", "verified", "rejected", "unavailable"]
+    score: float | None  # cosine similarity, or null when nothing was compared
+
+
 class TranscribeResponse(ContractModel):
     transcript: str
     confidence: float | None
+    speaker: SpeakerCheck  # D-054; on "rejected" the transcript is ""
 
 
 class Answer(ContractModel):

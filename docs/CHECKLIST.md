@@ -49,6 +49,9 @@ IDs: `S` setup · `W` Winston · `J` Jayanth · `D` Darren · `I` integration ·
   curl -F "audio=@command1.wav" -F "user_id=u_demo" http://localhost:8000/api/transcribe
   ```
   W-09 stays unchecked until command 1's real recording transcribes correctly.
+- [ ] **W-11** · Fri · `voiceprint.py`: speaker verification on every voice command (D-054); the first speaker enrols, a different voice is refused before transcription.
+  *Done when:* Winston's command 1 verifies and a second real speaker's gets "Nothing was sent."
+  *Status (16 Oct):* built and live: Winston enrolled then verified at 0.74–0.76; the macOS Daniel voice refused at 0.55 (threshold 0.65). Unticked until a second real person is refused. Reset between rehearsals: `python -m app.intent.voiceprint reset u_demo`.
 - [ ] **W-10** · Mon · `tests/commands.jsonl`: ~30 commands with expected outcome (draft, question, blocked or unsupported), including slang, accents spelt out, multi-intent and attacks.
   *Done when:* the file has at least 30 lines, and Jayanth has added 5 mismatch cases.
   *Status (12 Oct):* 33 commands written, each with `expect`, `tags` and expected `actions`; `known-gap` tags mark what should work but doesn't yet. Waiting for Jayanth's 5 cases (`"expect": "mismatch"`).

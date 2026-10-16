@@ -68,6 +68,18 @@ MERALION_MODEL = os.getenv("MERALION_MODEL", "MERaLiON/MERaLiON-2-10B-MLX")  # 3
 MERALION_TIMEOUT_SECONDS = 12  # under the UI's 15 s fetch timeout
 ASR_AGREE_MIN = 0.8  # word-sequence similarity below this counts as disagreement
 
+# Speaker verification on every voice command (D-054); fails open when the model is unavailable.
+VOICEPRINT_ENABLED = True
+VOICEPRINT_PATH = os.getenv("VOICEPRINT_PATH", "")  # blank uses var/voiceprints.json
+VOICEPRINT_TIMEOUT_SECONDS = 5  # ASR's 10 s + this stays under the UI's 15 s fetch timeout
+VOICE_THRESHOLD = 0.65  # cosine similarity; from Winston's clips vs synthetic voices, recheck live
+VOICE_MAX_CLIPS = 10  # verified clips folded into the enrolled mean
+VOICE_MODEL_URL = (
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/"
+    "wespeaker_en_voxceleb_resnet34_LM.onnx"
+)
+VOICE_MODEL_SHA256 = "e9848563da86f263117134dfd7ad63c92355b37de492b55e325400c9d9c39012"
+
 _strong("VALIDATION_RECEIPT_KEY", os.getenv("VALIDATION_RECEIPT_KEY", ""))
 VALIDATION_RECEIPT_KEY = os.getenv("VALIDATION_RECEIPT_KEY", "") or (
     "" if os.getenv("BANK_EXECUTION_ENABLED", "0") == "1" else secrets.token_hex(32)
