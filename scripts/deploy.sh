@@ -79,5 +79,8 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now dcta
 sudo systemctl restart dcta caddy
 
-sleep 2
-curl -fsS -o /dev/null http://127.0.0.1:8000/v5/ && echo "up: https://$DOMAIN/v5/"
+for _ in $(seq 30); do
+  curl -fsS -o /dev/null http://127.0.0.1:8000/v5/ && { echo "up: https://$DOMAIN/v5/"; exit 0; }
+  sleep 1
+done
+echo "server did not answer in 30 s; run: journalctl -u dcta -n 30 --no-pager"; exit 1
