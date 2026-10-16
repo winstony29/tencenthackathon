@@ -44,14 +44,16 @@ server and open http://127.0.0.1:3000/v5/ instead.
 
 ## Deploy for judges
 
-One Ubuntu box (Tencent Cloud Lighthouse, Singapore, 2 vCPU / 4 GB is enough), a domain
-pointing at it, and `scripts/deploy.sh`. HTTPS is required: the browser only allows device
-signing and the microphone on `https://`.
+One Ubuntu 24.04 box from any provider (2 vCPU / 4 GB; Hetzner, DigitalOcean, Lightsail,
+Tencent Lighthouse all work) with ports 22, 80 and 443 open, and `scripts/deploy.sh`.
+HTTPS is required: the browser only allows device signing and the microphone on `https://`.
+No domain needed: `DOMAIN=<server-ip>.sslip.io` resolves to the box and Caddy gets a
+certificate for it. Use `1-2-3-4.sslip.io` (dashes) for IP 1.2.3.4.
 
 ```bash
 git clone https://github.com/winstony29/tencenthackathon.git && cd tencenthackathon/dcta
 cp .env.example .env            # fill in MAKERS_MODELS_KEY, Tencent ASR, LLM_API_KEY
-DOMAIN=demo.example.com bash scripts/deploy.sh
+DOMAIN=1-2-3-4.sslip.io bash scripts/deploy.sh
 ```
 
 The script installs Python, Node and Caddy, generates any blank secrets, builds the front
