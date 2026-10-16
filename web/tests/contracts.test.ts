@@ -416,14 +416,18 @@ test("transcribe replies carry the speaker check and reject unknown statuses (D-
     speaker: { status: "verified", score: 0.78 },
   };
   assert.equal(transcribeSchema.safeParse(ok).success, true);
-  assert.equal(
-    transcribeSchema.safeParse({
-      transcript: "",
-      confidence: null,
-      speaker: { status: "rejected", score: 0.31 },
-    }).success,
-    true,
-  );
+  for (const speaker of [
+    { status: "rejected", score: 0.31 },
+    { status: "unsure", score: 0.6 },
+    { status: "enrolled", score: null },
+    { status: "unavailable", score: null },
+  ]) {
+    assert.equal(
+      transcribeSchema.safeParse({ ...ok, transcript: "", speaker }).success,
+      true,
+      speaker.status,
+    );
+  }
   assert.equal(
     transcribeSchema.safeParse({ ...ok, speaker: { status: "maybe", score: null } }).success,
     false,

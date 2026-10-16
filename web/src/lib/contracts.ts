@@ -177,7 +177,7 @@ export const previewSchema = z.strictObject({
 });
 // D-054: the voice check run on the clip before transcription; on "rejected" the transcript is "".
 export const speakerSchema = z.strictObject({
-  status: z.enum(["enrolled", "verified", "rejected", "unavailable"]),
+  status: z.enum(["enrolled", "verified", "unsure", "rejected", "unavailable"]),
   score: z.number().min(-1).max(1).nullable(),
 });
 export const voiceEnrolSchema = z.strictObject({ clips: z.number().int().min(1) });

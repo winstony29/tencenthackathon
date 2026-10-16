@@ -2,12 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, LockKeyhole } from "lucide-react";
 import type { Draft, Validation } from "@/lib/contracts";
-import {
-  preparePayment,
-  submitPayment,
-  type Payment,
-  type Execution,
-} from "@/lib/v5-bank";
+import { preparePayment, submitPayment, type Payment, type Execution } from "@/lib/v5-bank";
 
 export function V5Payment({
   draft,
@@ -16,8 +11,10 @@ export function V5Payment({
   onLock,
   onSettled,
   preview = false,
+  requireOtp = false,
 }: {
   preview?: boolean;
+  requireOtp?: boolean; // D-054: unsure voice; the bank asks for the one-time code
   draft: Draft;
   validation: Validation;
   onCancel: () => void;
@@ -48,12 +45,7 @@ export function V5Payment({
               : "Place order";
   async function send() {
     if (preview || validation.status !== "match") return;
-    if (
-      locked.current ||
-      result?.status === "executed" ||
-      result?.status === "rejected"
-    )
-      return;
+    if (locked.current || result?.status === "executed" || result?.status === "rejected") return;
     locked.current = true;
     setBusy(true);
     onLock(true);
@@ -63,7 +55,7 @@ export function V5Payment({
     let executing = false;
     let unresolved = false;
     try {
-      pending.current ??= await preparePayment(draft, controller.signal, validation);
+      pending.current ??= await preparePayment(draft, controller.signal, validation, requireOtp);
       controller.signal.throwIfAborted();
       executing = true;
       const reply = await submitPayment(
@@ -75,8 +67,7 @@ export function V5Payment({
         setResult(reply);
         setUncertain(false);
         setOtp("");
-        if (reply.status !== "needs_extra_check")
-          onSettled(reply.status === "executed");
+        if (reply.status !== "needs_extra_check") onSettled(reply.status === "executed");
       }
     } catch (e) {
       if (!controller.signal.aborted) {

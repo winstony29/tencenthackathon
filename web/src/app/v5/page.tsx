@@ -114,6 +114,7 @@ export default function V5() {
   const [level, setLevel] = useState(0); // microphone level while listening
   const [notice, setNotice] = useState(""); // voice problems, shown beside the fallback input
   const [enrolled, setEnrolled] = useState(false); // this request enrolled the speaker (D-054)
+  const [voiceUnsure, setVoiceUnsure] = useState(false); // voice between the two thresholds (D-054)
   const enrolling = useRef(false); // the current recording is a voice sample, not a command
   const [stage, setStage] = useState(0);
   const [bankLocked, setBankLocked] = useState(false);
@@ -170,6 +171,7 @@ export default function V5() {
     setHeard("");
     setNotice("");
     setEnrolled(false);
+    setVoiceUnsure(false);
     setText("");
     setQuestion(null);
     setPlan(null);
@@ -485,6 +487,7 @@ export default function V5() {
       }
       if (speaker.status === "unavailable") setNotice("Voice check unavailable, continuing without it.");
       setEnrolled(speaker.status === "enrolled");
+      setVoiceUnsure(speaker.status === "unsure");
       if (transcript.trim().length < 2) {
         setNotice("I didn't catch that. Try again or type.");
         setPhase(from);
@@ -561,6 +564,11 @@ export default function V5() {
               <span>Your request</span>
               <p>“{heard}”</p>
               {enrolled && <small>Voice enrolled for this demo</small>}
+              {voiceUnsure && (
+                <small className="v5-unsure" role="status">
+                  Voice not confirmed. A one-time code is needed before anything is sent.
+                </small>
+              )}
             </div>
           ) : (
             <p className="v5-lede">
@@ -758,6 +766,7 @@ export default function V5() {
                     composition={composition}
                     onCancel={reset}
                     onLock={setBankLocked}
+                    requireOtp={voiceUnsure}
                     onAfford={() => void understand({ transcript: "Can I afford that?" })}
                   />
                 </>

@@ -1021,3 +1021,7 @@
   text-decoration: underline;
   cursor: pointer;
 }
+
+.v5-heard small.v5-unsure {
+  color: #ffb3b3;
+}
