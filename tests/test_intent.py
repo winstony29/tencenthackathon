@@ -2674,7 +2674,7 @@ def test_rejection_score_is_kept_in_evidence(client, fake_asr, fake_voice, evide
     fake_voice.vectors = [OTHER_VOICE]
     _transcribe(client, _wav_bytes(1.0))
     (payload,) = [p for e, p in evidence_events if e == "speaker_rejected"]
-    assert payload == {"score": 0.0, "threshold": config.VOICE_THRESHOLD, "clips": 1}
+    assert payload == {"score": 0.0, "threshold": config.VOICE_UNSURE_THRESHOLD, "clips": 1}
 
 
 def test_voice_check_failure_is_unavailable_and_still_transcribes(
@@ -2795,3 +2795,29 @@ def test_browser_enrolment_rejects_bad_wav_and_broken_model(client, fake_voice) 
     fake_voice.error = RuntimeError("no model")
     reply = _enrol(client, _wav_bytes(1.0))
     assert (reply.status_code, reply.json()["error"]["code"]) == (502, "upstream_error")
+
+
+def test_unsure_voice_proceeds_as_unsure(client, fake_asr, fake_voice, audit_log) -> None:
+    from tests.conftest import _unit, _wav_bytes
+
+    _transcribe(client, _wav_bytes(1.0))
+    fake_voice.vectors = [_unit(0.6, 0.8)]  # cosine 0.60: between 0.50 and 0.68
+    fake_asr.result = "what's my balance"
+    reply = _transcribe(client, _wav_bytes(1.0)).json()
+    assert reply["speaker"] == {"status": "unsure", "score": 0.6}
+    assert reply["transcript"] == "what's my balance"
+    assert _audit_events(audit_log)[-2:] == [("speaker_checked", "unsure"), ("transcribed", "ok")]
+
+
+def test_trim_drops_silence_around_speech_and_keeps_quiet_clips() -> None:
+    import math
+
+    from app.intent import voiceprint
+
+    second = 16000
+    tone = [0.3 * math.sin(i / 10) for i in range(second)]
+    padded = [0.0] * second + tone + [0.0] * second
+    trimmed = voiceprint._trim(padded)
+    assert second <= len(trimmed) <= second + 16000 * 0.25  # tone plus up to ~100 ms each side
+    assert voiceprint._trim([0.0] * second) == [0.0] * second  # nothing loud: unchanged
+    assert voiceprint._trim(tone[:4000]) == tone[:4000]  # too short to trim further

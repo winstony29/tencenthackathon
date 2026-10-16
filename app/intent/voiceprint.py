@@ -78,11 +78,31 @@ def preload() -> None:
     _get_extractor()
 
 
+_FRAME = 320  # 20 ms at 16 kHz
+_QUIET = 0.01  # frame RMS below this is silence (the recorder's speech level is 0.02)
+
+
+def _trim(samples: list[float]) -> list[float]:
+    """Drop leading and trailing silence, keeping 100 ms of padding. Silence dilutes a short
+    clip's embedding towards "generic", which is where impostors also sit (D-054)."""
+    frames = [samples[i : i + _FRAME] for i in range(0, len(samples), _FRAME)]
+
+    def rms(frame: list[float]) -> float:
+        return math.sqrt(sum(s * s for s in frame) / (len(frame) or 1))
+
+    loud = [i for i, frame in enumerate(frames) if rms(frame) > _QUIET]
+    if not loud:
+        return samples
+    start, end = max(loud[0] - 5, 0) * _FRAME, min(loud[-1] + 6, len(frames)) * _FRAME
+    trimmed = samples[start:end]
+    return trimmed if len(trimmed) >= 8000 else samples  # keep at least half a second
+
+
 def _embed(wav_bytes: bytes) -> list[float]:
     """Unit-length embedding of a 16 kHz mono 16-bit WAV. Runs in a worker thread."""
     with wave.open(BytesIO(wav_bytes)) as wav:
         frames = wav.readframes(wav.getnframes())
-    samples = [s / 32768 for s in struct.unpack(f"<{len(frames) // 2}h", frames)]
+    samples = _trim([s / 32768 for s in struct.unpack(f"<{len(frames) // 2}h", frames)])
     extractor = _get_extractor()
     stream = extractor.create_stream()
     stream.accept_waveform(16000, samples)
@@ -113,7 +133,12 @@ def _write(store: dict[str, Any]) -> None:
 
 
 async def check(user_id: str, wav_bytes: bytes) -> dict[str, Any]:
-    """{"status": enrolled | verified | rejected | unavailable, "score": float | None}."""
+    """{"status": enrolled | verified | unsure | rejected | unavailable, "score": float | None}.
+
+    Three bands (D-054): at or above VOICE_THRESHOLD verified; between VOICE_UNSURE_THRESHOLD
+    and it unsure (the command proceeds, the UI says so, and execution needs the OTP step);
+    below VOICE_UNSURE_THRESHOLD rejected.
+    """
     if not config.VOICEPRINT_ENABLED:
         return {"status": "unavailable", "score": None}
     try:
@@ -135,14 +160,16 @@ async def check(user_id: str, wav_bytes: bytes) -> dict[str, Any]:
         _write(store)
         return {"status": "enrolled", "score": None}
     score = sum(a * b for a, b in zip(entry["embedding"], vector, strict=True))
-    if score < config.VOICE_THRESHOLD:
+    rounded = round(score, 2)
+    if score < config.VOICE_UNSURE_THRESHOLD:
         # Rejections never reach the transcribed record, so keep the score here for tuning.
-        rounded = round(score, 2)
         evidence.record(
             "speaker_rejected",
-            {"score": rounded, "threshold": config.VOICE_THRESHOLD, "clips": entry["clips"]},
+            {"score": rounded, "threshold": config.VOICE_UNSURE_THRESHOLD, "clips": entry["clips"]},
         )
-        return {"status": "rejected", "score": round(score, 2)}
+        return {"status": "rejected", "score": rounded}
+    if score < config.VOICE_THRESHOLD:
+        return {"status": "unsure", "score": rounded}
     confident = score >= config.VOICE_THRESHOLD + config.VOICE_UPDATE_MARGIN
     if confident and entry["clips"] < config.VOICE_MAX_CLIPS:  # fold the clip into the running mean
         n = entry["clips"]

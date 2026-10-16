@@ -247,6 +247,7 @@ async def enrol_voice(audio: UploadFile, user_id: str = Form("u_demo")) -> dict[
 _SPEAKER_REASON = {
     "enrolled": "enrolled",
     "verified": "match",
+    "unsure": "unsure",
     "rejected": "mismatch",
     "unavailable": "unavailable",
 }
