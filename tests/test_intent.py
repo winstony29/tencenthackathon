@@ -140,6 +140,12 @@ def test_jev_asks_every_phrasing_in_order(fake_jev) -> None:
         ("send a friend some money", []),
         ("send fiddy to mum", ["50"]),
         ("transfer tirty dollar to john smith", ["30"]),
+        ("seven fifty to john", ["750"]),  # Tencent ASR heard this for "send fifty" (16 Oct)
+        ("send twelve fifty to mum", ["1250"]),
+        ("send fifty seven to john", ["57"]),
+        ("send one fifty to john", ["150"]),
+        ("send one point five k to john", ["1500"]),
+        ("send five k to john", ["5000"]),
     ],
 )
 def test_numbers_are_parsed_by_code(text: str, values: list[str]) -> None:
@@ -2224,3 +2230,368 @@ def test_shared_mask_scrubs_credentials_for_presentation_callers(mask_key):
     masked = options.mask("Send 50. My password is InvisibleSecret!", "presentation")
     assert "InvisibleSecret" not in masked
     assert "[secret]" in masked
+
+
+# --- Tencent Cloud ASR (W-09, D-006) ---
+
+
+def _transcribe(client, wav_bytes: bytes, user_id: str = "u_demo"):
+    return client.post(
+        "/api/transcribe",
+        files={"audio": ("speech.wav", wav_bytes, "audio/wav")},
+        data={"user_id": user_id},
+    )
+
+
+def test_valid_wav_transcribes_correctly(client, fake_asr) -> None:
+    from tests.conftest import _wav_bytes
+
+    reply = _transcribe(client, _wav_bytes(1.0)).json()
+    assert reply == {"transcript": "send fifty to john", "confidence": None}
+
+
+def test_polling_returns_after_status_0_1_2(client, fake_asr) -> None:
+    from tests.conftest import _wav_bytes
+
+    fake_asr.statuses = [
+        {"Status": 0},
+        {"Status": 1},
+        {"Status": 2, "Result": "pay my credit card bill"},
+    ]
+    reply = _transcribe(client, _wav_bytes(1.0)).json()
+    assert reply["transcript"] == "pay my credit card bill"
+    assert reply["confidence"] is None
+
+
+def test_task_failure_returns_502(client, fake_asr) -> None:
+    from tests.conftest import _wav_bytes
+
+    fake_asr.statuses = [{"Status": 3, "ErrorMsg": "internal error"}]
+    reply = _transcribe(client, _wav_bytes(1.0))
+    assert (reply.status_code, reply.json()["error"]["code"]) == (502, "upstream_error")
+
+
+def test_polling_timeout_returns_502(client, fake_asr, monkeypatch) -> None:
+    from tests.conftest import _wav_bytes
+
+    fake_asr.statuses = [{"Status": 0}]  # never finishes
+    monkeypatch.setattr(config, "ASR_TIMEOUT_SECONDS", 0.0)
+    reply = _transcribe(client, _wav_bytes(1.0))
+    assert (reply.status_code, reply.json()["error"]["code"]) == (502, "upstream_error")
+
+
+def test_non_wav_returns_400(client, fake_asr) -> None:
+    reply = _transcribe(client, b"not a wav file")
+    assert (reply.status_code, reply.json()["error"]["code"]) == (400, "bad_request")
+    assert reply.json()["error"]["message"] == "Please record again."
+    assert not fake_asr.calls  # Tencent was never called
+
+
+def test_stereo_wav_returns_400(client, fake_asr) -> None:
+    from tests.conftest import _wav_bytes
+
+    reply = _transcribe(client, _wav_bytes(1.0, channels=2))
+    assert (reply.status_code, reply.json()["error"]["code"]) == (400, "bad_request")
+
+
+def test_wrong_sample_rate_returns_400(client, fake_asr) -> None:
+    from tests.conftest import _wav_bytes
+
+    reply = _transcribe(client, _wav_bytes(1.0, framerate=44100))
+    assert (reply.status_code, reply.json()["error"]["code"]) == (400, "bad_request")
+
+
+def test_too_short_wav_returns_400(client, fake_asr) -> None:
+    from tests.conftest import _wav_bytes
+
+    reply = _transcribe(client, _wav_bytes(0.01))
+    assert (reply.status_code, reply.json()["error"]["code"]) == (400, "bad_request")
+
+
+def test_too_long_wav_returns_400(client, fake_asr) -> None:
+    from tests.conftest import _wav_bytes
+
+    reply = _transcribe(client, _wav_bytes(20.0))
+    assert (reply.status_code, reply.json()["error"]["code"]) == (400, "bad_request")
+
+
+def test_missing_keys_returns_503(client, bank, monkeypatch) -> None:
+    from tests.conftest import _wav_bytes
+
+    monkeypatch.setattr(config, "TENCENTCLOUD_SECRET_ID", "")
+    monkeypatch.setattr(config, "TENCENTCLOUD_SECRET_KEY", "")
+    reply = _transcribe(client, _wav_bytes(1.0))
+    assert (reply.status_code, reply.json()["error"]["code"]) == (503, "upstream_error")
+    assert "type your request" in reply.json()["error"]["message"].lower()
+
+
+def test_hotwords_are_built_from_user_data(client, fake_asr, bank) -> None:
+    from app.intent import asr
+
+    hw = asr._hotwords("u_demo")
+    pairs = hw.split(",")
+    assert len(pairs) <= 128
+    for pair in pairs:
+        word, weight = pair.rsplit("|", 1)
+        assert len(word) <= 30
+        assert "," not in word and "|" not in word
+        assert 1 <= int(weight) <= 11
+    words_lower = {pair.rsplit("|", 1)[0].lower() for pair in pairs}
+    assert "john doe" in words_lower  # whole payee name, not split into words
+    assert "dbs credit card" in words_lower  # biller name
+    assert "dbs" in words_lower  # fixed term
+    assert not any("…" in w or w.startswith("savings …") for w in words_lower)
+    # Deduplicated case-insensitively
+    assert len(words_lower) == len(pairs)
+
+
+def test_transcribe_audit_event(client, fake_asr, bank, audit_log) -> None:
+    from tests.conftest import _wav_bytes
+
+    _transcribe(client, _wav_bytes(1.0))
+    events = [json.loads(line) for line in audit_log.read_text().splitlines()]
+    transcribed = [e for e in events if e["event"] == "transcribed"]
+    assert len(transcribed) == 1
+    assert transcribed[0]["data"]["reason"] == "ok"
+    assert transcribed[0]["data"]["count"] == 4  # "send fifty to john"
+
+
+def test_empty_transcript_audit_reason_empty(client, fake_asr, bank, audit_log) -> None:
+    from tests.conftest import _wav_bytes
+
+    fake_asr.result = ""
+    reply = _transcribe(client, _wav_bytes(1.0)).json()
+    assert reply["transcript"] == ""
+    events = [json.loads(line) for line in audit_log.read_text().splitlines()]
+    transcribed = [e for e in events if e["event"] == "transcribed"]
+    assert transcribed[0]["data"]["reason"] == "empty"
+
+
+def test_invalid_user_id_returns_400(client, fake_asr) -> None:
+    from tests.conftest import _wav_bytes
+
+    reply = _transcribe(client, _wav_bytes(1.0), user_id="admin")
+    assert reply.status_code == 400
+
+
+def test_tc3_signing_matches_official_sdk() -> None:
+    """Fixed inputs; expected value produced by tencentcloud-sdk-python's _get_tc3_signature."""
+    from app.intent import asr
+
+    body = b'{"test":"value"}'
+    headers = {
+        "Host": config.ASR_HOST,
+        "Content-Type": "application/json; charset=utf-8",
+        "X-TC-Action": "CreateRecTask",
+        "X-TC-Version": config.ASR_VERSION,
+        "X-TC-Timestamp": "1763000000",
+    }
+    auth = asr._sign("AKIDtest", "test-secret-key", 1763000000, "asr", "POST", "/", headers, body)
+    assert auth == (
+        "TC3-HMAC-SHA256 Credential=AKIDtest/2025-11-13/asr/tc3_request, "
+        "SignedHeaders=content-type;host, "
+        "Signature=789e0b701167be2b6e30f5014063eed606793e3876d246c9915049048d0d8350"
+    )
+
+
+def test_result_timestamps_are_stripped_and_transcript_scrubbed(client, fake_asr) -> None:
+    from tests.conftest import _wav_bytes
+
+    fake_asr.result = "[0:0.000,0:1.880]  pay 4111 1111 1111 1111 now.\n[0:2.000,0:3.100]  thanks\n"
+    reply = _transcribe(client, _wav_bytes(1.0)).json()
+    assert reply["transcript"] == "pay [card] now. thanks"
+
+
+def test_create_task_error_returns_502(client, fake_asr) -> None:
+    from tests.conftest import _wav_bytes
+
+    fake_asr.create_error = {"Code": "InternalError", "Message": "boom"}
+    reply = _transcribe(client, _wav_bytes(1.0))
+    assert (reply.status_code, reply.json()["error"]["code"]) == (502, "upstream_error")
+
+
+# --- MERaLiON provider switch (D-053) ---
+
+
+class _FakeMeralion:
+    """Stands in for asr._meralion_file: records the temp path, returns scripted text."""
+
+    def __init__(self, text: str = "send fifty to john", delay: float = 0.0) -> None:
+        self.text, self.delay, self.paths = text, delay, []
+
+    def __call__(self, path: str) -> str:
+        import os
+        import time as _time
+
+        self.paths.append(path)
+        assert os.path.exists(path), "WAV must exist while MERaLiON reads it"
+        _time.sleep(self.delay)
+        if isinstance(self.text, Exception):
+            raise self.text
+        return self.text
+
+
+@pytest.fixture
+def fake_meralion(monkeypatch: pytest.MonkeyPatch) -> _FakeMeralion:
+    from app.intent import asr
+
+    fake = _FakeMeralion()
+    monkeypatch.setattr(asr, "_meralion_file", fake)
+    monkeypatch.setattr(config, "ASR_PROVIDER", "meralion")
+    return fake
+
+
+@pytest.fixture
+def evidence_events(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict]]:
+    from app import evidence
+
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        evidence, "record", lambda event, payload, **_: events.append((event, payload))
+    )
+    return events
+
+
+def test_asr_provider_rejects_unknown_values(monkeypatch) -> None:
+    monkeypatch.setenv("ASR_PROVIDER", "whisper")
+    with pytest.raises(ValueError, match="ASR_PROVIDER"):
+        config._choice("ASR_PROVIDER", "tencent", ("tencent", "meralion", "compare"))
+    assert config._choice("ASR_PROVIDER", "tencent", ("tencent", "meralion", "compare", "whisper"))
+
+
+def test_meralion_mode_returns_its_transcript_and_deletes_the_wav(client, fake_meralion) -> None:
+    import os
+
+    from tests.conftest import _wav_bytes
+
+    fake_meralion.text = '<Speaker1>: "Send fifty to John lah."'
+    reply = _transcribe(client, _wav_bytes(1.0)).json()
+    assert reply == {"transcript": "Send fifty to John lah.", "confidence": None}
+    assert fake_meralion.paths and not os.path.exists(fake_meralion.paths[0])
+
+
+def test_meralion_wav_deleted_when_it_fails(fake_meralion) -> None:
+    import asyncio
+    import os
+
+    from app.intent import asr
+    from tests.conftest import _wav_bytes
+
+    fake_meralion.text = RuntimeError("mlx exploded")
+    with pytest.raises(RuntimeError):
+        asyncio.run(asr._meralion(_wav_bytes(1.0)))
+    assert not os.path.exists(fake_meralion.paths[0])
+
+
+def test_meralion_not_installed_returns_503(client, monkeypatch) -> None:
+    import sys
+
+    from app.intent import asr
+    from tests.conftest import _wav_bytes
+
+    monkeypatch.setattr(config, "ASR_PROVIDER", "meralion")
+    monkeypatch.setattr(asr, "_meralion_model", None)
+    monkeypatch.setitem(sys.modules, "mlx_meralion", None)  # makes the import fail
+    reply = _transcribe(client, _wav_bytes(1.0))
+    assert (reply.status_code, reply.json()["error"]["code"]) == (503, "upstream_error")
+    assert "isn't installed" in reply.json()["error"]["message"]
+
+
+def test_meralion_long_output_returns_502(client, fake_meralion) -> None:
+    from tests.conftest import _wav_bytes
+
+    fake_meralion.text = "word " * 200  # over MAX_TEXT_CHARS: rambling or injected
+    reply = _transcribe(client, _wav_bytes(1.0))
+    assert (reply.status_code, reply.json()["error"]["code"]) == (502, "upstream_error")
+
+
+def test_meralion_timeout_returns_502(client, fake_meralion, monkeypatch) -> None:
+    from tests.conftest import _wav_bytes
+
+    monkeypatch.setattr(config, "MERALION_TIMEOUT_SECONDS", 0.05)
+    fake_meralion.delay = 0.3
+    reply = _transcribe(client, _wav_bytes(1.0))
+    assert (reply.status_code, reply.json()["error"]["code"]) == (502, "upstream_error")
+
+
+def test_compare_mode_returns_tencent_and_records_both(
+    client, fake_asr, fake_meralion, evidence_events, monkeypatch
+) -> None:
+    from tests.conftest import _wav_bytes
+
+    monkeypatch.setattr(config, "ASR_PROVIDER", "compare")
+    fake_meralion.text = "send fifty to jon"
+    reply = _transcribe(client, _wav_bytes(1.0)).json()
+    assert reply["transcript"] == "send fifty to john"
+    ((event, payload),) = [e for e in evidence_events if e[0] == "transcribed"]
+    assert payload["provider"] == "compare"
+    assert payload["meralion_transcript"] == "send fifty to jon"
+    assert payload["similarity"] == 0.75 and payload["agree"] is False
+    assert payload["audio_saved"] is False and "meralion_ms" in payload
+
+
+def test_compare_mode_tencent_failure_is_502_even_if_meralion_works(
+    client, fake_asr, fake_meralion, monkeypatch
+) -> None:
+    from tests.conftest import _wav_bytes
+
+    monkeypatch.setattr(config, "ASR_PROVIDER", "compare")
+    fake_asr.create_error = {"Code": "InternalError", "Message": "boom"}
+    reply = _transcribe(client, _wav_bytes(1.0))
+    assert (reply.status_code, reply.json()["error"]["code"]) == (502, "upstream_error")
+
+
+def test_compare_mode_survives_meralion_failure(
+    client, fake_asr, fake_meralion, evidence_events, monkeypatch
+) -> None:
+    from tests.conftest import _wav_bytes
+
+    monkeypatch.setattr(config, "ASR_PROVIDER", "compare")
+    fake_meralion.text = RuntimeError("no GPU")
+    reply = _transcribe(client, _wav_bytes(1.0)).json()
+    assert reply["transcript"] == "send fifty to john"
+    ((_, payload),) = [e for e in evidence_events if e[0] == "transcribed"]
+    assert payload["meralion_error"] == "RuntimeError"
+
+
+@pytest.mark.parametrize(
+    ("expected", "actual", "rate"),
+    [
+        ("send fifty to john", "send fifty to john", 0.0),
+        ("send fifty to john", "Send fifty to John.", 0.0),
+        ("send fifty to john", "Send 50 to John.", 0.0),
+        ("seven fifty to john", "750 to John.", 0.0),
+        ("send fifty to john", "seven fifty to john", 0.5),
+        ("send fifty to john", "send to john", 0.25),
+        ("send fifty to john", "", 1.0),
+        ("", "hello", 1.0),
+    ],
+)
+def test_word_error_rate(expected: str, actual: str, rate: float) -> None:
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "compare_asr", Path(__file__).resolve().parents[1] / "scripts" / "compare_asr.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.wer(expected, actual) == rate
+
+
+def test_preload_warms_up_on_silence_and_cleans_up(fake_meralion, monkeypatch) -> None:
+    import os
+
+    from app.intent import asr
+
+    monkeypatch.setattr(asr, "_load_meralion", lambda: (None, None))
+    asr.preload()
+    assert len(fake_meralion.paths) == 1 and not os.path.exists(fake_meralion.paths[0])
+
+
+def test_similarity_ignores_number_spelling() -> None:
+    from app.intent import asr
+
+    assert asr.similarity("Send 50 to John.", "Send fifty to John.") == 1.0
+    assert asr.similarity("750 to John.", "Seven fifty to John.") == 1.0
+    assert asr.similarity("send fifty to john", "send fifty to jon") == 0.75

@@ -13,7 +13,7 @@ from dataclasses import replace
 from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, UploadFile
+from fastapi import APIRouter, Form, HTTPException, UploadFile
 
 from app import audit, config, evidence, transaction_state
 from app.bank import readonly
@@ -29,7 +29,7 @@ from app.contracts import (
     UnderstandRequest,
     UnderstandResponse,
 )
-from app.intent import draft, gate, jev, options, session, shield
+from app.intent import asr, draft, gate, jev, options, session, shield
 
 router = APIRouter(prefix="/api", tags=["intent"])
 
@@ -54,7 +54,6 @@ _STUB_PREVIEW = {
     },
     "meta": {**_STUB_META, "latency_ms": 210, "phrasings": 1},
 }
-_STUB_TRANSCRIPT = {"transcript": "send fifty to john", "confidence": 0.93}
 _STUB_QUESTION = {
     "status": "question",
     "question": {
@@ -192,10 +191,26 @@ async def preview(request: PreviewRequest) -> dict[str, Any]:
 
 
 @router.post("/transcribe", response_model=TranscribeResponse)
-async def transcribe(audio: UploadFile) -> dict[str, Any]:
-    """Turn recorded speech into text. Stub: always returns the CONTRACTS example."""
-    evidence.record("transcription_stub", {"output": _STUB_TRANSCRIPT, "audio_saved": False})
-    return _STUB_TRANSCRIPT
+async def transcribe(audio: UploadFile, user_id: str = Form("u_demo")) -> dict[str, Any]:
+    """Turn recorded speech into text via Tencent Cloud ASR (D-006, W-09).
+
+    Multipart form: field ``audio`` (16 kHz mono 16-bit PCM WAV), optional
+    ``user_id`` (default ``u_demo``). Returns ``{"transcript": str, "confidence": null}`` —
+    the international-site API does not return a confidence score (CONTRACTS §3.1).
+    """
+    if not re.fullmatch(r"u_[A-Za-z0-9_-]{1,80}", user_id):
+        raise HTTPException(400, "Invalid user ID.")
+    data = await audio.read()
+    try:
+        result = await asr.transcribe(user_id, data)
+    except asr.AsrError as error:
+        raise HTTPException(error.status, error.message) from error
+    _event(
+        "transcribed",
+        reason="ok" if result["transcript"] else "empty",
+        count=len(result["transcript"].split()),
+    )
+    return result
 
 
 @router.post("/understand", response_model=UnderstandResponse)
