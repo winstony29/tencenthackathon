@@ -7,7 +7,7 @@ Contract: docs/CONTRACTS.md §2
 
 import re
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from zoneinfo import ZoneInfo
 
@@ -15,11 +15,13 @@ from app import config
 from app.bank import readonly
 from app.contracts import (
     Account,
+    AccountTransferAction,
     BillPaymentAction,
     Draft,
     Evidence,
     FxConversionAction,
     FxResponse,
+    HoldingValue,
     Objective,
     QuoteResponse,
     Scenario,
@@ -27,7 +29,7 @@ from app.contracts import (
     TransferAction,
 )
 from app.intent.gate import Decision, Pick
-from app.intent.options import Options, UserData
+from app.intent.options import Options, UserData, parse_numbers
 
 CENT = Decimal("0.01")
 # ponytail: actions are ordered by where their first keyword appears; ask Jev for the order
@@ -36,11 +38,100 @@ _MENTIONS = {
     "transfer": re.compile(r"\b(send|transfer|give|wire)\b"),
     "bill_payment": re.compile(r"\b(bill|card)\b"),
     "stock_order": re.compile(r"\b(buy|sell|invest|shares?|stocks?)\b"),
+    "account_transfer": re.compile(r"\b(move|shift|top up|convert)\b"),
 }
 
 
 class Unbuildable(Exception):
     """The picks are trustworthy but can't make a valid action; the message tells the user why."""
+
+
+HELP = (
+    "I can send money to your payees, pay your card bill, buy or sell shares, and convert "
+    "currency for a purchase. I can also tell you your balances, recent transactions, "
+    "upcoming bills, your shares, share prices, exchange rates and who you can pay."
+)
+LATEST = 5  # transactions shown when no period is said (D-035)
+_SPAN = re.compile(r"\s*(day|week)s?\b")
+
+
+def _said_days(transcript: str) -> int:
+    """How many days "the last 30 days" or "past 2 weeks" covers; 7 when no number is said."""
+    for n in parse_numbers(transcript):
+        unit = _SPAN.match(transcript.lower(), n.span[1]) if n.span else None
+        if unit and n.value == n.value.to_integral_value() and 0 < n.value <= 366:
+            return int(n.value) * (7 if unit.group(1) == "week" else 1)
+    return 7
+
+
+def _period(period: str, now: datetime, transcript: str) -> tuple[datetime, datetime | None]:
+    """When a transactions period begins, and when it ends (None: now)."""
+    if period == "days":
+        return now - timedelta(days=_said_days(transcript)), None
+    month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if period == "this_month":
+        return month, None
+    return (month - timedelta(days=1)).replace(day=1), month  # last_month
+
+
+def answer(kind: str, picks: dict[str, str], data: UserData, user_id: str, transcript: str) -> dict:
+    """The payload of a read-only answer (CONTRACTS §3.1 answers); every value read by code."""
+    a = data.accounts
+    if kind == "balance":
+        return {
+            "accounts": [x for x in a.accounts if picks["balance_account"] in ("all", x.account_id)]
+        }
+    if kind == "transactions":
+        return {"transactions": _transactions(picks, user_id, transcript)}
+    if kind == "bills":
+        recurring = picks["bills_scope"] == "recurring"
+        return {"bills": [b for b in readonly.list_bills(user_id) if b.recurrence or not recurring]}
+    if kind == "holdings":
+        quotes = {q.ticker: q for q in data.quotes}
+        return {
+            "holdings": [
+                HoldingValue(
+                    ticker=h.ticker,
+                    company_name=quotes[h.ticker].company_name,
+                    quantity=h.quantity,
+                    price=quotes[h.ticker].price,
+                    currency=quotes[h.ticker].currency,
+                    value=(quotes[h.ticker].price * h.quantity).quantize(CENT),
+                    as_of=quotes[h.ticker].as_of,
+                )
+                for h in a.holdings
+                if h.ticker in quotes
+            ]
+        }
+    if kind == "quote":  # no company named: every price
+        return {"quotes": [q for q in data.quotes if picks["ticker"] in ("none", q.ticker)]}
+    if kind == "fx_rate":
+        sell, buy = picks["fx_pair"].split("-")
+        return {"rate": _rate(sell, buy)}
+    if kind == "payees":
+        return {"payees": a.payees}
+    return {"message": HELP}
+
+
+def _transactions(picks: dict[str, str], user_id: str, transcript: str) -> list:
+    """The user's transactions, filtered and ordered as Jev picked (D-037)."""
+    account, period = picks["transactions_account"], picks["transactions_period"]
+    payee, direction = picks["transactions_payee"], picks["transactions_direction"]
+    entries = [
+        e
+        for e in readonly.list_transactions(user_id)
+        if account in ("all", e.account_id)
+        and payee in ("any", e.payee_id)
+        and direction in ("all", "in" if e.direction == "credit" else "out")
+    ]
+    if period != "latest":
+        start, end = _period(period, datetime.now(ZoneInfo(config.TIMEZONE)), transcript)
+        entries = [e for e in entries if e.time >= start and (end is None or e.time < end)]
+    if picks["transactions_order"] == "largest":
+        # Rank by SGD value, so US$2,000 outranks S$2,500; the amounts shown stay as recorded.
+        rates = {c: _rate(c, "SGD").rate for c in {e.currency for e in entries} - {"SGD"}}
+        entries.sort(key=lambda e: e.amount * rates.get(e.currency, 1), reverse=True)
+    return entries[:LATEST] if period == "latest" else entries
 
 
 def build(
@@ -59,14 +150,23 @@ def build(
     p = {name: pick.option for name, pick in decision.picks.items()}
     lowered = transcript.lower()
     ordered = sorted(decision.actions, key=lambda kind: _first_mention(lowered, kind))
-    builders = {"transfer": _transfer, "bill_payment": _bill, "stock_order": _stock}
+    builders = {
+        "transfer": _transfer,
+        "bill_payment": _bill,
+        "stock_order": _stock,
+        "account_transfer": _move,
+    }
     spent: dict[str, Decimal] = {}  # money earlier actions take, by source account
     actions = []
     for kind in ordered:
         built = builders[kind](p, options, data, spent)
         actions += built if isinstance(built, list) else [built]  # a conversion precedes its order
+    if len(actions) > config.MAX_ACTIONS_PER_DRAFT:
+        raise Unbuildable(
+            f"I can do up to {config.MAX_ACTIONS_PER_DRAFT} steps at once. Please split it up."
+        )
     return Draft(
-        draft_id=f"d_{secrets.token_hex(3)}",
+        draft_id=f"d_{secrets.token_hex(8)}",  # 24 bits collided at ~5k drafts (L16)
         user_id=user_id,
         session_id=session_id,
         transcript=transcript,
@@ -92,6 +192,43 @@ def _transfer(
         to_payee_label=payee.label,
         amount=amount,
         currency=source.currency,
+    )
+
+
+def _move(
+    p: dict[str, str], options: Options, data: UserData, spent: dict[str, Decimal]
+) -> AccountTransferAction | FxConversionAction:
+    """Money between the user's own accounts (§2.1, v0.7 proposed).
+
+    One currency is an account_transfer; two currencies are a conversion at the bank's rate.
+    """
+    source = _account(data, p["move_from"], "savings")
+    target = _account(data, p["move_to"], "savings")
+    if source.account_id == target.account_id:
+        raise Unbuildable("Please name two different accounts.")
+    _same_currency(options, p["move_amount"], source)
+    amount = _money(_sum(p["move_amount"], options, data, spent))
+    _spend(spent, source, amount)
+    ends = {
+        "from_account_id": source.account_id,
+        "from_account_label": source.label,
+        "to_account_id": target.account_id,
+        "to_account_label": target.label,
+    }
+    if source.currency == target.currency:
+        return AccountTransferAction(
+            type="account_transfer", **ends, amount=amount, currency=source.currency
+        )
+    rate = _rate(source.currency, target.currency)
+    return FxConversionAction(
+        type="fx_conversion",
+        **ends,
+        sell_amount=amount,
+        sell_currency=rate.from_,
+        buy_amount=(amount * rate.rate).quantize(CENT, rounding=ROUND_DOWN),
+        buy_currency=rate.to,
+        rate=rate.rate,
+        rate_as_of=rate.as_of,
     )
 
 
@@ -306,6 +443,10 @@ def amend(
         }
         return current, {i: v for i, v in scenario.items() if v} or None
     if not changed:
+        if objective == "prepare" and _asked_conversion(current):
+            raise Unbuildable(
+                "To change a currency conversion, please say the whole command again."
+            )
         return current, None
     _no_stale_conversion(current, changed)
     actions = [
@@ -323,6 +464,18 @@ def amend(
         }
     )
     return updated, None
+
+
+def _asked_conversion(current: Draft) -> bool:
+    """A conversion the user asked for, not one that funds the share order after it."""
+    return any(
+        a.type == "fx_conversion"
+        and not any(
+            b.type == "stock_order" and b.from_account_id == a.to_account_id
+            for b in current.actions[i + 1 :]
+        )
+        for i, a in enumerate(current.actions)
+    )
 
 
 def _no_stale_conversion(current: Draft, changed: dict[int, dict]) -> None:
@@ -365,10 +518,18 @@ def _amended(action, fields: dict[str, str], options: Options, data: UserData):
     if "recipient" in fields:
         payee = next(x for x in data.accounts.payees if x.payee_id == fields["recipient"])
         update |= {"to_payee_id": payee.payee_id, "to_payee_label": payee.label}
+    if "to" in fields:
+        target = _account(data, fields["to"], prefer="savings")
+        update |= {"to_account_id": target.account_id, "to_account_label": target.label}
     if "amount" in fields and fields["amount"] != "due":
         source = _account(data, fields.get("from", action.from_account_id), prefer="savings")
         _same_currency(options, fields["amount"], source)
-    return type(action).model_validate({**action.model_dump(), **update})
+    amended = type(action).model_validate({**action.model_dump(), **update})
+    if amended.type == "account_transfer":
+        target = _account(data, amended.to_account_id, prefer="savings")
+        if target.account_id == amended.from_account_id or target.currency != amended.currency:
+            raise Unbuildable("Please name two different accounts in the same currency.")
+    return amended
 
 
 def _scenario_value(field: str, option: str, action, options: Options) -> str:

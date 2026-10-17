@@ -1,7 +1,7 @@
 # Contracts
 
 **Purpose:** the exact data shapes and endpoints every part of the system agrees on. `app/contracts.py` implements this file as Pydantic models. If the two disagree, this file wins.
-**Owner:** Winston (keeper) · **Version:** 0.5 · **Last updated:** 2026-10-14
+**Owner:** Winston (keeper) · **Version:** 0.16 (simulated fingerprint fallback) · **Last updated:** 2026-10-16
 
 > Changing anything here needs all three teammates to agree. Then bump the version, update `app/contracts.py` in the same commit, and add a `docs/DECISIONS.md` entry.
 
@@ -65,6 +65,15 @@ Actions can include an `fx_conversion`. Code builds it; the user never says it. 
  "amount": "1240.00", "currency": "SGD"}
 ```
 
+**account_transfer** (*v0.7, proposed*): moves money between two of the user's own accounts in one currency ("move 500 from current to savings").
+```json
+{"type": "account_transfer",
+ "from_account_id": "acc_5678", "from_account_label": "Current …5678",
+ "to_account_id": "acc_1234", "to_account_label": "Savings …1234",
+ "amount": "500.00", "currency": "SGD"}
+```
+`to_account_id` differs from `from_account_id`; both accounts are in `currency`. A move between accounts in different currencies ("move 1,000 from savings to invest") is a standalone `fx_conversion` instead (below). At most one `account_transfer` per draft, like the other types. Whether limits and the extra check apply to it is a bank rule (D-007).
+
 **stock_order**
 ```json
 {"type": "stock_order",
@@ -92,7 +101,7 @@ Actions can include an `fx_conversion`. Code builds it; the user never says it. 
  "buy_amount": "1998.00", "buy_currency": "USD",
  "rate": "0.740000", "rate_as_of": "2026-10-13T09:30:00+08:00"}
 ```
-`sell_amount` and `buy_amount` are money strings. `rate` is a decimal string with 6 places: one unit of `sell_currency` buys `rate` units of `buy_currency`. `rate_as_of` is an ISO time. `buy_amount` = `sell_amount` × `rate`, rounded down to 2 places. Code adds it only when the money and the purchase are in different currencies. It never counts against the limit of one transfer, one bill payment and one share order. The rates come from `GET /api/fx` (§3.3).
+`sell_amount` and `buy_amount` are money strings. `rate` is a decimal string with 6 places: one unit of `sell_currency` buys `rate` units of `buy_currency`. `rate_as_of` is an ISO time. `buy_amount` = `sell_amount` × `rate`, rounded down to 2 places. Code adds it when the money and the purchase are in different currencies, and (*v0.7, proposed*) on its own when the user moves money between their own accounts in different currencies or asks to convert ("convert 1,000 SGD to USD"). It never counts against the limit of one transfer, one bill payment and one share order. The rates come from `GET /api/fx` (§3.3).
 
 ## 3. Endpoints
 
@@ -105,7 +114,7 @@ Actions can include an `fx_conversion`. Code builds it; the user never says it. 
 `source` is `jev`, `fallback` (D-005), `fake` (tests, `USE_FAKES=1`) or `none` (no model ran, e.g. `cancelled`). `phrasings` is how many texts Jev was asked about: 1 + K for `/api/understand`, 1 for `/api/preview`. `meta` feeds the latency readout and the H-01 comparison; it never changes what the UI does.
 
 **`POST /api/preview`**: a live guess of the action type while the user types. **Display only.**
-Request: `{"text": "send fifty to jo"}`
+Request: `{"text": "send fifty to jo", "user_id": "u_demo"}`. `user_id` is optional; with it, the user's payee names reach Jev only as pseudonyms (D-039), without it they pass through, so UIs send it.
 Response:
 ```json
 {"intent": {"value": "transfer", "confidence": 0.81,
@@ -114,12 +123,15 @@ Response:
 ```
 `value` is one of `transfer`, `bill_payment`, `stock_order`, `none` (not a banking command yet, or under 2 characters). The `intent` shape matches shapeshift's, so its `decide.ts` (ghost, choose, committed card) works with only the keys changed.
 - The UI uses it only to morph the input into an empty card of the right type. It must never show values from it, build a draft from it, or skip `/api/understand` because of it.
-- One Jev call on the text with numbers swapped for stand-ins (D-026), no rewrites, cached by normalised text. It names the main action only; a multi-action command shows all its actions in the draft.
+- One Jev call on the text with numbers swapped for stand-ins (D-026), no rewrites, cached by normalised text per browser (§14). It names the main action only; a multi-action command shows all its actions in the draft.
 
 **`POST /api/transcribe`**: speech to text.
-Request: multipart form, field `audio` (format agreed in D-006).
-Response: `{"transcript": "send fifty to john", "confidence": 0.93}` (`confidence` may be `null`).
+Request: multipart form, field `audio` (16 kHz mono 16-bit PCM WAV, D-006), optional field `user_id` (default `u_demo`, must match `u_…`). The `user_id` supplies hotwords from that user's bank data to improve recognition accuracy.
+Response: `{"transcript": "send fifty to john", "confidence": null, "speaker": {"status": "verified", "score": 0.78}}`. The international-site Tencent ASR API does not return a confidence score, so `confidence` is always `null`. `speaker` (D-054) is the voice check run on the same clip before transcription: `status` is `enrolled` (the first speaker after a reset now owns this user's voice), `verified`, `unsure` (the voice is between the two thresholds: the command proceeds, the UI shows "Voice not confirmed", and execution needs simulated fingerprint confirmation), `rejected` (transcribed for inspection; execution needs simulated fingerprint confirmation) or `unavailable` (the model could not run; the transcript is still produced); `score` is the cosine similarity to the enrolled voice, or `null` when nothing was compared.
 Typed input skips this endpoint and goes straight to `/api/understand`.
+
+**`POST /api/voiceprint/enrol`**: adds one recording to the user's voiceprint (D-054).
+Request: multipart form, field `audio` (same WAV as above), optional `user_id`. The clip is folded into the enrolled mean whatever it scores, so enrolment hears the same microphone path as live commands. Response: `{"clips": 3}`, the recordings now in the voiceprint. Open on the demo like device registration (`VOICEPRINT_ENROLMENT_OPEN`); 404 when closed. Audit: `speaker_checked` with reason `enrolled` and `count` = clips.
 
 **`POST /api/understand`**: turns text into a question or a draft. Called again with the user's answer.
 
@@ -155,7 +167,34 @@ Responses (one of). Each also carries `meta` (above), left out of the examples b
 {"status": "cancelled", "reason": "user_declined", "message": "Okay, nothing was sent."}
 ```
 `reason` is `user_declined` (the user picked "None of these", `option_id: "none"`) or `too_many_questions` (still unsure after 3 questions; message "I couldn't work out what you meant. Please try again.").
-An answer for an unknown or expired session returns 404 `not_found`; the UI starts a new command.
+An answer for an unknown or expired session returns 404 `not_found`; the UI starts a new command. So does any request whose `session_id` another browser started (§14).
+
+**Answers** (*v0.6, proposed*). A question about the user's own data, or a market figure, that moves no money gets an `answer`, not a draft:
+```json
+{"status": "answer", "kind": "balance",
+ "accounts": [{"account_id": "acc_1234", "label": "Savings …1234", "type": "savings",
+               "currency": "SGD", "balance": "3200.00"}],
+ "meta": {"latency_ms": 900, "model": "jev-1.13.0", "source": "jev", "phrasings": 1, "cached": false}}
+```
+Each `kind` carries one payload field:
+
+| `kind` | Example question | Jev picks (from options code built) | Payload |
+|---|---|---|---|
+| `balance` | "What's my balance?", "How much is in savings?" | account, or all | `accounts`: as in `GET /api/accounts` |
+| `transactions` | "What did I spend this week?", "What did I pay Mum last month?", "Biggest spend this month?" | account, or all; period: `latest` (5 most recent, the default), `days` (the number of days or weeks said, 7 when none), `this_month`, `last_month` (calendar months); payee, or any; direction: `all`, `out`, `in`; order: `newest` (default) or `largest` (ranked by SGD value) | `transactions`: `transaction_id`, `time`, `account_id`, `account_label`, `description`, `direction` (`credit` or `debit`), `amount`, `currency`, `payee_id` (`null` when not a payee) |
+| `bills` | "What bills are coming up?", "What are my recurring bills?" | scope: `all` or `recurring` | `bills`: `label`, `amount`, `currency`, `due_at`, `account_id`, `account_label`, `recurrence` (`weekly`, `monthly`, `yearly` or `null`), soonest first; every unpaid expense in the schedule, including the card bill |
+| `holdings` | "What shares do I have?" | nothing | `holdings`: `ticker`, `company_name`, `quantity`, `price`, `currency`, `value` (quantity × price, an estimate), `as_of` |
+| `quote` | "What's Apple trading at?" | ticker | `quotes`: as in `GET /api/quote` |
+| `fx_rate` | "What's the SGD to USD rate?" | currency pair | `rate`: as in `GET /api/fx` |
+| `payees` | "Who can I send money to?" | nothing | `payees`: as in `GET /api/accounts` |
+| `help` | "What can you do?" | nothing | `message`: a fixed list of what the agent can do |
+
+- One Jev question (`info`) says which kind is asked, or none; further questions pick the filters that kind takes (table above). Filters combine, so a few of them cover many questions; code runs the query. Jev never sees a figure. Code reads every value through `readonly` (D-026 still holds).
+- An `answer` is never validated, signed or executed. It ends the session, like `unsupported`; the next command gets a new `session_id`.
+- If the same command also asks to move money ("what's in savings and send 50 to John"), the reply is the `draft`; the cards already show each account.
+- An unsure pick asks a normal `question` first ("What would you like to know?", "Which account?").
+- A UI shows a `kind` it doesn't know as `unsupported`, so later kinds don't break older UIs.
+- Jayanth adds `list_transactions(user_id) -> list[dict]` and `list_bills(user_id) -> list[dict]` to `readonly` (§3.3).
 
 **Spoken answers.** While a question is open (the last reply in the session had `status: "question"`), a new `transcript` with the same `session_id` is read as the answer to that question. The request is unchanged: `{"user_id": "u_demo", "session_id": "s_41b9", "transcript": "John Smith"}`. Tapping a chip still sends `answer` with an `option_id`. Jev picks from the offered options, or says the user rejects them all, or says the user is asking for something different. The replies use the existing shapes:
 - A sure pick of an offered option: the same reply as tapping that chip (usually the `draft`, or the next `question`).
@@ -243,13 +282,13 @@ Request: `{"user_id": "u_demo", "public_key_jwk": { /* EC P-256 public JWK */ }}
 Response: `{"status": "registered"}`
 
 **`POST /api/challenge`**: issues a one-time nonce for a validated draft.
-Request: `{"draft": { /* §2 */ }, "receipt": "vr_3f9a…"}`
+Request: `{"draft": { /* §2 */ }, "receipt": "vr_3f9a…", "require_otp": false}`
 Response:
 ```json
 {"nonce": "n_7d21…", "signing_payload": "<canonical draft JSON>.n_7d21…",
  "expires_at": "2026-10-12T09:35:00+08:00"}
 ```
-The bank stores the draft against the nonce. Nonces expire after 5 minutes and work once.
+The bank stores the draft against the nonce. Nonces expire after 5 minutes and work once. `require_otp` (optional, default false; D-054) lets the client add the one-time-code step: legacy clients may request this explicitly; V5 voice fallback now uses `require_fingerprint`. `/api/execute` then answers `needs_extra_check` until the request carries the correct `otp` (the demo code is `config.DEMO_OTP`, D-007); a wrong code answers `needs_extra_check` again, and too many wrong codes lock the nonce with `rejected` / `bad_otp`. A client can only add this step, never remove the bank's own risk step-up.
 
 **`POST /api/execute`**: the only way money moves.
 Request: `{"nonce": "n_7d21…", "signature": "<base64url>", "otp": null}`
@@ -328,15 +367,16 @@ One card per action, in draft order. A **Convert currency** card sits between th
 | Action type | Card title | Fields, in this order |
 |---|---|---|
 | transfer | Transfer | To (`to_payee_label`) · Amount (`amount` + `currency`) · From (`from_account_label`) |
+| account_transfer (*v0.7, proposed*) | Move money | From (`from_account_label`) · To (`to_account_label`) · Amount (`amount` + `currency`) |
 | bill_payment | Pay bill | Biller (`biller_label`) · Reference (`bill_reference`) · Amount · From |
 | fx_conversion | Convert currency | From (`from_account_label`) · Sell (`sell_amount` + `sell_currency`) · Rate ("1 SGD = 0.740000 USD", with `rate_as_of`) · Get (`buy_amount` + `buy_currency`) · Into (`to_account_label`) |
 | stock_order | Buy shares / Sell shares | Stock (`ticker` · `company_name`) · Quantity · Order type (market / limit + `limit_price`) · Price now (from `/api/quote`, marked "estimate") · Estimated total (quantity × price, marked "estimate") · Pay from / Pay into |
 
-Other states the UI must show: **preview** (empty card of the guessed type while typing, from `/api/preview`), **thinking** (waiting for `/api/understand`), **question** (text + one chip per option + "None of these"), **blocked**, **unsupported**, **frozen** (mismatch, listing each field), **needs extra check** (code entry), **executed** (references), **rejected** (plain-English reason).
+Other states the UI must show: **preview** (empty card of the guessed type while typing, from `/api/preview`), **thinking** (waiting for `/api/understand`), **question** (text + one chip per option + "None of these"), **answer** (*v0.6, proposed*: a read-only card listing the rows of the answer's kind, such as accounts and balances, transactions or bills, with no confirm button), **blocked**, **unsupported**, **frozen** (mismatch, listing each field), **needs extra check** (code entry), **executed** (references), **rejected** (plain-English reason).
 
 ## 6. Errors
 
-Malformed requests return HTTP 400 with `{"error": {"code": "bad_request", "message": "…"}}`. Unknown user or session returns 404 with code `not_found`. Upstream failures (Jev, LLM, ASR down) return 502 with code `upstream_error`; a missing server key for a model returns 503 with the same code. Business outcomes such as `rejected` or `mismatch` return HTTP 200 with the status shown above.
+Malformed requests return HTTP 400 with `{"error": {"code": "bad_request", "message": "…"}}`. Unknown user or session returns 404 with code `not_found`. Upstream failures (Jev, LLM, ASR down) return 502 with code `upstream_error`; a missing server key for a model returns 503 with the same code. A body over the size cap (256 KB of JSON, 2 MB of audio) returns 413 `too_large`. Too many calls from one client IP in a rate group, or too many model-backed calls (`/api/understand`, `/api/transcribe`, `/api/presentation-*`; `/api/preview` has its own budget) from everyone together, return 429 `rate_limited` with a `Retry-After` header; the UI waits and lets the user try again. Groups per IP per minute: model 40, preview 120, validate 120, write 60 (`/api/validation/cancel`, `/api/challenge`, `/api/execute`, `/api/device/register`, `/api/audit/presentation`), read 120 (every other `/api/` path). `/api/understand` refuses a `user_id` not shaped `u_…` or a `session_id` not shaped `s_…` (400) and an unknown user (404) before touching any state. Business outcomes such as `rejected` or `mismatch` return HTTP 200 with the status shown above.
 
 ## 7. Stubs
 
@@ -344,21 +384,24 @@ Until a real endpoint works, its router returns the example responses in this fi
 
 ## 8. Audit events
 
-Intent side (`actor: "intent"`). Jayanth adds the validation and bank events here. `data` never holds keys or secrets. `/api/preview` calls are not logged: they are display only and too frequent.
+Intent side (`actor: "intent"`). Jayanth adds the validation and bank events here. `data` never holds keys or secrets. `/api/preview` calls are not logged, nor kept as evidence: they are display only and too frequent.
+
+The audit chain (`app/audit.py`) accepts only a flat allowlist of non-sensitive fields, so intent events carry a `reason`, a `count` and sometimes a `draft_id`; transcripts, Jev's probabilities and the options offered stay in the encrypted evidence store (v0.8), linked by `session_id` there. `GET /api/audit` is public, so intent events never carry `session_id` (v0.10). A failed audit write stops the request (503).
 
 | `event` | `data` |
 |---|---|
-| `transcribed` | `transcript`, `confidence` |
-| `shield_checked` | `session_id`, `flagged`, `p` |
-| `jev_answer` | `session_id`, `question`, `phrasings` (each: `text`, `probabilities`), `avg_p`, `spread` |
-| `gate_decision` | `session_id`, `decision` (`proceed` or `ask`), `failing_question`, `tau`, `delta` |
-| `question_asked` | `session_id`, `question_id`, `options` |
-| `answer_received` | `session_id`, `question_id`, `option_id`, `via` (`chip` or `speech`) |
-| `draft_built` | `session_id`, `draft_id` |
-| `blocked` | `session_id`, `reason` |
-| `cancelled` | `session_id`, `reason` |
+| `shield_checked` | `reason` (`flagged` or `clear`) |
+| `gate_decision` | `reason` (`proceed` or `ask`) |
+| `question_asked` | `reason` (the question asked, e.g. `recipient`), `count` (its number) |
+| `answer_received` | `reason` (`chip` or `speech`) |
+| `draft_built` | `draft_id`, `count` (actions) |
+| `answer_given` (*v0.6, proposed*) | `reason` (the kind) |
+| `blocked` | `reason` |
+| `cancelled` | `reason` |
+| `speaker_checked` | `reason` (`enrolled`, `match`, `unsure`, `mismatch` or `unavailable`); transcription retains the failed check status (v0.16) |
+| `transcribed` | `reason` (`ok` or `empty`), `count` (words) |
 
-In `jev_answer`, `phrasings[].text` is the stand-in text Jev saw, with numbers swapped for stand-ins (D-026), not the transcript. Jayanth adds `fx_converted` (actor `bank`) with `draft_id`, `sell_amount`, `sell_currency`, `buy_amount`, `buy_currency`, `rate`.
+Jev's answers per question are in the evidence store, as the stand-in text Jev saw, never the transcript (D-026). Jayanth adds `fx_converted` (actor `bank`) with `draft_id`, `sell_amount`, `sell_currency`, `buy_amount`, `buy_currency`, `rate`.
 
 ## 9. Timing
 
@@ -392,3 +435,339 @@ Voice: if the browser's built-in speech recognition gives live text, the UI may 
 
 - **Presentation endpoints documented (§3.4).** They were already in use by V2 to V5; this records them. `action_types` now includes `fx_conversion` for V4 and V5.
 - **503:** a missing model key returns 503 `upstream_error` (§6).
+
+## Read-only enquiry handoff (13 October 2026)
+
+Live read-only requests use Winston's `status: "answer"` contract below. The former
+`status: "enquiry"` route is retired. Broad insights remain a separate gallery capability.
+
+POST /api/presentation-v5/answer accepts structural metadata only: kind (one of the
+ eight answer kinds), count (0..100000), timeline_requested (boolean, default false).
+It returns source (jev/fallback), variant (list/cards/timeline), detail (compact/expanded),
+summary (boolean), latency_ms. It never fetches bank data or returns financial values.
+Cards are eligible for balance/holdings/quote/payees with multiple records; timeline
+only for nonempty bills; totals only for balance/holdings, separately per currency.
+The frontend retains all upstream records and ordering except chronological bill timelines.
+A complete fallback renders immediately. Unknown kinds fail closed; stale presentation
+responses cannot replace a newer answer. No signing controls appear on answers.
+
+POST /api/presentation-v5/enquiry accepts user_id and topic. It reads synthetic bank
+insights and returns data, a bounded spec (root and allowlisted elements), source,
+topic and latency_ms. Required topic components cannot be omitted. JEV chooses layout,
+detail and eligible optional support using structural context only. Gateway failure
+returns an explicitly labelled fallback. GET /api/account-insights?user_id=u_demo
+returns the same data without a model call, for the gallery.
+
+Data: allowlisted accounts and completed history, next-30-day cashflow forecasts,
+and per-currency previous-calendar-month/current-month-to-date outflows. Dates use
+Asia/Singapore. The history is a seed sample, not a complete statement; missing categories
+remain Uncategorised. Missing history/schedules are unavailable, never fabricated zeros.
+User-ID selection follows the existing demo API; production authentication is not added.
+These endpoints do not validate, register devices, sign or execute transactions.
+## 12. Changes in v0.6 (proposed)
+
+Needs Darren's and Jayanth's agreement before it is final.
+- **Answers:** a new `/api/understand` reply, `status: "answer"`, for questions that move no money, in eight kinds: `balance`, `transactions`, `bills`, `holdings`, `quote`, `fx_rate`, `payees`, `help` (§3.1). Bank side: `readonly.list_transactions` and `readonly.list_bills`. UI side: one **answer** card (§5).
+- **Audit:** new intent event `answer_given` (§8).
+
+## 13. Changes in v0.7 (proposed)
+
+Needs Darren's and Jayanth's agreement before it is final.
+- **Own-account moves:** new action `account_transfer` (§2.1) and card **Move money** (§5). Between currencies, a standalone `fx_conversion`, which also covers "convert 1,000 SGD to USD".
+- **Bank:** the ledger applies `account_transfer` like a transfer whose payee is the user's own account; D-007 decides limits.
+
+
+## Independent semantic auditing (14 October 2026)
+
+`POST /api/validate` still accepts `{draft}`. Only an exact server-registered current
+Winston draft is accepted. The server uses its saved original instruction, explicit
+clarification selections, follow-ups and bank snapshot; client transcript replacement
+fails closed. Match returns `{status:"match",receipt}`. Mismatch and uncertain return
+`{status:"mismatch"|"uncertain",fields:[{field,draft_value,transcript_says,note}]}`.
+Pending, unavailable and stale return `{status,message}`. Unavailable may be retried;
+a completed mismatch/uncertain result is terminal until a new instruction/revision.
+Every action field and action coverage must be audited. Amounts remain decimal strings.
+
+`POST /api/validation/cancel` accepts `{draft}` and returns `{status:"cancelled"}`.
+New intent turns supersede outstanding approval. Read-only answers never invoke auditing.
+JEV layout changes do not alter the audited draft. Local edited payloads require a fresh
+Winston handoff; the server refuses to validate fabricated client drafts.
+
+The shared bounded in-memory store supports ONE server worker only. It expires drafts
+and their receipts after five minutes; restart revokes all approvals. Receipts bind a
+random revision and full canonical draft digest using an HMAC secret. Setting a persistent
+secret does not make approvals survive restart. This is demo user-ID ownership, not
+production authentication. No new authenticated enrollment is claimed.
+
+Challenge now verifies the current receipt, stores an expiring nonce and returns the
+exact canonical draft payload. Execution checks that the receipt remains current but
+FAILS CLOSED with 503 until Jayanth's signature verification, risk rules and atomic
+ledger are connected. It no longer returns an unconditional fake success. No funds move.
+
+Local Codex is the temporary default validator (`VALIDATOR_PROVIDER=codex`), using an
+already signed-in CLI with read-only sandbox, no shell/web/apps, ignored user config,
+an isolated temporary working directory and ephemeral execution. Requires a current
+Codex CLI on PATH on Windows or macOS. It uses its default model unless
+`VALIDATOR_CODEX_MODEL` is set. CLI timeout is 45 seconds, frontend deadline 60 seconds.
+Alternatively set `VALIDATOR_PROVIDER=compatible-api`, `LLM_BASE_URL` (including /v1),
+`LLM_API_KEY`, `VALIDATOR_MODEL` (distinct from JEV and rewriter); deadline 12 seconds.
+Malformed/missing model output, missing config, audit-log failure and timeouts never
+produce approval. Raw audit context goes to the chosen model provider; performance
+logs contain only draft ID, verdict and elapsed milliseconds (count field).
+
+
+## Persistent audit evidence (v0.8)
+
+The existing `/api/audit` and `var/audit.jsonl` remain compatible legacy event summaries.
+The detailed request timeline is stored atomically with encrypted evidence in ignored
+`var/evidence.sqlite3`. This is a separate hash chain; historical JSONL records are not
+backfilled and have no recoverable detailed evidence. Logging never authorizes a transaction.
+
+Each HTTP operation has a server-generated `req_` ID, returned as `X-Audit-Request-ID`.
+Client session IDs and `X-Audit-Session` are correlation claims, not authentication.
+Server draft events additionally bind a server revision and canonical draft SHA-256 digest.
+Metadata contains event/time/IDs, evidence digest, expiry and previous hash.
+Timeline time/expiry use Unix seconds (the legacy audit retains ISO timestamps). Evidence includes
+original inputs, clarification responses, bank snapshots, model requests/responses, validator
+policy digest, and request outcomes. Model identities are recorded where provided; Local
+Codex's unset model is explicitly `cli_default`, not an invented resolved model version.
+No chain-of-thought is requested or stored.
+
+`GET /api/audit/timeline?session_id=s_...&limit=100&include_evidence=true` requires
+`Authorization: Bearer <AUDIT_ADMIN_TOKEN>`. Limit is 1?500, session filter optional;
+metadata-only by default. Responses have `Cache-Control: no-store`. Returns
+`{chain_valid:true, entries:[{position,event_id,event,time,expires_at,request_id?,session_id?,
+draft_id?,revision?,draft_digest?,evidence_digest,previous_hash,hash,evidence_state,
+evidence?}]}`. Corruption returns 503, never fabricated empty history. Expired evidence
+has `evidence_state:expired` and no evidence body. A valid chain does not prove the model
+was correct or that an event writer was honest. The running server remembers the chain's
+head, so rows deleted from the end are caught until it restarts; a store found tampered
+refuses new writes (503) until then. Independent checkpoints that survive a restart are
+not implemented.
+
+`POST /api/audit/presentation` accepts
+`{session_id, draft_id?, manifest:object (at most 16 KB as JSON), source:jev|fallback}` and returns
+`{status:recorded}`. V5 submits the final component spec before enabling confirmation;
+read-only answers report initial fallback and selected presentation on a best-effort basis.
+These are explicitly `presentation_client_reported`, not proof of rendered pixels, user
+consent, or server-validated component choices. The server's JEV exchange is separate evidence.
+
+Encryption uses Fernet (cryptography 46.0.7). Required persistent `AUDIT_EVIDENCE_KEY` and
+independent `AUDIT_ADMIN_TOKEN` belong in local `.env` or deployment secret storage, never
+frontend/source control. Losing the encryption key loses evidence access; keep it across
+restarts. Encryption protects the database alone, not a machine compromised alongside its
+key. Default evidence retention is seven days (`AUDIT_RETENTION_DAYS`), removed on writes,
+admin reads, startup and hourly maintenance while running. Metadata remains. Backups and
+cloud-synced historical copies need their own retention policy. To rotate, set
+`AUDIT_EVIDENCE_KEY=new,old`: the newest key encrypts and signs, older ones still verify and
+decrypt. Keep a retired key listed while rows it signed remain. No automatic rotation.
+
+Structured secret fields (OTP, authorization, cookies, credentials, receipts, private-key
+material, PIN, CVV, card number, NRIC, signature, nonce) and configured secret values are
+redacted before encryption. Passwords, PINs and OTPs typed after their keyword, card numbers,
+NRICs, API keys and JWTs are replaced in free text, and in transcripts before Jev or the
+validator see them (§14). Raw HTTP headers,
+raw audio and malformed unparsed bodies are not stored. Free text remains sensitive;
+redaction is not a guarantee of discovering every arbitrary secret a user may type.
+Transcription is currently a labelled stub event. Evidence over 64 KB per item keeps only its size and SHA-256; past 500 MB in total, new events keep metadata only (`evidence_state: "capacity"`). The chain hash is an HMAC keyed from `AUDIT_EVIDENCE_KEY`, so rewriting history needs the key; writes check the newest link and reads check the whole chain. `evidence_digest` and `draft_digest` in metadata are HMACs too, so the file alone can't confirm a guessed request. The database is owner-only (0600).
+Missing encryption or storage failure stops audited requests; expired/cancelled/stale drafts
+cannot regain approval through audit replay. Confirmation attempts and unavailable bank
+execution are recorded, but no signature verification or ledger execution is implied.
+SQLite is local storage with serialized writes; this remains a demo architecture, not a
+production distributed audit service. Windows was exercised; macOS uses the same SQLite/
+Fernet code but has not been runtime-tested here.
+
+
+## 13. Intent-aware presentation and conditional plans (v0.9)
+
+`/api/understand` may return `status: "plan"`, with `plan` and the usual `meta`.
+A plan is display-only: it has no draft ID, cannot be validated or signed, and is
+never registered in authoritative transaction state. A new turn still revokes the
+previous draft. A plan creates no payment or monitoring job. Resolved immediate conditions may instead return a signed-condition draft, as described below.
+
+`plan` contains:
+- `request`: the original instruction (or the latest conditional follow-up).
+- `condition`: `text`, nullable `ticker`, `operator` (`lt/lte/gt/gte/eq/ne`), `threshold`
+  (money string), `currency`, `quote` (the existing QuoteResponse), and `state`
+  (`met/not_met/stale/unknown`). Only one fully parsed stock-price comparison is
+  evaluated in this slice. Unknown and compound conditions retain their text.
+- `actions`: zero to four existing Action objects, for display only.
+- `timing`: `now/watch/unspecified`. Winston asks the existing question/answer loop
+  when a resolved action has no explicit timing. Recipient ambiguity is resolved
+  before presentation. Unbuildable portions are listed in `unresolved`.
+- `executable`: always false; `limitation`: code-owned explanation.
+- `intent`: the privacy-filtered PresentationIntent described below.
+
+Threshold numbers are extracted separately from action amounts. Existing currency
+rules apply: unqualified dollars mean SGD, even for a USD-priced security. No FX
+conversion is inferred for a comparison. A mismatched currency prompts for clarification before an executable draft can be prepared.
+Quotes older than CONDITION_QUOTE_MAX_AGE_SECONDS (60 seconds), or from the future,
+produce `stale`. Comparison status is presentation evidence, never authorization.
+
+Draft and read-only answer responses add nullable `presentation`:
+`{request, conversation, tasks, constraints}`. This preserves sanitized wording,
+relevant turns and task types; numbers use stand-ins and known payee/account/biller
+identities are replaced with references. Exact financial values stay in the task
+and bank records. These fields carry user data, not instructions to obey.
+
+`POST /api/presentation-v5/plan` accepts `{plan, viewport: "mobile"|"desktop"}`.
+It returns `{source: "jev"|"fallback", layout: "stacked"|"flow", nodes}`. Each node
+has `component`, `binding` and `variant`. Allowed nodes are Condition, QuoteMetric,
+Relationship, PlannedAction and AvailabilityNotice. The condition, relationship,
+each action exactly once, and availability notice are mandatory and ordered.
+Only QuoteMetric may be omitted. Bindings refer to `condition`, a zero-based action
+index, or `plan`; they cannot carry invented values. The client checks coverage and
+variants independently and retains the complete fallback when choices fail.
+
+The composer receives sanitized intent, structural facts, timestamp validity,
+viewport, eligible components and server-owned bank capability hints. One model
+call chooses variants and layout; code binds actual values and enforces coverage.
+Existing V4 evaluation context and V5 answer requests accept optional `intent`.
+Capability hints never authorize payment: scheduled payment and price monitoring remain unavailable. Immediate quote conditions require the checks below. Single-SGD-transfer execution still needs
+validation, signature and all bank checks.
+
+This extends presentation vocabulary; it does not enable arbitrary banking APIs,
+generate UI code, or claim every natural-language condition can be evaluated.
+
+
+### Request-aware enquiry composition
+
+`POST /api/presentation-v5/enquiry` also accepts `topic: "request"` with `request`
+(max 2000 characters), `conversation` (max 20 strings), optional `winston`
+(PresentationIntent), and `outcome` (draft, answer, plan, unsupported).
+The server masks the request/history using known account and recipient identities.
+JEV chooses from available read-only components across topics, including timestamped
+QuoteList data. Financial values bind to bank reads, never model-written values.
+The response uses the existing enquiry tree with optional `data.quotes`.
+There is no coverage verdict or payment gate from UI composition.
+
+V5 embeds this request as optional `context_request` in its existing
+`/presentation-v4/evaluate`, `/presentation-v5/answer`, or `/presentation-v5/plan`
+call. The server appends prefixed component choices to the same native JEV request
+and returns the validated context tree as optional `context_view`. No extra model
+call is added. Multi-phase V4 composition includes context selection in its first
+phase only. Unsupported Winston responses use the enquiry endpoint as their only
+UI composer; blocked and clarification responses do not enter it.
+
+The original request and conversation are masked on the server before JEV sees
+them. Original financial records remain bound locally. Composition failures use
+the existing fallback. Validation, signature and bank checks remain authoritative;
+conditional plans retain their existing non-executable status.
+
+
+### Immediate quote conditions (v0.12)
+
+A resolved `Draft` may include `condition: {ticker, operator, threshold, currency}`.
+Operators are `lt/lte/gt/gte/eq/ne`; threshold is a decimal money string. The field
+is omitted entirely on ordinary drafts, preserving their existing signed encoding.
+Winston selects the asset, comparison and numeric candidate in its existing native
+request. Deterministic code compares a matching, fresh bank quote using Decimal.
+Only a met, single comparison with resolved actions and immediate timing becomes
+a draft. Unsupported/compound conditions, stale data and unmet comparisons remain
+non-executable plans. This does not create a watcher or scheduled payment.
+
+The validator audits the predicate against the instruction and supplied data.
+The predicate is covered by the receipt, canonical draft and customer signature.
+The gateway reads and checks the quote before issuing a challenge and again before
+new execution. A failed check rejects the request without debiting. Exact committed
+retries return the original receipt without reevaluating or repeating the payment.
+The UI displays the condition and quote timestamp, polls the quote, and disables
+confirmation when it is no longer met; backend enforcement remains authoritative.
+
+Stored bank snapshots are not a live market feed. Stale snapshots need replacement
+by a genuine fresh data source; their timestamps must not be refreshed artificially.
+
+
+### Demo condition policy (supersedes v0.12 freshness and recheck rules)
+
+The virtual bank's stored quote is authoritative for this demo regardless of age.
+Winston evaluates the resolved predicate once while preparing the draft. Missing
+or wrong-currency quotes and false conditions cannot prepare a conditional draft.
+The predicate remains signed and its meaning is independently validated, but its
+price is not polled or re-evaluated by validation, challenge or execution. The UI
+says "Condition met when prepared". Confirmation remains a separate user action;
+normal bank limits, signature checks and idempotency remain enforced. This is a
+preparation-time demo condition, not a live-market conditional order.
+
+
+### Structured-first presentation (v0.13)
+
+PresentationIntent adds `coverage: complete|partial` (default complete) and `gaps`
+(default empty). Winston asks a capability-coverage question in its existing model
+batch, then checks which confidently selected tasks/information are absent from the
+actual output. A specific gap enables broader composition; weak coverage evidence
+alone does not trigger clarification or reinterpretation. This is presentation
+metadata, never permission to execute or a replacement for the independent validator.
+
+Complete outputs use structured tasks and banking context. Their original prompt and
+history are omitted from the UI model state. Partial outputs with nonempty gaps may
+include a masked `context_request` in the existing UI request. The server enforces
+this gate too. Unsupported results retain a read-only enquiry fallback. Question
+responses remain in Winston's existing clarification loop; no UI composition starts
+until that loop returns a result. No extra model round trip is introduced. Existing
+card deduplication and the two-supplementary-card limit remain in force.
+
+
+### Integration evidence (0.14)
+
+The connected `/api/validate` continues to accept only server-registered draft revisions and
+returns the existing `match`, `mismatch`, `uncertain`, `unavailable`, `pending` or `stale` result.
+It uses the configured `llm.audit` provider and `transaction_state` receipt/lease authority.
+Independent bank reference checks additionally verify labels, ownership references, currencies,
+bill references, quote identities and FX arithmetic. No extra model request is introduced.
+
+Validator snapshots include the selected biller's stored `bill_reference` and SGD currency,
+explicit SGD/market/null-limit defaults, and available account metadata without unused balances.
+Intent-selected `amounts_said` is retained for audit but excluded from independent model input.
+Explicit customer instructions override defaults; ambiguous recipients still require clarification.
+Jayanth's source-offset comparison and regression summaries remain an isolated internal interface;
+they do not replace the active semantic model schema or publish receipts through the public route.
+
+The operator-only `sync-catalogue` command adds absent seed payees to existing runtime users with
+an idempotent `catalogue_updated` audit event. It preserves balances, holdings, bill settlement,
+transaction history, payment controls and existing records. New seed positions apply only to fresh
+installations. Eight quotes and sample history are read from the seed; prices remain demo data.
+
+## 14. Integrated security audit changes (v0.15, 16 October 2026)
+
+- **Conversations belong to a browser.** Every `/api/` response without a valid `dcta_client` cookie sets one (HttpOnly, `SameSite=Strict`, `Path=/api`, `Secure` over HTTPS). A `session_id` started by one browser is refused for every other: `/api/understand` returns 404 `not_found`, `/api/validate` returns `stale`, `/api/challenge` 409, and `/api/validation/cancel` changes nothing. Browsers send the cookie on same-origin requests without any UI change; other clients must keep cookies (httpx and the test client do).
+- **§8:** intent events no longer carry `session_id`, and previews are no longer kept as evidence.
+- **§6:** every `/api/` path has a per-IP rate group; previews and model calls have separate global budgets. The audit middleware's 413 and 503 bodies carry `too_large` and `upstream_error`. Every `/api/` response has `Cache-Control: no-store`.
+- **`/api/validate`:** an `unavailable` result is returned again for 10 seconds before the validator runs once more, and a check that crashed stops reading as `pending` after its deadline.
+- **`/api/audit/presentation`:** `manifest` is at most 16 KB as JSON (400 otherwise).
+- **`draft_id`** is `d_` and 16 hex characters (was 6).
+
+Browser ownership and validation retry timestamps persist in the encrypted approval store when
+local bank execution is enabled. Persistence uses wall-clock timestamps on Windows and macOS.
+Existing approvals without a browser owner require a fresh request; committed transactions and
+device registrations remain intact. Evidence format 2 requires the explicit operator migration
+in README for previous stores. Payload/draft digests verify against retained rotation keys;
+idempotent bank commits retain stable event IDs. Another process may append a verified extension
+of the remembered audit head; truncation or replacement of that prefix fails closed.
+
+
+### Integration note: independent validation evidence (16 October 2026)
+
+The public validation response and receipt formats remain unchanged. Internally each model
+check must cite its assigned masked instruction source and include source_ref, start, end
+and basis. The backend verifies complete field coverage and independently compares monetary
+values against captured evidence. Conditional drafts and unsupported instruction/correction
+scope return uncertain without a receipt, even if the intent engine can construct a draft.
+The model sees tokenised identities; captured balances and bill amounts remain server-side.
+
+
+## Simulated fingerprint fallback (16 October 2026, v0.16)
+
+`POST /api/challenge` additionally accepts optional `require_fingerprint: boolean`
+(default false). It is persisted with the challenge; old stored challenges remain valid.
+V5 sets it whenever a voice turn is not verified, retaining it across clarification turns.
+Rejected voice clips are now transcribed with their unchanged `rejected` speaker status,
+so the customer can inspect the request and use the fallback before execution.
+The bank returns `needs_extra_check` with `method: fingerprint` until the signed
+request includes `fingerprint: true`. Existing OTP requirements and hard bank limits
+still apply. A fingerprint click submits the pending signed payment immediately.
+
+This is simulated biometric approval with a real device signature, not WebAuthn or
+proof of fingerprint hardware. Voice step-up is requested by the client, not a
+server-authenticated voice claim; replace this with server-bound verification and
+WebAuthn before claiming production biometric authorization.

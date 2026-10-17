@@ -31,14 +31,35 @@ http://127.0.0.1:8000/docs for the API.
 | set | Live Jev: the real intent engine reads requests and composes the screen |
 | empty | Contract stubs (CONTRACTS §7): every request gets the same example replies |
 
-Accounts, payees and prices come from `data/bank.json`. Validation, challenge and execute
-are still stubs, so "Transfer now" stops at "The bank's confirmation has expired" and no
-money moves. Voice uses the ASR stub; type requests instead. The first "Transfer now"
-pins that browser's device key in `var/devices.json`; delete the file to use another
-browser.
+Set `AUDIT_EVIDENCE_KEY` and `AUDIT_ADMIN_TOKEN` too (see "Audit evidence" below):
+without them every audited endpoint answers 503.
+
+Accounts, payees and prices come from `data/bank.json`. Validation and the bank challenge
+are real; execute is not built yet and fails closed, so no money moves. Voice uses the ASR
+stub; type requests instead. The first "Transfer now" pins that browser's device key in
+`var/devices.json`; delete the file to use another browser.
 
 To work on the front end with live reload, run `npm run dev` in `web/` alongside the
 server and open http://127.0.0.1:3000/v5/ instead.
+
+## Deploy for judges
+
+One Ubuntu 24.04 box from any provider (2 vCPU / 4 GB; Hetzner, DigitalOcean, Lightsail,
+Tencent Lighthouse all work) with ports 22, 80 and 443 open, and `scripts/deploy.sh`.
+HTTPS is required: the browser only allows device signing and the microphone on `https://`.
+No domain needed: `DOMAIN=<server-ip>.sslip.io` resolves to the box and Caddy gets a
+certificate for it. Use `1-2-3-4.sslip.io` (dashes) for IP 1.2.3.4.
+
+```bash
+git clone https://github.com/winstony29/tencenthackathon.git && cd tencenthackathon/dcta
+cp .env.example .env            # fill in MAKERS_MODELS_KEY, Tencent ASR, LLM_API_KEY
+DOMAIN=1-2-3-4.sslip.io bash scripts/deploy.sh
+```
+
+The script installs Python, Node and Caddy, generates any blank secrets, builds the front
+end, and runs uvicorn as a systemd service behind Caddy. Re-run it after `git pull`.
+`journalctl -u dcta -f` shows the server log. Judges share one demo user, so run
+`rm var/devices.json && sudo systemctl restart dcta` between judging sessions.
 
 ## Test
 
@@ -135,3 +156,149 @@ The key is read by `app/config.py` and is never sent to the browser. A deployed
 static frontend needs FastAPI under the same origin; do not put the key in a
 `NEXT_PUBLIC_` variable. The presentation route remains a local demo, not a
 public authenticated production endpoint.
+
+
+### Audit evidence
+
+Install the updated requirements. Set persistent `AUDIT_EVIDENCE_KEY` (a Fernet key) and
+`AUDIT_ADMIN_TOKEN` (an independent random token) in `.env`. Generate them once locally;
+never commit them or regenerate on every startup. For a fresh setup:
+
+```python
+from cryptography.fernet import Fernet
+from dotenv import find_dotenv, set_key
+import secrets
+
+path = find_dotenv(usecwd=True)
+# Only run for a NEW installation; replacing the key loses access to previous evidence.
+set_key(path, "AUDIT_EVIDENCE_KEY", Fernet.generate_key().decode())
+set_key(path, "AUDIT_ADMIN_TOKEN", secrets.token_urlsafe(32))
+```
+
+Inspect the latest protected timeline from the repository directory (Windows or macOS):
+
+```python
+import httpx, json
+from app import config
+
+response = httpx.get(
+    "http://127.0.0.1:8001/api/audit/timeline",
+    params={"limit": 100, "include_evidence": "true"},
+    headers={"Authorization": "Bearer " + config.AUDIT_ADMIN_TOKEN},
+)
+response.raise_for_status()
+print(json.dumps(response.json(), indent=2))
+```
+
+Add `session_id` to filter a conversation. The output contains sensitive banking context;
+do not paste it publicly. Records survive server/session restarts in ignored
+`var/evidence.sqlite3`. Retention, trust boundaries and limitations are in CONTRACTS v0.8.
+
+
+## Local bank execution and recovery
+
+Bank execution is opt-in. Existing prompt, JEV composition, validation and read-only
+flows remain available with `BANK_EXECUTION_ENABLED=0`. Once ledger state exists,
+reads use it even when payments are disabled; corrupt state never falls back to seeds.
+
+For a supervised localhost demo, copy the bank settings from `.env.example`, set
+`BANK_EXECUTION_ENABLED=1` and `BANK_SUPERVISED_USER=u_demo`. Keep
+`VALIDATION_RECEIPT_KEY` persistent: unpadded base64url of at least 32 random bytes.
+Keep `AUDIT_EVIDENCE_KEY` unchanged so existing evidence and approvals remain readable.
+These settings are server-owned, never request parameters. Device enrollment is still
+supervised; this configuration is not customer authentication for public deployment.
+
+The committed user's `transfer_policy` supplies provisional demo limits: SGD 25,000
+per transfer, SGD 100,000 per Singapore calendar day, additional verification above
+SGD 20,000, and 10 transfers per rolling minute. A backend `BANK_TRANSFER_POLICY`
+JSON override is optional. Only single SGD transfers have an enabled risk policy;
+other action types can still be composed/validated but cannot execute. Additional
+verification remains blocked until an actual transaction-bound verifier exists.
+
+Stop the app and back up `var/` before activation or migration. For a genuinely fresh
+installation only, initialize the bank, then enable payments:
+
+```bash
+python -m app.bank.gateway initialize --confirm-fresh-install
+python -m app.bank.gateway resume
+```
+
+Initialization refuses existing ledger state or its marker. Never delete these to
+reset an error. Existing installations must retain balances, transaction identities,
+keys and audit history. Initialization starts paused. Operator controls are local
+commands, never API endpoints:
+
+```bash
+python -m app.bank.gateway pause
+python -m app.bank.gateway reconcile
+```
+
+If a request's outcome is unknown, use **Check status**: it resubmits the original
+nonce/signature and can recover a committed result after expiry. Do not create a new
+payment to retry an uncertain one. Refreshing the page loses the browser's pending
+request; investigate the server's recorded transaction before entering a new request.
+
+The ledger commits balances, execution references and pending audit events together.
+Audit delivery updates the hash-chained JSONL log and encrypted evidence timeline;
+repeated delivery is deduplicated. An audit failure after commit never rolls back or
+repeats the debit. Encrypted evidence links session, revision, draft hash and execution
+ID; the ledger is authoritative for money movement, while a browser presentation
+report remains client-reported evidence.
+
+`var/approvals.sqlite3` encrypts current validation context and coordinates corrections
+with execution across local processes. Intent conversation state is still process-local;
+use one app worker for conversational continuity. Old approval receipts are invalidated
+by this integration. Ledger/JSONL remain plaintext; protect runtime storage and backups.
+Windows uses native byte-range locks and file flushing; macOS uses flock and directory
+fsync. Process-crash recovery is tested on Windows; sudden-power-loss durability and
+macOS runtime execution still require platform validation.
+### Deploy publicly
+
+The server is a single-process demo. Before giving judges a public URL:
+
+1. **HTTPS only.** Browsers disable the WebCrypto signing V5 needs on plain `http://`. Put
+   it behind EdgeOne or a load balancer with a certificate, and add HSTS there.
+2. **Secrets** in the host's secret store, never in the image: `MAKERS_MODELS_KEY`,
+   `AUDIT_EVIDENCE_KEY`, `AUDIT_ADMIN_TOKEN`, `VALIDATION_RECEIPT_KEY`, `MASK_KEY`.
+3. **Validator:** `VALIDATOR_PROVIDER=compatible-api` with its own `LLM_BASE_URL`,
+   `LLM_API_KEY` and `VALIDATOR_MODEL`. Never sign a personal Codex account in on a server:
+   anonymous visitors would spend its quota.
+4. **Leave `API_DOCS` unset** (off): `API_DOCS=1` shows `/docs` and `/openapi.json`.
+5. **Real client IPs for rate limits:** run `uvicorn app.main:app --proxy-headers
+   --forwarded-allow-ips=<proxy address>` with the proxy's exact addresses or ranges,
+   **never `*`**: with `*` any client picks its own IP and escapes every limit; without the
+   flag every visitor shares one limit.
+6. **Build with `npm ci`** so the front end uses the locked dependency versions.
+7. **Device keys:** supervise initial enrollment on the private demo. Preserve the pinned
+   registry; never delete it to bypass a key conflict. Public customer authentication remains
+   outside the current demo.
+
+Limits (`app/config.py`): 256 KB JSON bodies, 2 MB audio; per IP per minute 40 model calls,
+120 previews, 120 validations, 60 writes and 120 reads; 600 model calls and 600 previews a
+minute in total. They live in memory, as do sessions, so run one worker. Every key and token
+must be at least 32 random characters and differ from the others, or the server won't start.
+To rotate `AUDIT_EVIDENCE_KEY`, set it to `new,old` and keep the old key while its rows remain.
+
+
+### Updating an existing local bank
+
+After merging, run `python -m app.bank.gateway sync-catalogue` to add the new demo payees.
+It preserves financial state and can be retried safely. Do not delete `var/` or rerun fresh
+initialization to load new examples. Existing holdings stay unchanged; new opening positions
+apply to fresh installations only.
+
+For evidence created before this merge (including keyed chains with SHA payload digests),
+stop the app, back up `var/evidence.sqlite3`, then run the
+operator upgrade with the original evidence key configured:
+
+```python
+from app import evidence
+
+with evidence._connect(upgrade_legacy=True):
+    pass
+```
+
+This checks the old links and retained encrypted payloads before an atomic version-2 upgrade,
+keys the payload/draft digests, and retains original link hashes and event IDs. Expired payload
+digests are keyed without recovering expired data. Transaction-event retries remain idempotent. Normal app access refuses legacy unkeyed chains rather than silently trusting
+a format downgrade. Windows access control uses NTFS ACLs; macOS/Linux also enforce mode 0600.

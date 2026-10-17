@@ -35,7 +35,7 @@ export function conversationReducer(state: ConversationState, event: Conversatio
     case "handoff": {
       if (
         !draftSchema.safeParse(event.draft).success ||
-        event.draft.actions.some((a) => a.type === "fx_conversion") || // V2 has no conversion layout
+        event.draft.actions.some((a) => a.type === "fx_conversion" || a.type === "account_transfer") || // V2 has no layout for these
         Object.keys(editedActions(event.draft, {}, v2Accounts).errors).length
       )
         return {

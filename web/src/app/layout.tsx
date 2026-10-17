@@ -3,7 +3,7 @@ import Link from "next/link";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "DCTA ? Banking, in your words",
+  title: "jevfrey | Banking, in your words",
   description: "A voice banking hackathon prototype. Review the details before taking action.",
 };
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
@@ -12,11 +12,11 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
       <body>
         <div className="app-shell">
           <header className="app-header">
-            <Link className="brand" href="/" aria-label="DCTA home">
+            <Link className="brand" href="/" aria-label="jevfrey home">
               <span className="brand-mark" aria-hidden="true">
                 ✳
               </span>
-              <strong>DCTA</strong>
+              <strong>jevfrey</strong>
               <span className="brand-divider" />
               <span className="brand-subtitle">Banking, in your words.</span>
             </Link>
@@ -47,7 +47,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
             </div>
             {children}
             <footer className="app-footer">
-              <span>DCTA · Tencent Cloud Hackathon 2026</span>
+              <span>jevfrey · Tencent Cloud Hackathon 2026</span>
               <span>Draft first. You approve.</span>
             </footer>
           </main>

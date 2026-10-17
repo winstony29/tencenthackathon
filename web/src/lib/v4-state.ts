@@ -1,6 +1,6 @@
-import { financialSchema } from "./v4-financial";
+import { financialSchema, cents } from "./v4-financial";
 import { z } from "zod";
-import { accountsSchema, draftSchema, quoteSchema, type Draft } from "./contracts";
+import { accountsSchema, draftSchema, quoteSchema, presentationIntentSchema, type Draft } from "./contracts";
 import { editedActions, updateEdit, type DraftEdits } from "./draft-editor";
 import { fromCurrency } from "./money";
 
@@ -8,6 +8,7 @@ export const objectiveSchema = z.enum(["prepare", "assess_affordability", "simul
 export type Objective = z.infer<typeof objectiveSchema>;
 export const handoffSchema = z.strictObject({
   draft: draftSchema,
+  intent: presentationIntentSchema.nullable().optional(),
   objective: objectiveSchema,
   data: z.strictObject({
     accounts: accountsSchema,
@@ -56,7 +57,8 @@ function validHandoff(h: Handoff) {
         c.commitments?.bills.some((b) => {
           if (b.covered_by_draft_action === undefined) return false;
           const a = h.draft.actions[b.covered_by_draft_action];
-          return a?.type !== "bill_payment" || a.from_account_id !== c.account_id || a.amount !== b.amount;
+          return a?.type !== "bill_payment" || a.from_account_id !== c.account_id ||
+            (b.biller_id ? a.biller_id !== b.biller_id || cents(a.amount) > cents(b.amount) : a.amount !== b.amount);
         }),
     )
   )
@@ -85,6 +87,14 @@ function validHandoff(h: Handoff) {
               b.currency === a.buy_currency &&
               b.label === a.to_account_label,
           )) &&
+        (a.type !== "account_transfer" ||
+          (a.to_account_id !== a.from_account_id &&
+            accounts.accounts.some(
+              (b) =>
+                b.account_id === a.to_account_id &&
+                b.currency === a.currency &&
+                b.label === a.to_account_label,
+            ))) &&
         (a.type !== "transfer" ||
           accounts.payees.some((p) => p.payee_id === a.to_payee_id && p.label === a.to_payee_label)) &&
         (a.type !== "bill_payment" ||
@@ -103,7 +113,7 @@ function preserveEdits(state: State, draft: Draft): DraftEdits {
         ? "to_payee_id"
         : a.type === "stock_order"
           ? "ticker"
-          : a.type === "fx_conversion"
+          : a.type === "fx_conversion" || a.type === "account_transfer"
             ? "to_account_id"
             : "biller_id";
     const before = old as unknown as Record<string, unknown>,

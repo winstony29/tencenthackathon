@@ -47,13 +47,16 @@ Rejected: ...
 **Outcome (12 Oct):** Jev works through the EdgeOne Makers gateway (native System One API, model `@makers/jev`, key `MAKERS_MODELS_KEY`); Darren's live calls returned `jev-1.13.0` (D-019, D-022). `app/intent/jev.py` uses the same gateway settings in `app/config.py`. `TYPESAFE_API_KEY` stays unused unless the gateway fails.
 
 ## D-006 · Audio format for speech to text
-2026-10-10 · Winston + Darren · Status: **open (due Mon 12 Oct)**
-**Decision:** *(format the browser records vs what Tencent ASR accepts; who converts)*
+2026-10-16 · Winston + Darren · Status: decided
+**Decision:** The browser uploads 16 kHz, single-channel, 16-bit PCM WAV. The multipart field name is `audio`. Format conversion happens entirely in the browser (Web Audio API), so the server needs no ffmpeg and no new dependencies. The server validates the WAV with Python's standard `wave` module: PCM, 1 channel, 16000 Hz, 2 bytes per sample, duration 0.3–15 s. The international-site Tencent ASR API (asr.intl.tencentcloudapi.com, version 2019-06-14) accepts WAV via `CreateRecTask` + `DescribeTaskStatus` polling. The intl site has no `SentenceRecognition` (one-shot); it is file-upload + poll only.
+**Why:** Every browser can produce this format with the Web Audio API, and Tencent Cloud accepts WAV directly. Keeping conversion on the client avoids a server-side binary dependency and keeps the server simple.
+**Limits:** The international-site API is file-upload + polling mode, so each command takes a few seconds end to end (live on 16 Oct, 1.3 s clip: `16k_zh_large` 2.3 s total and heard "John"; `16k_en` 6–7 s and heard "Jon" even with John as a hotword, so `16k_zh_large` is the default engine). WebSocket real-time recognition is a faster upgrade path. Tencent ASR still hears the raw audio, including payee names (D-026 Limits); those names are also sent as hotwords to improve accuracy. The 2 MB upload cap in `app/main.py` bounds the audio size. The server budget is 13 s (`ASR_TIMEOUT_SECONDS`): a 6 s sentence timed out at 10 s live on 16 Oct. Payee display names and aliases, biller names, account labels, stock company names and tickers, and a fixed list of command verbs and Singapore vocabulary (Send, Pay, Transfer, Buy, Sell, Convert, DBS, POSB, PayNow, PayLah, GIRO, NETS, NRIC, SGD, USD, Multiplier; without the verbs `16k_zh_large` heard "send fifty" as "seven fifty") are sent as whole terms as hotwords (weight 10 for payees/billers/accounts, weight 8 for fixed terms and quotes, max 128 terms; masked digit tails like …4521 are dropped). This does not add new exposure: Tencent already hears the audio (D-026).
 
 ## D-007 · Risk rule values
 2026-10-10 · Jayanth · Status: **open (due Mon 12 Oct)**
 **Decision:** *(placeholders: extra check over SGD 5,000; daily limit SGD 20,000; at most 5 transfers per hour; demo OTP code set in config)*
 **Why:** The brief asks for velocity controls and an out-of-band check for large amounts. These values are demo placeholders, not DBS policy.
+**Note (16 Oct, Winston):** the demo one-time code now exists as `config.DEMO_OTP` (`123456`) and the gateway verifies it for a challenge issued with `require_otp` (D-054). The ledger's own risk step-up still answers `needs_extra_check` without ever committing; Jayanth, wiring that path to the same code is yours when you want it.
 
 ## D-008 · Hosting
 2026-10-10 · Darren · Status: **open (due Mon 12 Oct)**
@@ -198,7 +201,7 @@ Use existing Motion for staggered entry, exit, position changes and a shared pri
 **Decision:** Every number the user says is swapped for a stand-in before any text reaches Jev (`options.mask`). The stand-in is an HMAC-SHA256 of the value and the scope (user and session) under `MASK_KEY`, shown as two digits then zeros with the real value's digit count (50,000 → e.g. 72,000). Number options read 'The number said as "72000"'; relative amounts name the fraction ("half of the Savings …1234 balance") without the value; follow-up context leaves out amounts and quantities. Jev still answers with option IDs, and code keeps the real values in `Options.numbers`, so nothing is ever decrypted.
 **Why:** Amounts are sensitive, and Jev only needs each number's role (amount, quantity, limit price), not its value. It also closes a leak where "all" or "half" sent every account balance to Jev. The hash is keyed so nobody can work a value back by hashing every amount, and scoped so a number keeps its stand-in for a conversation but differs across conversations.
 **Rejected:** Markers such as `[N0]` and random 3-digit stand-ins: live, demo commands 1, 2 and 4 dropped below tau ("send [N0] to John" read less like a payment; "send 437" or "send 48213" read less like a large transfer than "send 72000"). Format-preserving encryption: nothing needs decrypting, and it would add a dependency.
-**Limits:** Jev learns each amount's order of magnitude. Payee, biller and company names still reach Jev, because it needs them to match; swapping name words the same way is a possible next step. Tencent ASR still hears the audio, and the validation agent still reads the raw transcript, because it checks the draft against the words said. Number words `parse_numbers` doesn't know (such as "dozen") pass through. Previews have no session, so their stand-ins are shared until restart. The rewriter (W-04) must rewrite the masked text and keep its stand-ins unchanged.
+**Limits:** Jev learns each amount's order of magnitude. Payee names are now pseudonymised too (D-039); biller and company names still reach Jev. Tencent ASR still hears the audio, and the validation agent still reads the raw transcript, because it checks the draft against the words said. Number words `parse_numbers` doesn't know (such as "dozen") pass through. Previews now get a fresh random scope each (D-039). The rewriter (W-04) must rewrite the masked text and keep its stand-ins unchanged.
 
 ## D-027 · Contracts v0.4 (proposed): spoken answers, orders by sum, "the rest", currency conversion
 2026-10-13 · Winston · Status: decided (Darren and Jayanth agreed 13 Oct; intent side built, bank side pending)
@@ -245,7 +248,7 @@ Direct edits recalculate figures and notices locally. The next objective change 
 
 ## D-031 — V5 orb entry and adaptive task surface (2026-10-13)
 
-Darren approved V5 as a separate route, preserving V4. Port the supplied Orb.dc.html visual direction into native React: dark shell, red orb, white task surfaces, concise typography and purposeful motion. Orb activation reveals explicit demo request buttons. No microphone is recorded. Clarification and shield results are labelled mock Winston responses and never delegated to JEV. Resolved handoffs pass the existing runtime validator before V4 selection/placement composition; no banking contracts or backend routes change.
+Darren approved V5 as a separate route, preserving V4. Port the supplied Orb.dc.html visual direction into native React: dark shell, red orb, white task surfaces, concise typography and purposeful motion. Orb activation reveals explicit demo request buttons. *(16 Oct, W-09/D-006: the orb tap now records voice through `web/src/lib/recorder.ts`, a 16 kHz mono WAV made in the browser; `/api/transcribe` returns the text, which then takes the same path as a typed request or a typed clarify answer. The demo buttons stay as the fallback behind "Choose a banking request".)* Clarification and shield results are labelled mock Winston responses and never delegated to JEV. Resolved handoffs pass the existing runtime validator before V4 selection/placement composition; no banking contracts or backend routes change.
 
 Reuse the V4 component registry, editable state and exact financial calculations. Each explicit composition requests the existing two sequential JEV stages; edits recalculate locally. Pending work can be cancelled; stale replies cannot restore an abandoned workspace. Fallbacks are labelled. Review acknowledges every action and completes only a local demo. Future Winston integration replaces the fixture producer with a resolved handoff, while real validation/signing remains separate integration work. The reference's unsupported second-check and sent claims are omitted.
 
@@ -279,3 +282,429 @@ Verification: 29 frontend unit tests, TypeScript, targeted ESLint, production st
 **Decision:** CONTRACTS §3.4 documents `POST /api/presentation-v4/evaluate` (V4, V5) and lists `/api/presentation-demo` (V2) and `/api/presentation-v3` (V3). Their models stay in `web/` with Darren. A missing model key returns 503 `upstream_error`.
 **Why:** V5 calls Jev twice per screen through these endpoints, on the same key as the intent engine, but only Darren's decision entries (D-019, D-021, D-029) described them. Changes to them should go through the same agreement as every other endpoint.
 **Rejected:** Leaving them undocumented (a change to them needed no one's agreement).
+
+### V5 composition latency and rendering (13 October 2026)
+
+Simple single-action prepare requests use one batched selection call. Code attaches selected
+recipes to their required slots and validates the complete JSON tree. Multi-action,
+affordability and simulation requests retain the two-stage composer. The V4 presentation
+gateway client is pooled for the FastAPI lifespan. Accounts and stock quotes load concurrently.
+
+V5 shows a local validated task view while JEV finishes, with payment disabled until
+composition completes. The final renderer follows tree slots and variants and renders
+distinct approved support components. Invalid composition still uses the checked fallback.
+This changes presentation only; unsupported enquiries still require an intent/handoff contract.
+No end-to-end latency guarantee is inferred from call count.
+
+### Approved local diagrams (14 October 2026)
+
+JEV can select a bills timeline or cashflow waterfall within the existing enquiry
+batch (at most one primary diagram). Data eligibility gates the offered choices.
+The transaction catalogue offers a transfer-only TaskEditor flow variant in its
+existing selection batch. All diagrams render locally using CSS/SVG, retain readable
+amounts, keep currencies separate, and add no model round trip. The gallery exposes
+the variants together for inspection. Waterfalls show estimated closing balances,
+not chronological liquidity or transaction approval.
+## D-035 · Contracts v0.6 (proposed): read-only answers, starting with balances
+2026-10-14 · Winston · Status: open (Darren and Jayanth to agree)
+**Decision:** `/api/understand` gains `status: "answer"` for questions that move no money. The first `kind` is `balance`: Jev says a balance is asked for and which account (or all); code reads the figures from `readonly.get_accounts`. An answer is never validated or signed and ends the session. A command that also moves money gets the draft instead.
+**Why:** "What's my balance?" is the most basic voice-banking request and today gets "unsupported". A separate status keeps read-only replies out of the confirm-and-sign flow, and `kind` leaves room for more read-only questions (transactions, bills, holdings) without another status.
+**Rejected:** A draft with a "balance" action (it would show a Confirm & sign button for something that moves nothing); answering in free LLM text (Jev never writes values, AGENTS §4).
+**Update (2026-10-14):** v0.6 now proposes eight read-only kinds (`balance`, `transactions`, `bills`, `holdings`, `quote`, `fx_rate`, `payees`, `help`), chosen by one Jev question (`info`) instead of a yes/no question per kind. A transactions question with no period returns the latest 5.
+
+## D-036 · Contracts v0.7 (proposed): moving money between your own accounts
+2026-10-14 · Winston · Status: open (Darren and Jayanth to agree)
+**Decision:** New action `account_transfer` for moves between the user's own accounts in one currency, shown as a **Move money** card. A move between currencies is a standalone `fx_conversion`, which also makes "convert 1,000 SGD to USD" work. Limits and the extra check for own-account moves are Jayanth's call under D-007.
+**Why:** Moving money between your own accounts is one of the most common banking requests, and `transfer` only pays payees. `fx_conversion` already describes a move between two own accounts, so reusing it avoids a second shape for the cross-currency case.
+**Rejected:** Treating own accounts as payees (they would need payee IDs, and a payee is someone else); same-currency only (leaves "move 1,000 from savings to invest" unsupported).
+
+## D-037 · Answers take filters, not more kinds
+2026-10-14 · Winston · Status: open (part of the v0.6 proposal, D-035)
+**Decision:** Read-only kinds take combinable filters that Jev picks from code-built options: transactions by account, period (including calendar months), payee, direction and order; bills by recurring or all. Bills carry `recurrence` and transactions carry `payee_id`.
+**Why:** "What are my recurring bills?" and "What did I pay Mum last month?" failed because each kind was rigid, not because they were out of scope. A few filters cover many phrasings without widening what Jev can do or letting it write any value.
+**Rejected:** One kind per phrasing (the list never ends); letting a model write the query (it could ask for data outside the user's own).
+
+
+## Integration: Winston answers and V5 composition - 14 October 2026
+
+Darren authorized merging origin/winston and reconciling the overlapping enquiry work.
+Winston owns question interpretation, filters and answer data. V5 composes the returned
+records directly; it does not replace them with a broad account-insights fetch. A single
+metadata-only JEV batch chooses eligible variants, detail and per-currency totals. All
+records remain available and failures retain the initial complete fallback. The old
+intent enquiry question/response is removed; broad analysis stays in the component gallery.
+Own-account action support from Winston is preserved across contracts, editors and signing.
+Windows file-lock/fsync adaptations remain alongside POSIX behavior. Browser tests choose
+Chrome by platform or CHROME_PATH; no OS-specific shell scripts or dependencies are added.
+Validation and execution remain stubs; this integration does not implement the audit proposal.
+
+
+## Parallel semantic validator - 14 October 2026
+
+Darren authorized implementing the validator plan, including Winston's read-only answer
+bypass, own-account actions and FX. Use server-owned provenance and revision-bound
+receipts. A separate model audits all action fields and action coverage, with independent
+Decimal FX arithmetic. JEV receives no validator reasoning and is not rerun for errors.
+V5 starts the audit alongside composition; mismatch highlights fields, timeout offers
+retry, cancellation/new turns revoke approval. Tests cover tampering and stale results.
+
+Darren requested Local Codex until an independent API account is available. The CLI runs
+with isolated workdir, JSON schema, ignored user configuration, disabled shell/web/apps,
+read-only sandbox and an explicit timeout. Its existing sign-in is used; no credentials
+are copied into the app. This temporary adapter adds process startup latency. Production
+requires service credentials, authenticated user binding and a shared transactional store.
+Single-worker in-memory state matches today's intent-session deployment; fail closed
+on restart. Bank execution remains unavailable rather than falsely reporting success.
+The full risk/signature/ledger implementation remains Jayanth's separate integration.
+
+### Validator defaults correction (14 October 2026)
+
+The independent audit now receives the existing SGD currency convention and deterministic
+source-account fallback rules as trusted application policy. It must still prefer explicit
+user instructions and recipient clarifications. This fixes false uncertainty for "$50 to John"
+after the recipient is selected; it does not establish a real customer account preference.
+
+
+### Persistent audit evidence (14 October 2026)
+
+Use an encrypted SQLite evidence timeline beside the existing JSONL summaries. SQLite
+transactions bind each payload digest to chain metadata; cryptography's Fernet provides
+standard authenticated encryption instead of custom crypto. The user's audit implementation
+request authorizes the shared/backend changes and dependency. The admin token is separate
+from the encryption key and never reaches the frontend. Seven-day payload retention keeps
+metadata intact. Browser manifests are claims, while request processing and draft revisions
+are server events. Preserve fail-closed confirmation and record failures without keys/OTPs.
+No new money execution, production authentication, immutable external checkpoints, or model
+reasoning capture is introduced. Official encryption reference:
+https://cryptography.io/en/latest/fernet/
+
+The live audit test exposed a provenance gap: history held a question's internal slot but
+not its displayed wording/options. Store those when Winston asks so later checks can scope
+?No? to ?move between your accounts? without cancelling a separate payee transfer.
+
+Validation: 342 backend tests passed (6 skipped), 33 frontend tests and 9 browser scenarios
+passed; production build and lint passed. Live checks confirmed persisted evidence across
+restart with unchanged chain hash, protected access, and V5 balance presentation reports.
+## D-039 - Atomic mock ledger and recoverable execution audits (Jayanth branch D-035)
+2026-10-13 · Jayanth · Status: decided (J-08; integration update requires team review before merging)
+**Decision:** `execute_batch(draft, execution_id)` is an internal gateway interface, with no public endpoint. J-06 must authenticate, validate the receipt, check signatures/nonces and assign the execution ID; J-07 supplies risk checks. The ledger independently checks ownership, currencies, active records, balances, holdings and the documented action counts. It stages every action in order and commits the complete draft through one locked, atomic replacement of `var/ledger.json`. This atomicity covers only simulated local state, not external settlement.
+**Mock policies:** Market orders fill at the stored quote, without fees. Limit orders fill at that quote only when it satisfies the limit; otherwise the whole batch is refused, with no pending order. Bill payments allow partial settlement, reject overpayment and refuse an already settled obligation. FX uses the stored directed rate and timestamp; received money is rounded down to cents as specified in CONTRACTS. Execution records retain prices, quantities and conversion details.
+**Recovery:** Persist a fingerprint of the complete canonical draft and its execution ID. Identical retries return the original references; changed payloads cannot reuse the ID. Thread/process locks protect current-state checks. Temporary-file flushing, file synchronisation, atomic replacement and directory synchronisation protect writes. Missing established state, structural corruption and checksum mismatches fail closed; a durable lock marker and existing execution audits prevent silent reseeding. The checksum detects accidental corruption, not a privileged attacker rewriting all stores.
+**Audit:** Commit pending execution and documented `fx_converted` events in the same ledger state, then deliver through J-03 with opt-in idempotent append. Under the audit lock, verify the chain and compare complete canonical caller payloads for the same actor, event, transaction ID and action index. Matching retries resynchronise and reuse the original evidence; conflicts fail closed. Default appends and existing records remain unchanged. Local thread/process and crash tests establish no additional logical records from outbox retries, not universal exactly-once delivery. Delivery attempts may repeat, and the two stores are not committed together. Broken chains, conflicting evidence or missing acknowledged events stop execution. A storage/audit error may follow a committed debit: retry with the same ID. Protect and back up `var/`.
+**Integration:** Accounts and default cashflow forecasts each read one validated committed user snapshot, including current balances, holdings, bills and scheduled obligations. Public fields are filtered through the existing models; reads never initialise, execute, reconcile or write. Settled bills are excluded without deducting historical payments again. Missing or corrupt state returns a sanitised 503 `upstream_error`; unknown users in valid state remain 404. There is no automatic seed fallback: absent state and markers cannot prove a first installation rather than deletion of all evidence. A supervised operator must confirm a genuinely fresh installation before using the existing `reconcile_audit()` function to initialise opening state from the seed. Previously used installations need investigation/recovery, not reseeding. Explicit trusted forecast snapshots remain available for isolated calculations. Quotes/rates still use the unchanged seed; `/api/execute` remains the J-06 stub. No authentication, risk policies, AI telemetry or public contracts change. Jayanth approved these shared changes; the team must review this entry before merging.
+
+## D-038 · J-06 gateway receipts, signing and execution recovery
+2026-10-14 · Jayanth · Status: internal implementation approved; team integration review required
+**Decision:** Add `cryptography==50.0.2` for P-256/SHA-256 verification; decode strict WebCrypto raw r‖s signatures and convert to DER. Keep the v0.5 endpoint shapes and canonical-draft-plus-nonce signing string. Opaque `vr_1` receipts authenticate versioned canonical claims with domain-separated HMAC-SHA256, binding the full draft hash, user/session/draft, authoritative context/revision/logical request and issue/expiry times. `VALIDATION_RECEIPT_KEY` must hold base64url-encoded cryptographically random key material of at least 32 bytes; no generated production fallback or issuer is supplied.
+**Boundary:** A trusted backend context lease must authenticate or supervise the customer, prove the current independently validated revision, and coordinate corrections with execution across processes. The default lease and gateway policy provider are unavailable; they are integration interfaces, not invented instruction history. No gateway import from intent, validation or LLM modules. J-04 enrollment remains vulnerable to first-registration takeover; use a supervised private demo only. J-05, resource-limit configuration and trusted provenance/customer identity remain unresolved.
+**Recovery:** Persist random nonces and key bindings under private, authenticated runtime storage, using thread/process locks, atomic replacement and disk synchronization. Derive stable execution identity from the backend-owned user/logical request, not the nonce or amount. Multiple approvals cannot debit one logical request twice; a genuinely new request has a new logical identity. Persist inflight before J-08, then recover gaps using its same execution ID. Identical signed retries may retrieve verified committed evidence (including after expiry), but never execute again; another challenge/signature reusing a spent logical transaction is refused. Gateway and ledger stores are not one atomic transaction. Audit delivery uses durable outbox retries and J-03 opt-in deduplication; no universal exactly-once claim.
+**Limits:** Explicit required policy objects bound challenges, bytes, audit metadata and attempts; no live numeric defaults. Uncertain inflight records are retained and can exhaust capacity until operator recovery, rather than discarded. J-08 still mandates J-07 under its own lock; missing policies, pause and unsupported types fail closed. Raw OTP is never trusted; step-up stays uncommitted with bounded attempts until a separately approved transaction-bound verifier and risk integration exist. Public execute no longer fabricates success. No frontend, public models or banking policies change. The parallel-validation UX and live provider wiring require Winston/Darren agreement before end-to-end claims.
+
+
+## D-040 - Bank/audit integration - 2026-10-14 - Darren
+
+User authorized integration of Jayanth c24e498 with Darren's encrypted evidence,
+including shared files and an isolated integration branch. Existing UI/intent/JEV
+interfaces remain unchanged. Retain cryptography 46.0.3: imported signature code
+passes against the existing dependency, avoiding an unnecessary version change.
+Use versioned vr_1 receipts, encrypted SQLite approval state and a cross-process
+lease spanning execution. Link committed ledger records to deduplicated encrypted
+evidence; preserve Jayanth's JSONL outbox recovery and existing evidence chains.
+Native Windows locking replaces unconditional fcntl imports; POSIX keeps directory
+sync, Windows flushes files. This is local process-crash recovery, not a claim of
+identical power-loss guarantees on every filesystem.
+
+Execution is opt-in and supervised. The user delegated provisional limits: store
+SGD 25,000/transfer, SGD 100,000/day, step-up above SGD 20,000, ten transfers/minute
+in the bank user profile. These override the earlier placeholder policy decision for
+this demo. Public account response shapes remain unchanged. Broader action policies,
+real OTP and customer authentication are not silently enabled. No external settlement
+is introduced. Fresh ledger initialization is explicit; existing ledger state is
+never automatically reseeded. See README for activation and recovery.
+
+
+## D-041: Preserve constrained intent in non-executable UI plans
+
+14 October 2026. Darren approved an additive Winston-to-JEV presentation handoff.
+Winston retains conditions and timing, resolves task entities, and returns a plan
+instead of registering an unconditional draft. A semantic constraint question joins
+the existing intent batch; lexical conditional wording is also preserved even if
+that question misses it. A bounded parser evaluates one stock-price comparison;
+other expressions remain visible and unevaluated. This is not a general rule engine.
+
+The UI composer receives sanitized original wording and conversation, alongside
+structural context and server-owned capability hints. Five granular plan blocks
+reuse existing action summaries. JEV chooses variants in one presentation call;
+code guarantees condition/action coverage and binds values. The plan remains useful
+when the model is unavailable, but has no transfer button or execution receipt.
+Ordinary transfers, simulations and read-only answers keep their existing paths.
+Future conditional execution requires signed condition semantics, authoritative
+fresh-data evaluation and a bank policy; monitoring additionally requires durable
+jobs, expiry and cancellation. None is implied by this presentation change.
+
+
+Live verification of D-041: the first synthetic conditional request exposed a
+shield false positive (injection probability 0.71). Clarified the shield's wording
+that user-task conditions are not themselves rule overrides, preserving the attack
+criteria, phrase backstop and block threshold. The approved repeated request returned
+`plan` (injection probability 0.01), kept threshold USD300 and transfer SGD50 separate,
+and correctly marked the old quote stale. UI composition returned `source: jev`
+with comparison, compact quote, connector and full action variants in one call.
+Observed durations: intent 1.319s; composition 1.562s. These are single observations,
+not performance guarantees. Bank execution was disabled and evidence storage isolated.
+
+
+## D-042: Request-aware context without a new planner (14 October 2026)
+
+Use the existing enquiry composer for the original instruction, conversation and
+Winston's represented tasks together. Offer all data-eligible read-only components
+rather than narrowing them to Winston's topic. Reuse the existing renderer and
+masking; no new dependencies or free-form generated financial values.
+One additional composition call checks coverage and selects context. Missing or
+uncertain execution requirements pause the UI, while the existing validator and
+bank remain the authorization boundary. This does not implement custom bank
+operations, condition evaluation or monitoring. Legacy topic-based enquiry callers
+retain their required component coverage.
+
+Verification: 795 backend tests passed (6 skipped), 34 frontend unit tests and
+13 V5 browser journeys passed; production build, lint and Ruff checks passed.
+An isolated live call with the approved synthetic Apple-price instruction and a
+transfer-only Winston handoff selected QuoteList and returned unresolved coverage
+in 3172 ms. No bank execution occurred. This is one observation, not a latency guarantee.
+
+
+## D-043: Fold context choices into existing composition (15 October 2026)
+
+Supersedes D-042's extra coverage call and UI payment gate. Append the masked
+original request, conversation, Winston context and optional read-only component
+choices to the existing native UI request. Separate the returned choices in code;
+reuse the checked enquiry renderer. No extra network or model phase is required.
+Unsupported outputs keep a single enquiry composer because they have no task UI
+call. Composition errors fall back without changing normal payment authorization.
+Conditional plans and the existing validator/bank checks retain their boundaries.
+
+Verification: the isolated live synthetic conditional request used exactly one
+native gateway call (jev-1.13.0, 2037 ms), returned QuoteList with the task choices,
+and contained no coverage verdict. Execution was disabled. Thirteen browser tests
+passed, including extra context in one response and successful validator-controlled
+transfer availability after forced composition failure. Build, lint and 34 frontend
+unit tests passed. This timing is a single observation.
+
+
+## D-044: Bind immediate quote conditions to signed drafts (15 October 2026)
+
+Use a small typed quote predicate with six comparison operators and any listed
+security. Select its fields in the existing Winston request, evaluate with Decimal,
+and retain the predicate through validation, signing and bank execution. Fresh,
+matching-currency evidence is required at preparation, challenge and execution.
+No extra model phase or background monitoring is introduced. Conditional plans
+remain non-executable when unresolved, unmet, stale or deferred. The UI reflects
+the same condition, refreshes its quote and never grants execution authority.
+Tests exercise multiple securities, wording, all operators, exact boundaries,
+currency clarification, stale/future data, changed prices and idempotent retries.
+
+
+## D-045: Evaluate demo conditions once against virtual bank state
+
+At Darren's request, supersede D-044's quote expiry and execution-time rechecks.
+Use the virtual bank's stored price at preparation, retain the signed predicate,
+and allow normal explicit confirmation without further price checks. Do not poll
+condition quotes. Keep semantic validation and bank authorization unchanged.
+A price change after preparation does not cancel this demo draft.
+
+
+## D-046: Default to structured output, expand only for identified gaps
+
+Following reliability regressions reported by Darren, gate broad UI context on
+explicit partial coverage. Add a coverage question to Winston's current batch and
+reconcile selected requirements with the actual output. Complete outputs omit the
+original instruction from UI model state. Weak coverage evidence never asks the
+user a question; ordinary field ambiguity stays with Winston. Preserve supported
+conditional drafts, validator checks, and existing fallback behavior. Test ordinary
+and partial requests, prior clarification answers, and server-side context gating.
+
+
+## D-047: Clarify relevant uncertainty (16 October 2026)
+
+Task classification uses the base confidence threshold. An uncertain negative action
+category does not interrupt a different confidently selected task when its textual
+cues are absent; positive or genuinely competing interpretations still ask. This is
+a conservative English cue check, not a replacement language parser. Resolve monetary
+exposure per action: its selected amount, the bill amount due, or stock quantity times
+its quote. Never use an unrelated condition threshold or share count as money.
+For a single money task with a single literal candidate, amount extraction uses the
+base interpretation threshold; higher-value recipient/source checks remain strict.
+Remaining single-candidate uncertainty asks for confirmation, not a missing amount.
+Regression tests cover the reported irrelevant-category and repeated-amount cases,
+competing amounts, recipients, explicit own-account moves and stock exposure.
+
+## D-048 · Security pass before a public demo
+2026-10-14 · Winston · Status: decided (Winston's and shared files); notes sent for the rest
+**Decision:** Three read-only reviews (money path, AI surface, web surface) found the core intact (no money moves; drafts, receipts and masking hold) but the surroundings open to anonymous abuse. Fixed in Winston's and shared files: a request guard (security headers, 256 KB/2 MB body caps, per-IP and global limits on model-backed endpoints, `API_DOCS`), ID checks and oldest-first eviction before session state, owner-only session drops, the §8 intent audit events, a slimmer validator snapshot (balances only for accounts the draft uses, plus which spoken number each amount came from), an evidence store that keeps constant write cost, caps item and total size, keys its chain with an HMAC and is owner-only, and a Codex adapter with every remaining tool switched off.
+**Why:** The judges grade the safety design, and the demo will be on a public URL: one curl loop could fill the disk, burn the shared Jev key or lock every judge out.
+**Left to owners:** device enrollment (first registrant owns `u_demo`), one live nonce per approval and consuming it at execute, signature verification and OTP, deterministic checks in the validator so its verdict doesn't rest on the model alone, challenge lifetime (2 min vs 5 in §3.3), an upper bound on `GET /api/audit`.
+**Rejected:** Authentication for the demo (one shared demo user; out of scope before the core money path works); a CSP without `'unsafe-inline'` (the Next.js export inlines its bootstrap scripts).
+
+## D-049 · Names, last digits and option IDs never reach Jev
+2026-10-15 · Winston · Status: decided
+**Decision:** Every word of the user's payee names is replaced, in the text and in the options, by a keyed pseudonym: HMAC-SHA256 under `MASK_KEY` of the word and the scope (user and session), spelt as three consonant-vowel syllables so Jev still reads a name ("John Doe" → e.g. "Tamuri Lulavi"). Words map one by one, so "John Doe" and "John Smith" share a pseudonym first name and a bare "John" stays ambiguous. Labels lose their last digits ("Savings …1234" → "Savings") in everything Jev reads, and option IDs holding digits (`pay_4521`, `acc_1234`) leave `jev.ask` as letter keys (`option_a`) and are mapped back on the reply. Number stand-ins can no longer equal the value said (a two-digit amount used to show its real value about 1 time in 90), previews get a fresh random scope per request so amounts can't be linked across people, and `MASK_KEY` must be at least 32 bytes when set.
+**Why:** Pseudonymisation is only as good as its weakest path: real names in options, last digits in labels and IDs, a stand-in that happens to equal the value, or a shared preview scope each undid it. A keyed hash can't be worked back without the key, even by hashing every name or amount, and the scope makes the same name or amount look different in every conversation.
+**Live check (15 Oct):** demo commands 1 to 5 as expected; "send 50 to John Doe", "transfer 100 to Smith" and "send 20 to mei ling" resolved to the right payee through pseudonyms. "give 30 to my mum's account" asked whether it was an own-account move (safe, not wrong).
+**Limits:** Nicknames code doesn't know ("Johnny", "my mother") reach Jev as said and won't match a pseudonym, so the gate asks. Biller and company names, and the order of magnitude of amounts (D-026), still reach Jev. The validation agent still reads the raw transcript and names; masking it the same way is the next step.
+**Rejected:** Random or marker tokens for names (D-026 showed markers lowered Jev's confidence); format-preserving encryption (nothing needs decrypting: code keeps the real values).
+
+
+## D-050: Integrate the three branches through the existing execution boundary (2026-10-16)
+
+Keep Darren's authoritative draft revisions, validation receipts, signed gateway and audit recovery.
+Merge Winston's guards and masking without removing conditional preparation or structured-first UI.
+An explicit operator step verifies legacy SHA evidence links and atomically upgrades them to keyed links, preserving the original
+hashes and encrypted payloads. Windows uses NTFS ACLs; POSIX mode assertions apply on macOS/Linux.
+Incoming Winston decisions D-038/D-039 are recorded here as D-048/D-049 to avoid duplicate IDs.
+Jayanth's seed and independent checking are reconciled with the connected validator rather than
+replacing it with his deliberately unavailable public endpoint. No runtime ledger reset is permitted.
+## D-051 · Isolated independent validation and offline monitoring
+2026-10-15 · Jayanth · Status: internal implementation approved; team integration review required
+**Decision:** Keep J-05 independently testable in `app/validation/validator.py`. Require explicit backend policy, an independent model adapter, immutable instruction/history and banking-input snapshots, a current-revision lease shared with J-06, and a security-event recorder. Strict field evidence and deterministic checks must pass before issuing a D-038 HMAC receipt for the exact draft and context. Uncertain, stale or unavailable validation issues no receipt. Bounded correction feedback never executes or rewrites transactions. UI rendering may run concurrently with validation.
+**Public boundary:** Jayanth approved replacing the fabricated `/api/validate` match with the existing sanitised 503 `upstream_error` response. Public v0.5 models and banking execution remain unchanged. Trusted authority, D-009 model/client selection and live integration remain unavailable; isolated fake-model and temporary-storage tests are not a live end-to-end demonstration.
+**Monitoring:** Pure offline functions summarise controlled outcomes, categories, version/configuration hashes and latency, without raw instructions, identities, receipts or financial values. Reviewed same-case comparisons use explicit test thresholds and flag human review; they never replace models or change banking controls. This is a regression gate, not measured production accuracy or statistical drift detection.
+**Why:** Strengthen validation without redesigning completed banking components or inventing trusted provenance. Jayanth approved this minimal shared entry; the team must review it before merging.
+
+
+**Integration resolution (D-050, 16 October):** The public route retains Darren's connected
+provider, immutable records and receipts. J-05 deterministic checks run on that path; strict
+source-offset model comparison and offline regression summaries stay internal and independently
+tested. This preserves conditions, own-account moves and the existing frontend response schema.
+The bill-reference and default-order evidence fixes apply to the live path. Catalogue updates
+add only absent payees and are audited; opening holdings never overwrite runtime positions.
+Legacy evidence migration is operator-only: normal reads cannot downgrade/re-sign an unkeyed chain.
+
+## D-052 · Fixes from the 15 October security audit
+2026-10-16 · Winston · Status: decided (Winston's and shared files); notes sent for the rest
+**Decision:** A four-part audit (money path, AI and privacy, web and server, crypto and data at rest) found the money path intact but seven high-severity gaps around it. Fixed in Winston's and shared files: conversations belong to the browser that started them through a server-issued HttpOnly cookie, and the public audit chain no longer carries session IDs (a leaked ID let anyone answer, change or cancel someone else's draft); every `/api/` path has a per-IP rate group, with separate global budgets for previews and model calls, idle buckets pruned instead of all cleared, and IPv6 keyed by /64; the validator reruns at most every 10 s after "unavailable", and a crashed check stops reading as pending; presentation manifests are capped at 16 KB and stored once; evidence and draft digests in plaintext metadata are HMACs; the preview cache is per browser; sessions are keyed by user and session, and evicting a turn revokes nothing; keys must be 32+ varied characters and distinct; the evidence store remembers its head and fails closed after tampering, and `AUDIT_EVIDENCE_KEY` takes a newest-first list for rotation; payee-name masking folds accents and look-alike letters, masks joined names and links, and never aliases everyday words ("bill", "savings"); stand-ins never share the first two digits of the value's whole units (D-049's "can no longer equal the value" did not hold for "50.50" → "50"); digit-by-digit numbers and "point" are read, and vague sizes ("a couple grand", "half a mil") are left for the user; typed passwords, OTPs, card numbers, NRICs and API keys are scrubbed before Jev, the validator and evidence; a final pass hides non-stand-in numbers in everything sent to Jev; `cryptography` is pinned to 46.0.7 (three 2026 CVEs fixed in 46.0.5 to 46.0.7); plus the low findings (error codes, no-store, `/docs` off by default, 64-bit draft IDs, previews not kept). CONTRACTS v0.10 §14 lists what callers see.
+**Why:** Everyone is `u_demo` on a public URL, so the session ID was the only thing between one visitor and another's draft, and cheap request loops could lock every judge out or fill the evidence disk. The fixes keep the demo anonymous while making each browser's conversation its own.
+**Limits:** One process holds every limit, session and the evidence head, so run one worker; a restart forgets the head. Everyday-word name parts ("Mark", "Grace") reach Jev as themselves. The validator still reads the raw transcript and names (masking it like Jev's input is the next step, with Jayanth). Expired payloads in backups still decrypt while their key is listed.
+**Left to owners:** Jayanth: device enrollment (H4), deterministic validator checks (H5), one live nonce per approval consumed at execute (M1), catch-all and polling cap for validator errors (M2, with Darren), keyed legacy audit chain (M7), auth and a bound on `GET /api/audit` (L11), signature, OTP, limits and ledger. Darren: `.DS_Store` in the export (L8), a hash-based CSP (L9), ownership checks on account insights (L12), formatting.
+**Rejected:** Logins for the demo (one shared demo user); dropping the `cached` flag from previews (per-browser keys already stop the cross-user leak); a separate chain key in its own variable (one more secret to manage for no demo benefit).
+
+
+**D-052 integration resolution (Darren, 16 October):** Preserve the connected bank gateway,
+conditional preparation and structured-first composer. Persist browser owners with encrypted
+approvals and use wall-clock retry timestamps. Keep idempotent transaction evidence across digest
+migration and key rotation. Require an operator-only format-2 evidence migration; authenticate
+existing links/payloads before rewriting digests, preserving IDs and original link hashes. Accept
+verified append-only extensions from other processes while rejecting removal of the remembered
+prefix. No ledger, device or payment-policy reset. Malformed spoken decimals request clarification.
+
+
+### 2026-10-16: Account context uses committed bank state
+
+Read-only transaction history combines the opening statement sample with committed ledger
+legs, including both sides of account transfers and FX. It never replays historical amounts
+into balances. Insights derive balances, current bill states and history from one snapshot.
+Spending includes explicitly classified consumer debits; transfers, FX and investments stay
+in history but are excluded from spending. The seed assigns categories and a Savings reserve
+of SGD 500.00. These are fixture metadata, not inferred user instructions. Older ledgers can
+read matching seed annotations and reserve defaults without any financial-state migration;
+runtime metadata takes precedence. No existing balances, keys or execution records change.
+V5 obtains optional financial context alongside its existing account/quote reads, and binds
+bill commitments to draft actions by biller identity to avoid counting payments twice.
+Context failure leaves optional analysis unavailable; it never blocks an otherwise valid
+handoff or bypasses payment authorization. No extra JEV request is introduced.
+
+Remaining limits: statement history is still a partial sample, recurrence labels do not
+expand into future occurrences, and investment cost basis/card statement detail are absent.
+
+
+### 2026-10-16: Direct OpenAI validator connection
+
+The local validator is configured with VALIDATOR_PROVIDER=openai,
+LLM_BASE_URL=https://api.openai.com/v1, VALIDATOR_MODEL=gpt-4.1-mini and
+LLM_API_KEY supplied privately in .env. Codex and compatible-api remain selectable.
+The OpenAI adapter reuses a lifespan-managed HTTP connection, makes one request with
+strict JSON schema, temperature zero, store=false and a 4096-token output ceiling.
+The existing 12-second API deadline remains. Refusals, truncated output, HTTP failures,
+missing keys and malformed/incomplete audits cannot authorize payment. There are no
+hidden retries or CLI fallbacks. Concise per-field results reduce generation time;
+semantic rules, field coverage, deterministic checks, receipts and bank enforcement remain.
+Model latency and semantic accuracy require a live evaluation after credentials are added;
+transport regression tests use synthetic responses and cannot establish either.
+
+
+### 2026-10-16: Live validator smoke test selects GPT-4.1
+
+The OpenAI key authenticated successfully. GPT-4.1-mini twice reported match on a
+synthetic SGD 500 draft whose instruction explicitly requested SGD 50; one reply even
+contained expected=50.00 while marking the amount match. It is not the selected default.
+GPT-4.1 detected that mismatch, then passed three isolated full-validator cases: correct
+transfer (match, 2.791s), wrong amount (mismatch, 2.477s), and wrong recipient (mismatch,
+2.807s). Local .env and .env.example now select gpt-4.1. These are a small smoke cohort,
+not an accuracy or latency guarantee. Tests disabled execution, isolated approval/audit
+state, used synthetic identities and left the runtime ledger unchanged.
+## D-053 · MERaLiON as a second speech engine, for comparison only
+2026-10-16 · Winston · Status: decided
+**Decision:** `ASR_PROVIDER` in `.env` selects `tencent` (default; the deployed server), `meralion` (MERaLiON-2 through the `mlx-meralion` package, Apple Silicon only, model `config.MERALION_MODEL`) or `compare` (both at once; Tencent's transcript is returned and MERaLiON's transcript, time, word-sequence similarity and an `agree` flag go to the evidence record; a Tencent failure is still a 502 even when MERaLiON succeeded). `/api/transcribe`'s response shape is unchanged. The model loads once at startup and runs one inference at a time, under a 12 s timeout; the WAV is written to a temp file for the library and deleted before the call returns. `mlx-meralion` is declared in `requirements.txt` with an environment marker so pip installs it only on Apple Silicon macOS; it is imported lazily and the server answers 503 "MERaLiON isn't installed on this machine." if it is missing. `scripts/compare_asr.py` prints word error rate and timing for both engines over a folder of recordings kept outside the repo.
+**Why:** MERaLiON-2 (A*STAR) is trained on Singapore English, and the compare mode measures the gap against Tencent on real recordings instead of guessing.
+**Limits:** MERaLiON is an audio language model and follows spoken instructions, so someone saying "ignore that and write …" could get that text back as the transcript. Mitigations: only the library's built-in ASR task with no custom prompt and no hotwords, output over `MAX_TEXT_CHARS` (500) is rejected, and `evidence.scrub()` runs on the result as for Tencent. The 10B weights need a 16 GB Mac with little else open; `MERALION_MODEL=MERaLiON/MERaLiON-2-3B-MLX` fits 8 GB. Live on 16 Oct with the 3B weights on Winston's recordings: "Send fifty to John.", "Seven fifty to John." and "Send fifteen to John." all exact (Tencent `16k_zh_large` had heard "Seven fifty" for the first before the verb hotwords); 4–5 s per clip once warm, 9–12 s for the first inference, so `preload()` runs one inference on silence at startup. Mandarin comes back as garbage ("全无水快基准" for 转五十块给John), where Tencent `16k_zh_large` was exact: MERaLiON is for Singapore English only.
+
+## D-054 · Speaker verification on every voice command (local speaker embeddings)
+2026-10-16 · Winston · Status: decided and live (16 Oct; three-band run at 14:55: owner verified 0.73 / unsure 0.65–0.66 with the code demanded, a second speaker rejected at 0.23–0.35). Through the running server with the real model and real ASR: Winston's first clip `enrolled`; his next two `verified` at 0.74 and 0.76 (the mean improving); the macOS Daniel voice `rejected` at 0.55 with an empty transcript and no ASR call; audit chain `speaker_checked` enrolled / match / mismatch / match as designed. **Revised the same day after a real test failed:** Winston's friend was verified at 0.70–0.80 by the WeSpeaker ResNet34 model and his clip was folded into the mean. Benchmarking six sherpa-onnx models on Winston's four clips against three synthetic voices (single-clip gap between lowest self score and highest impostor score): WeSpeaker ResNet34 +0.01, CAM++ en +0.15, WeSpeaker ResNet293 +0.08, NeMo TitaNet-large +0.42, CAM++ zh-en +0.38, **3D-Speaker ERes2NetV2 (CN-Celeb) +0.49**, so the model is now `3dspeaker_speech_eres2netv2_sv_zh-cn_16k-common.onnx` (71 MB, 63 ms a clip) with `VOICE_THRESHOLD = 0.50`; enrolled from his four clips it scores him 0.87–0.94 and the impostors 0.15–0.26. Two more guards: a clip joins the mean only when it scores `VOICE_UPDATE_MARGIN` (0.10) above the threshold, and `python -m app.intent.voiceprint enrol u_demo <wav>...` enrols from recordings already in hand so the voiceprint starts from several clips. **Second revision, same day, with the friend's two recordings as impostors** (mean enrolment from Winston's four clips, leave one out; lowest self score / highest friend score): ERes2NetV2 0.83 / 0.67, **CAM++ zh-en 0.74 / 0.47**, WeSpeaker ResNet34 0.76 / 0.66, ResNet293 0.87 / 0.85, TitaNet-large 0.67 / 0.55; averaging two or three models' scores was worse than CAM++ alone. So the model is `3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx`. With ten enrolment clips of six different phrases, Winston's held-out clips score 0.68–0.81 and the friend at most 0.43, and a live browser clip of Winston was once refused at 0.60, so `VOICE_THRESHOLD = 0.55` sits between the two with about 0.12 of room each way. **Third revision:** live browser clips of Winston against that Voice-Memos enrolment scored 0.70, 0.55, 0.52, 0.45 and 0.41 while his friend scored 0.47, so the microphone path (browser echo cancellation and noise suppression versus Voice Memos) moves the owner into the impostor range and no threshold separates them. Enrolment therefore happens through the browser: `POST /api/voiceprint/enrol` folds a clip recorded by the same `lib/recorder.ts` path into the mean whatever it scores, and V5 offers "Enrol my voice" beside the demo requests. Open on the demo like device registration (`VOICEPRINT_ENROLMENT_OPEN`); a real bank authenticates first. After a seven-sample browser enrolment, Winston's live turns scored 0.76, 0.85 and 0.79 and the friend 0.60 (he had passed at 0.55), so `VOICE_THRESHOLD = 0.68`, midway between them; the margin is about 0.08 each way, which is what 3–4 s clips give this model. **Fourth revision, three bands:** Winston's short questions ("what's my balance") scored 0.46–0.66 live while his full sentences scored 0.70–0.85 and the friend 0.60–0.63, so one line locks the owner out on short clips (fewer frames to average, a questioning intonation the enrolment never heard, and proportionally more silence). Now: at or above `VOICE_THRESHOLD` (0.68) `verified`; between `VOICE_UNSURE_THRESHOLD` (0.50) and it `unsure`, where the command proceeds, V5 shows "Voice not confirmed" under the request, and execution must go through the bank's one-time code (the UI sets `require_otp` on `/api/challenge`, and the gateway answers `needs_extra_check` until the demo code arrives; approved by Winston on 16 Oct and flagged to Jayanth in D-007); below 0.50 `rejected` as before. Leading and trailing silence is trimmed before embedding (`_trim`, 20 ms frames under RMS 0.01, 100 ms padding kept). From a single enrolment clip CAM++ gives 0.64 / 0.45, so a thin margin until the mean has a few clips: before the demo run `enrol` with several recordings of the owner. Verification on 2–4 s of the same short phrase into the same microphone is inherently noisy; a longer enrolment sentence would widen the gap further and is the next step if a real impostor still passes.
+**Decision:** Every clip sent to `POST /api/transcribe` is checked against the user's enrolled voiceprint before it is transcribed. `app/intent/voiceprint.py` computes a speaker embedding with `sherpa-onnx` (new dependency, recorded here) and the 3D-Speaker CAM++ model trained on Chinese and English speakers (`3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx`, 28 MB, Apache-2.0, from the sherpa-onnx GitHub release; SHA-256 in `config.VOICE_MODEL_SHA256`). The server downloads it once into `var/models/` at startup, checks the hash, and runs it on the CPU (about 15 ms per clip). See the revision note below for why this model.
+- **Why not Tencent Voiceprint:** the API answers on the international endpoint but the product cannot be activated from an international account (console search shows nothing; the API returns `FailedOperation.UserNotRegistered`), so it is not an option for us.
+- **Enrolment:** the first voice command after a reset enrols that clip's embedding under the user in `var/voiceprints.json` (git-ignored, atomic write like `devices.json`): `{"embedding": [256 floats], "clips": 1, "enrolled_at": "..."}`. The first speaker owns `u_demo`, mirroring device keys. Each later clip that verifies is folded into a running mean (capped at 10 clips), which widened the gap on Winston's recordings from 0.65–0.75 self versus up to 0.64 impostor (single clip) to 0.76–0.80 self versus at most 0.63 impostor (mean of three). `python -m app.intent.voiceprint reset u_demo` removes the entry.
+- **Verification:** cosine similarity between the stored mean and the clip's embedding; `VOICE_THRESHOLD = 0.65` in `config.py`, a starting value to recheck with a second real speaker (the impostors so far are macOS synthetic voices). `score` is the similarity rounded to 2 decimals.
+- **Order in `/api/transcribe`:** WAV check → voiceprint → ASR. A rejection returns before any ASR call, so a stranger's words are never transcribed.
+- **Response (CONTRACTS §3.1, `transcribeSchema` is strict):** `{"transcript": str, "confidence": null, "speaker": {"status": "enrolled" | "verified" | "rejected" | "unavailable", "score": number | null}}`. On `rejected` the transcript is `""`.
+- **Fail open on `unavailable`:** model missing or hash mismatch, `sherpa_onnx` import failure, or an embedding error → `status: "unavailable"`, the reason goes to evidence, and transcription proceeds. The only hard stop is `rejected`. An unreadable store counts as "no voiceprint" and re-enrols. `VOICEPRINT_ENABLED = True` switches the check off for a typed-only demo. The embedding runs in a worker thread under one lock (the extractor is not thread-safe).
+- **UI (V5 `listen()`):** `verified`/`enrolled` proceed as today, with the line "Voice enrolled for this demo" under "Your request" on `enrolled`; `rejected` → `stop("Nothing was sent.", "That doesn't sound like you. Type your request or start over.")`, the same stopped card the shield uses; `unavailable` → proceed with the notice "Voice check unavailable, continuing without it." No new phase or component.
+- **Audit chain (§8):** new event `speaker_checked`, `reason` ∈ `enrolled`, `match`, `mismatch`, `unavailable`, written before `transcribed`; on `mismatch` it is the only event. **Evidence:** `transcribed` gains `speaker_status` and `speaker_score`, plus the failure reason when unavailable; never the embedding.
+- **Tests:** a fake extractor returns scripted embeddings. Cases: first command enrols and stores; a close embedding → verified with score and the mean updated; a far embedding → rejected, empty transcript, no ASR call, `speaker_checked` mismatch and no `transcribed`; model missing and extractor error → unavailable and still transcribed; `VOICEPRINT_ENABLED = False` → unavailable, score null, no call; atomic store, cap at 10 clips and `reset`; hash check refuses a tampered model; web `transcribeSchema` accepts the new shape and rejects an unknown status; browser test covers the rejected card and that `/api/understand` is never called; a live run with Winston and a second real speaker to confirm the threshold.
+- **Docs to update with the code:** CONTRACTS §3.1 and §8, STRUCTURE (`voiceprint.py`, `var/models/`, `var/voiceprints.json`), `requirements.txt` (`sherpa-onnx`), BRIEF demo row 7 (a second speaker is refused), CHECKLIST W-11.
+**Why:** Voice is the whole product, so binding each spoken command to the enrolled speaker is the biometric judges expect. A local embedding model needs no account, runs on the Linux server and the Mac alike, and costs nothing per call. Fail-open on `unavailable` because a dead model file must not take the demo down; the device signature still gates execution.
+**Limits:** Typed input bypasses the voice check by design (the device key is the gate for everyone). The threshold is calibrated on one speaker and synthetic impostors; a real second speaker may move it. A replay of a recording would pass; liveness is out of scope. The first-speaker rule means whoever speaks first after a reset owns the demo account, as with device keys. The 26 MB model is downloaded at first start, so the first boot on a new server needs network access to GitHub.
+
+
+### 2026-10-16: Merge stricter validation and voice into Darren
+
+Darren authorized Jayanth's stricter evidence policy to take precedence over existing
+conditional execution and unsupported corrections. Merge Jayanth 4fe118b and Winston
+b00be35, retaining the pooled direct OpenAI client, strict JSON output, refusal/truncation
+checks, existing financial views, device signing and fingerprint flow. The OpenAI adapter
+now accepts the server-owned evidence response schema and uses the hardened JSON decoder.
+Conditional drafts remain visible but cannot receive a validation receipt under this policy.
+Unknown wording and unsupported corrections can also remain uncertain; do not loosen the
+validator to make an intent-engine draft executable.
+
+Isolated live gpt-4.1 validator measurements (synthetic instructions, no execution, temporary
+audit/approval stores): correct SGD 50 transfer approved in 4.038, 2.925 and 2.439 seconds;
+incorrect SGD 500 draft rejected in 2.059 seconds; incorrect recipient rejected in 2.591
+seconds. Conditional draft returned uncertain without a model call in 0.009 seconds.
+The five model-backed checks averaged 2.810 seconds (correct transfers averaged 3.134).
+These measure validator calls including local evidence work, not speech, intent or UI latency;
+this small cohort is not an accuracy or latency guarantee.
+
+Winston's speaker feature retains its documented demo boundaries: open enrollment, local
+unencrypted embeddings, unavailable checks fail open, no liveness protection, and a
+client-requested OTP step enforced by the bank once requested. This merge does not claim
+server-bound biometric authentication. Tencent remains the default cross-platform ASR;
+MERaLiON's installation is restricted to Apple Silicon. No local secrets or existing bank
+balances, device registrations or ledger entries are changed by the integration tests.
+
+
+### 2026-10-16: Simulated fingerprint fallback for unverified voice
+
+Darren authorized the demo fingerprint click as fallback for voice verification failures
+and elevated transaction velocity. Existing velocity step-up remains bank-controlled;
+hard rate, amount, validation, nonce and signature checks remain enforced. Voice clips
+with rejected status may now be transcribed, but V5 requires fingerprint confirmation
+for every non-verified status (including unavailable/enrolled) and retains that requirement
+across clarification turns. Normal typed/verified flows do not acquire this requirement.
+Explicit OTP challenges still require their code. Clicking the fingerprint submits the
+existing exact signed challenge once; uncertain outcomes reuse it for status recovery.
+The click is simulated authorization, not hardware biometric signing. The client-requested
+voice step-up retains D-054's trust limitation and is not a production security claim.
+
+Verification: 1,211 backend tests passed (6 skipped), 39 frontend unit tests and
+19 V5 browser tests passed. Production build, TypeScript, ESLint and Ruff passed.
+Browser tests used scripted voice/bank responses and real WebCrypto signatures;
+no live bank transactions or hardware biometric verification were performed.

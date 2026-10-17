@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { post } from "./api";
-import { draftSchema, validationSchema, type Draft } from "./contracts";
+import { draftSchema, validationSchema, type Draft, type Validation } from "./contracts";
 
 const challengeSchema = z.strictObject({
   nonce: z.string().min(1),
@@ -14,7 +14,11 @@ export const executionSchema = z.discriminatedUnion("status", [
       .array(z.strictObject({ action_index: z.number().int().nonnegative(), reference: z.string().min(1) }))
       .min(1),
   }),
-  z.strictObject({ status: z.literal("needs_extra_check"), method: z.literal("otp"), message: z.string() }),
+  z.strictObject({
+    status: z.literal("needs_extra_check"),
+    method: z.union([z.literal("otp"), z.literal("fingerprint")]),
+    message: z.string(),
+  }),
   z.strictObject({ status: z.literal("rejected"), reason: z.string(), message: z.string() }),
 ]);
 export type Execution = z.infer<typeof executionSchema>;
@@ -76,14 +80,18 @@ async function deviceKey(user: string): Promise<CryptoKeyPair> {
     db.close();
   }
 }
-export async function preparePayment(value: Draft, signal: AbortSignal): Promise<Payment> {
+export async function preparePayment(
+  value: Draft,
+  signal: AbortSignal,
+  approved?: Extract<Validation, { status: "match" }>,
+  requireFingerprint = false, // Unverified voice adds the simulated fingerprint step.
+): Promise<Payment> {
   const draft = draftSchema.parse(value);
-  const validation = await post("/validate", validationSchema, { draft }, signal);
+  const validation = approved ?? (await post("/validate", validationSchema, { draft }, signal));
   if (validation.status !== "match") {
-    const fields = validation.fields
-      .map((f) => f.field.replace(/^actions\[\d+\]\./, "").replaceAll("_", " "))
-      .join(", ");
-    throw Error(`These details don’t match your request${fields ? `: ${fields}` : ""}. Please start again.`);
+    throw Error(
+      "message" in validation ? validation.message : "These details need correction before confirming.",
+    );
   }
   // Serialize key creation/registration across tabs sharing the demo user.
   return navigator.locks.request(`dcta-device-${draft.user_id}`, { signal }, async () => {
@@ -96,7 +104,12 @@ export async function preparePayment(value: Draft, signal: AbortSignal): Promise
       { user_id: draft.user_id, public_key_jwk },
       signal,
     );
-    const reply = await post("/challenge", challengeSchema, { draft, receipt: validation.receipt }, signal);
+    const reply = await post(
+      "/challenge",
+      challengeSchema,
+      { draft, receipt: validation.receipt, ...(requireFingerprint ? { require_fingerprint: true } : {}) },
+      signal,
+    );
     const challenge = checkChallenge(reply, draft);
     signal.throwIfAborted();
     // Sign the exact server string, never a client-serialized draft.
@@ -117,12 +130,18 @@ export async function preparePayment(value: Draft, signal: AbortSignal): Promise
     };
   });
 }
-export async function submitPayment(payment: Payment, otp: string | null, signal: AbortSignal) {
-  if (Date.now() >= payment.expiresAt) throw Error("Your confirmation expired. Start a new request.");
+export async function submitPayment(
+  payment: Payment,
+  otp: string | null,
+  signal: AbortSignal,
+  fingerprint?: boolean | null,
+) {
+  // The gateway may recover an already committed payment after nonce expiry.
+  // An uncommitted expired approval is rejected server-side.
   const result = await post(
     "/execute",
     executionSchema,
-    { nonce: payment.nonce, signature: payment.signature, otp },
+    { nonce: payment.nonce, signature: payment.signature, otp, fingerprint: fingerprint ?? null },
     signal,
   );
   if (

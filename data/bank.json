@@ -4,7 +4,7 @@
   "description": "Fully fictional DBS-inspired demo seed. Company names and tickers identify instruments; all customer records, balances, activity and prices are synthetic.",
   "balance_semantics": "Balances and holdings are authoritative opening snapshots. Historical transactions are descriptive only and must not be replayed.",
   "pending_decisions": [
-    "Only AAPL is explicitly required by existing references. The other four USD tickers are synthetic demo selections pending Winston confirmation.",
+    "All eight USD quotes are synthetic demo values. Stock execution remains blocked until a trading policy is separately approved.",
     "Adding a DBS stock quote requires agreement on its ticker identifier and SGD investment funding. SGD/USD conversion uses the mock rates in fx_rates (CONTRACTS §3.3).",
     "The SGD 50,000 demo versus the D-007 placeholder SGD 20,000 daily limit requires a separate team decision. This seed defines no risk thresholds."
   ],
@@ -26,7 +26,8 @@
           "aliases": [
             "savings",
             "savings account"
-          ]
+          ],
+          "reserve": "500.00"
         },
         {
           "account_id": "acc_5678",
@@ -106,6 +107,80 @@
           ],
           "currency": "SGD",
           "status": "active"
+        },
+        {
+          "payee_id": "pay_3101",
+          "name": "Aisha Rahman",
+          "label": "Aisha Rahman …3101",
+          "nickname": "Aisha",
+          "aliases": [
+            "Aisha",
+            "Aisha Rahman"
+          ],
+          "currency": "SGD",
+          "status": "active"
+        },
+        {
+          "payee_id": "pay_3102",
+          "name": "Ben Lim",
+          "label": "Ben Lim …3102",
+          "nickname": "Ben",
+          "aliases": [
+            "Ben",
+            "Ben Lim"
+          ],
+          "currency": "SGD",
+          "status": "active"
+        },
+        {
+          "payee_id": "pay_3103",
+          "name": "Chloe Tan",
+          "label": "Chloe Tan …3103",
+          "nickname": "Chloe",
+          "aliases": [
+            "Chloe",
+            "Chloe Tan"
+          ],
+          "currency": "SGD",
+          "status": "active"
+        },
+        {
+          "payee_id": "pay_3104",
+          "name": "Ravi Kumar",
+          "label": "Ravi Kumar …3104",
+          "nickname": "Ravi",
+          "aliases": [
+            "Ravi",
+            "Ravi Kumar"
+          ],
+          "currency": "SGD",
+          "status": "active"
+        },
+        {
+          "payee_id": "pay_3105",
+          "name": "Example Demo Landlord",
+          "label": "Example Demo Landlord …3105",
+          "nickname": "Landlord",
+          "aliases": [
+            "Landlord",
+            "Demo Landlord",
+            "Example Demo Landlord"
+          ],
+          "currency": "SGD",
+          "status": "active"
+        },
+        {
+          "payee_id": "pay_3106",
+          "name": "Example Demo Utilities",
+          "label": "Example Demo Utilities …3106",
+          "nickname": "Utilities",
+          "aliases": [
+            "Utilities",
+            "Demo Utilities",
+            "Example Demo Utilities"
+          ],
+          "currency": "SGD",
+          "status": "active"
         }
       ],
       "billers": [
@@ -138,6 +213,26 @@
           "ticker": "MSFT",
           "quantity": 5,
           "account_id": "acc_7788"
+        },
+        {
+          "ticker": "NVDA",
+          "quantity": 12,
+          "account_id": "acc_7788"
+        },
+        {
+          "ticker": "AMZN",
+          "quantity": 8,
+          "account_id": "acc_7788"
+        },
+        {
+          "ticker": "GOOGL",
+          "quantity": 6,
+          "account_id": "acc_7788"
+        },
+        {
+          "ticker": "AMD",
+          "quantity": 15,
+          "account_id": "acc_7788"
         }
       ],
       "transaction_history": [
@@ -150,7 +245,9 @@
           "currency": "SGD",
           "time": "2026-09-01T12:00:00+08:00",
           "status": "completed",
-          "description": "Salary from Example Demo Employer"
+          "description": "Salary from Example Demo Employer",
+          "category": "Income",
+          "is_spending": false
         },
         {
           "transaction_id": "tx_seed_0002",
@@ -162,7 +259,9 @@
           "time": "2026-09-02T12:00:00+08:00",
           "status": "completed",
           "description": "Dinner reimbursement",
-          "payee_id": "pay_4521"
+          "payee_id": "pay_4521",
+          "category": "Transfers",
+          "is_spending": false
         },
         {
           "transaction_id": "tx_seed_0003",
@@ -173,7 +272,9 @@
           "currency": "SGD",
           "time": "2026-09-03T12:00:00+08:00",
           "status": "completed",
-          "description": "Rent to Example Demo Landlord"
+          "description": "Rent to Example Demo Landlord",
+          "category": "Housing",
+          "is_spending": true
         },
         {
           "transaction_id": "tx_seed_0004",
@@ -185,7 +286,9 @@
           "time": "2026-09-04T12:00:00+08:00",
           "status": "completed",
           "description": "Shared groceries",
-          "payee_id": "pay_8892"
+          "payee_id": "pay_8892",
+          "category": "Transfers",
+          "is_spending": false
         },
         {
           "transaction_id": "tx_seed_0005",
@@ -197,7 +300,9 @@
           "time": "2026-09-05T12:00:00+08:00",
           "status": "completed",
           "description": "Family allowance",
-          "payee_id": "pay_2208"
+          "payee_id": "pay_2208",
+          "category": "Transfers",
+          "is_spending": false
         },
         {
           "transaction_id": "tx_seed_0006",
@@ -209,7 +314,9 @@
           "time": "2026-09-06T12:00:00+08:00",
           "status": "completed",
           "description": "Previous credit card statement",
-          "biller_id": "bil_0001"
+          "biller_id": "bil_0001",
+          "category": "Bills",
+          "is_spending": true
         },
         {
           "transaction_id": "tx_seed_0007",
@@ -221,7 +328,9 @@
           "time": "2026-09-07T12:00:00+08:00",
           "status": "completed",
           "description": "Shared travel booking",
-          "payee_id": "pay_6630"
+          "payee_id": "pay_6630",
+          "category": "Transfers",
+          "is_spending": false
         },
         {
           "transaction_id": "tx_seed_0008",
@@ -232,7 +341,9 @@
           "currency": "USD",
           "time": "2026-09-08T12:00:00+08:00",
           "status": "completed",
-          "description": "Synthetic USD funding deposit"
+          "description": "Synthetic USD funding deposit",
+          "category": "Transfers",
+          "is_spending": false
         },
         {
           "transaction_id": "tx_seed_0009",
@@ -245,7 +356,9 @@
           "status": "completed",
           "description": "Purchase of 10 AAPL shares",
           "ticker": "AAPL",
-          "quantity": 10
+          "quantity": 10,
+          "category": "Investments",
+          "is_spending": false
         },
         {
           "transaction_id": "tx_seed_0010",
@@ -258,7 +371,9 @@
           "status": "completed",
           "description": "Purchase of 5 MSFT shares",
           "ticker": "MSFT",
-          "quantity": 5
+          "quantity": 5,
+          "category": "Investments",
+          "is_spending": false
         },
         {
           "transaction_id": "tx_seed_0011",
@@ -269,7 +384,9 @@
           "currency": "SGD",
           "time": "2026-09-11T12:00:00+08:00",
           "status": "completed",
-          "description": "Example Demo Utilities"
+          "description": "Example Demo Utilities",
+          "category": "Utilities",
+          "is_spending": true
         },
         {
           "transaction_id": "tx_seed_0012",
@@ -280,7 +397,110 @@
           "currency": "SGD",
           "time": "2026-09-12T12:00:00+08:00",
           "status": "completed",
-          "description": "Synthetic savings interest"
+          "description": "Synthetic savings interest",
+          "category": "Interest",
+          "is_spending": false
+        },
+        {
+          "transaction_id": "tx_seed_0013",
+          "reference": "SEED-000013",
+          "account_id": "acc_7788",
+          "direction": "debit",
+          "amount": "1507.20",
+          "currency": "USD",
+          "time": "2026-09-18T22:30:00+08:00",
+          "status": "completed",
+          "description": "Fictional purchase of 12 NVDA shares",
+          "ticker": "NVDA",
+          "quantity": 12,
+          "category": "Investments",
+          "is_spending": false
+        },
+        {
+          "transaction_id": "tx_seed_0014",
+          "reference": "SEED-000014",
+          "account_id": "acc_7788",
+          "direction": "debit",
+          "amount": "1490.40",
+          "currency": "USD",
+          "time": "2026-09-21T22:30:00+08:00",
+          "status": "completed",
+          "description": "Fictional purchase of 8 AMZN shares",
+          "ticker": "AMZN",
+          "quantity": 8,
+          "category": "Investments",
+          "is_spending": false
+        },
+        {
+          "transaction_id": "tx_seed_0015",
+          "reference": "SEED-000015",
+          "account_id": "acc_7788",
+          "direction": "debit",
+          "amount": "1010.40",
+          "currency": "USD",
+          "time": "2026-09-22T22:30:00+08:00",
+          "status": "completed",
+          "description": "Fictional purchase of 6 GOOGL shares",
+          "ticker": "GOOGL",
+          "quantity": 6,
+          "category": "Investments",
+          "is_spending": false
+        },
+        {
+          "transaction_id": "tx_seed_0016",
+          "reference": "SEED-000016",
+          "account_id": "acc_7788",
+          "direction": "debit",
+          "amount": "2613.00",
+          "currency": "USD",
+          "time": "2026-09-23T22:30:00+08:00",
+          "status": "completed",
+          "description": "Fictional purchase of 15 AMD shares",
+          "ticker": "AMD",
+          "quantity": 15,
+          "category": "Investments",
+          "is_spending": false
+        },
+        {
+          "transaction_id": "tx_seed_0017",
+          "reference": "SEED-000017",
+          "account_id": "acc_5678",
+          "direction": "credit",
+          "amount": "6200.00",
+          "currency": "SGD",
+          "time": "2026-09-30T09:00:00+08:00",
+          "status": "completed",
+          "description": "Fictional September salary from Example Demo Employer",
+          "category": "Income",
+          "is_spending": false
+        },
+        {
+          "transaction_id": "tx_seed_0018",
+          "reference": "SEED-000018",
+          "account_id": "acc_1234",
+          "direction": "debit",
+          "amount": "1450.00",
+          "currency": "SGD",
+          "time": "2026-10-01T09:00:00+08:00",
+          "status": "completed",
+          "description": "Fictional October rent; November obligation remains unpaid",
+          "payee_id": "pay_3105",
+          "category": "Housing",
+          "is_spending": true
+        },
+        {
+          "transaction_id": "tx_seed_0019",
+          "reference": "SEED-000019",
+          "account_id": "acc_1234",
+          "direction": "debit",
+          "amount": "92.40",
+          "currency": "SGD",
+          "time": "2026-10-05T09:00:00+08:00",
+          "status": "completed",
+          "description": "Fictional October utilities; November obligation remains unpaid",
+          "payee_id": "pay_3106",
+          "category": "Utilities",
+          "is_spending": true
         }
       ],
       "cashflow_schedule": [
@@ -332,7 +552,17 @@
           "recurrence": "monthly",
           "synthetic": true
         }
-      ]
+      ],
+      "transfer_policy": {
+        "currency": "SGD",
+        "per_transfer_max": "25000.00",
+        "daily_transfer_max": "100000.00",
+        "step_up_above": "20000.00",
+        "velocity_max_transfers": 10,
+        "velocity_window_minutes": 1,
+        "daily_timezone": "Asia/Singapore",
+        "velocity_step_up_at": 3
+      }
     }
   },
   "quotes": {
@@ -390,6 +620,41 @@
       "aliases": [
         "Nvidia",
         "NVDA"
+      ]
+    },
+    "TSLA": {
+      "ticker": "TSLA",
+      "company_name": "Tesla, Inc.",
+      "price": "251.00",
+      "currency": "USD",
+      "as_of": "2026-10-09T16:00:00-04:00",
+      "aliases": [
+        "Tesla",
+        "TSLA"
+      ]
+    },
+    "META": {
+      "ticker": "META",
+      "company_name": "Meta Platforms, Inc.",
+      "price": "575.00",
+      "currency": "USD",
+      "as_of": "2026-10-09T16:00:00-04:00",
+      "aliases": [
+        "Meta",
+        "Meta Platforms",
+        "Facebook",
+        "META"
+      ]
+    },
+    "AMD": {
+      "ticker": "AMD",
+      "company_name": "Advanced Micro Devices, Inc.",
+      "price": "174.20",
+      "currency": "USD",
+      "as_of": "2026-10-09T16:00:00-04:00",
+      "aliases": [
+        "AMD",
+        "Advanced Micro Devices"
       ]
     }
   },

@@ -5,22 +5,24 @@ Diagram box: Confidence gate (Intent detection column)
 Contract: none; called by app/intent/router.py
 """
 
+import re
 from dataclasses import dataclass, field
 from decimal import Decimal
 
 from app import config
 from app.intent.jev import Reply
-from app.intent.options import ACTION_TYPES, Options
+from app.intent.options import ACTION_TYPES, Options, UserData
 
 SLOTS = {
     "transfer": ("recipient", "transfer_amount", "transfer_from"),
     "bill_payment": ("biller", "bill_amount", "bill_from"),
     "stock_order": ("ticker", "side", "quantity", "order_type"),
+    "account_transfer": ("move_from", "move_to", "move_amount"),
 }
 # "none" on these means the user named something we can offer as chips.
-_PICK_FROM_LIST = {"recipient", "biller", "ticker"}
+_PICK_FROM_LIST = {"recipient", "biller", "ticker", "move_from", "move_to"}
 # "none" on these means a number was never said; chips can't offer a value nobody said.
-_NEED_NUMBER = {"transfer_amount", "quantity", "limit_price"}
+_NEED_NUMBER = {"transfer_amount", "quantity", "limit_price", "move_amount"}
 # Each account question and the amount it pays. "default" resolves to one account, so
 # picking that account builds the same draft and their probabilities count together.
 _FROM_AMOUNT = {"transfer_from": "transfer_amount", "bill_from": "bill_amount"}
@@ -87,7 +89,11 @@ def _same(name: str, picks: dict[str, Pick], options: Options | None) -> dict[st
 
 
 def decide(
-    replies: list[Reply], answers: dict[str, str], amount: Decimal, options: Options | None = None
+    replies: list[Reply],
+    answers: dict[str, str],
+    amount: Decimal,
+    options: Options | None = None,
+    data: UserData | None = None,
 ) -> Decision:
     """Decide whether Jev's answers are trustworthy enough to build a draft.
 
@@ -97,13 +103,38 @@ def decide(
     """
     picks: dict[str, Pick] = {}
 
-    def settle(name: str) -> bool:
+    def settle(name: str, exposure: Decimal = Decimal(0)) -> bool:
         picks[name] = pick(replies, name, answers.get(name), _same(name, picks, options))
-        return name in answers or trusted(picks[name], amount)
+        return name in answers or trusted(picks[name], exposure)
 
+    # Uncertain *negative* categories are not missing transaction fields. Only skip
+    # them when another task is clear and the text supplies no cue for that category.
+    cues = {
+        "transfer": r"\b(send|transfer|remit|give|pay)\b",
+        "bill_payment": r"\b(bill|card|rent|utilities|invoice)\b",
+        "stock_order": r"\b(buy|sell|invest|shares?|stocks?|trade)\b",
+        "account_transfer": r"\b(move|between|own|convert|exchange)\b|\bfrom\b.*\bto\b",
+    }
     for kind in ACTION_TYPES:
-        if not settle(f"has_{kind}"):
-            return Decision(picks, ask=f"has_{kind}")
+        settle(f"has_{kind}")
+    confirmed = any(
+        p.option == "yes" and (p.question in answers or trusted(p, Decimal(0)))
+        for p in picks.values()
+    )
+    for kind in ACTION_TYPES:
+        name = f"has_{kind}"
+        p = picks[name]
+        if name in answers or trusted(p, Decimal(0)):
+            continue
+        unrelated = (
+            options is not None
+            and confirmed
+            and p.option == "no"
+            and p.probabilities.get("no", 0) > p.probabilities.get("yes", 0)
+            and not re.search(cues[kind], options.text, re.I)
+        )
+        if not unrelated:
+            return Decision(picks, ask=name)
     actions = [kind for kind in ACTION_TYPES if picks[f"has_{kind}"].option == "yes"]
     # ponytail: one action per type; a second transfer is refused rather than silently dropped.
     if "transfer" in actions:
@@ -112,9 +143,45 @@ def decide(
         if picks["several_transfers"].option == "yes":
             return Decision(picks, actions, missing="several_transfers")
     for kind in actions:
+        exposure = amount
+        if options is not None:
+            amount_name = {
+                "transfer": "transfer_amount",
+                "bill_payment": "bill_amount",
+                "account_transfer": "move_amount",
+                "stock_order": "quantity",
+            }[kind]
+            selected = pick(replies, amount_name, answers.get(amount_name)).option
+            exposure = options.numbers.get(selected, Decimal(0))
+            if data and kind == "bill_payment" and selected == "due":
+                biller = pick(replies, "biller", answers.get("biller")).option
+                exposure = next(
+                    (b.amount_due for b in data.accounts.billers if b.biller_id == biller),
+                    Decimal(0),
+                )
+            if kind == "stock_order":
+                if selected.startswith("m"):
+                    exposure = options.numbers.get("n" + selected[1:], Decimal(0))
+                elif data:
+                    ticker = pick(replies, "ticker", answers.get("ticker")).option
+                    quote = next((q for q in data.quotes if q.ticker == ticker), None)
+                    if quote:
+                        exposure *= quote.price
         slots = list(SLOTS[kind])
         for name in slots:  # a limit order appends limit_price, which this loop still visits
-            if not settle(name) or (picks[name].option == "none" and name in _PICK_FROM_LIST):
+            # A single literal amount for a single money task needs interpretation
+            # confidence, not the stricter authorization threshold for its magnitude.
+            explicit = (
+                options is not None
+                and len(actions) == 1
+                and name in {"transfer_amount", "move_amount"}
+                and len(options.said) == 1
+                and all(n.span is not None and not n.remaining for n in options.said.values())
+            )
+            threshold_amount = Decimal(0) if explicit else exposure
+            if not settle(name, threshold_amount) or (
+                picks[name].option == "none" and name in _PICK_FROM_LIST
+            ):
                 return Decision(picks, actions, ask=name)
             if picks[name].option == "none" and name in _NEED_NUMBER:
                 return Decision(picks, actions, missing=name)

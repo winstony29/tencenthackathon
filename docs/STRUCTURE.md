@@ -42,6 +42,7 @@ dcta/
 │   │   ├── __init__.py
 │   │   ├── router.py         /api/transcribe, /api/understand
 │   │   ├── asr.py            Tencent ASR client
+│   │   ├── voiceprint.py     speaker verification on every voice clip (D-054)
 │   │   ├── shield.py         injection check (Jev yes/no)
 │   │   ├── rewriter.py       LLM writes K plain rewrites
 │   │   ├── jev.py            the only file that calls TypeSafe's API
@@ -80,6 +81,7 @@ dcta/
 │
 ├── scripts/
 │   ├── chat.py               text conversation with /api/understand (live Jev)  Winston
+│   ├── compare_asr.py        Tencent vs MERaLiON word error rate on a folder    Winston
 │   └── eval_intent.py        single Jev vs Jev × K comparison report           Winston
 │
 └── var/                      runtime state (ledger, audit, nonces); git-ignored
@@ -126,10 +128,12 @@ web/
 │       ├── draft-editor.ts  immutable edits, validation and projections
 │       ├── contracts.ts     runtime schemas matching contracts v0.2
 │       ├── api.ts           cancellable JSON requests
+│       ├── recorder.ts      microphone to 16 kHz mono WAV for /api/transcribe (D-006)
 │       ├── examples.ts      explicitly selected UI demo fixtures
 │       └── money.ts         exact estimated stock totals
 └── tests/
     ├── contracts.test.ts    boundary and exact-money checks
+    ├── recorder.test.ts     WAV header and downsampling checks
     └── browser.test.mjs     browser integration and layout checks
 ```
 
@@ -209,3 +213,31 @@ V4 financial-context additions (Darren):
 - `web/src/components/v5-payment.tsx`: single confirmation action, bank result and conditional OTP entry.
 - `web/src/lib/v5-bank.ts`: runtime-checked validation, persistent non-extractable device key, challenge binding, signing and execution.
 - `web/tests/v5-bank.test.ts`: exact displayed-draft challenge binding and expiry checks.
+
+- `web/src/app/v5/components/page.tsx`: V5 component gallery with mock data and disabled payment execution.
+
+- `web/src/components/v5-enquiry.tsx`: validated read-only composition tree and account, bill, history and spending blocks.
+
+- `app/transaction_state.py`: shared single-process draft provenance, revision, audit state and HMAC receipt checks (no bank/model imports).
+
+- `app/evidence.py`: encrypted persistent request evidence and verified timeline.
+- `app/audit_http.py`: bounded HTTP audit capture and protected evidence routes.
+- `tests/test_evidence.py`: persistence, redaction, retention and request timeline tests.
+- `var/evidence.sqlite3`: ignored encrypted runtime evidence and metadata chain.
+- `var/voiceprints.json`, `var/models/`: ignored enrolled speaker embeddings and the downloaded speaker model (D-054).
+
+
+Bank integration runtime additions (git-ignored, under existing `var/`):
+- `approvals.sqlite3`: encrypted authoritative validation context and revision lease.
+- `backups/`: operator snapshots before explicit bank activation; never committed.
+Operator initialization, pause/resume and audit recovery use `app/bank/gateway.py`.
+
+
+Intent-aware plan additions reuse existing files (D-041):
+- `app/contracts.py`: typed presentation intent, condition and non-executable plan.
+- `app/intent/options.py`, `router.py`, `session.py`: condition preservation, bounded
+  comparison, clarification and sanitized handoff. `app/intent/shield.py` distinguishes
+  user-task conditions from attempts to override system rules.
+- `web/presentation_v4.py`: capability hints and one-call plan composition.
+- `web/src/components/v5-cards.tsx`, `v5-enquiry.tsx`: granular plan renderer and
+  strict manifest coverage checks; V5 component gallery includes the plan preview.

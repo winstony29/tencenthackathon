@@ -6,7 +6,6 @@ Contract: docs/CONTRACTS.md §3.3 (/api/device/register) and §4
 """
 
 import base64
-import fcntl
 import json
 import os
 import re
@@ -16,6 +15,11 @@ from contextlib import contextmanager
 from pathlib import Path
 from threading import RLock
 from typing import Any
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 from fastapi import HTTPException
 
@@ -76,11 +80,19 @@ def _locked_registry(storage_path: Path | None) -> Iterator[Path]:
         with _THREAD_LOCK:
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.with_suffix(".lock").open("a+b") as lock:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+                if os.name == "nt":
+                    lock.seek(0)
+                    msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+                else:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
                 try:
                     yield path
                 finally:
-                    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+                    if os.name == "nt":
+                        lock.seek(0)
+                        msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
     except OSError:
         raise DeviceStorageError("Device registry storage operation failed") from None
 
@@ -132,11 +144,13 @@ def _write_registry(path: Path, registry: dict[str, dict[str, str]]) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
-        descriptor = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        # Directory fsync is POSIX-only; Windows still flushes the file above.
+        if os.name != "nt":
+            descriptor = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)

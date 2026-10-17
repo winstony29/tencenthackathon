@@ -5,24 +5,358 @@ Diagram box: User data
 Contract: docs/CONTRACTS.md §3.3 (GET /api/accounts, GET /api/quote, readonly functions)
 """
 
+import hashlib
 import json
 import re
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, localcontext
 from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
+from pydantic import TypeAdapter
 
+from app import audit
+from app.config import MAX_ACTIONS_PER_DRAFT
 from app.contracts import (
     Account,
     AccountsResponse,
+    Action,
     Biller,
+    ExecutedResponse,
     FxResponse,
     Holding,
     Payee,
+    QuoteCondition,
     QuoteResponse,
+    TransactionEntry,
+    UpcomingBill,
 )
+
+
+class LedgerStorageError(RuntimeError):
+    """Runtime state is unavailable; never replace it with seed balances."""
+
+
+def _ledger_digest(state: dict[str, Any]) -> str:
+    payload = {key: value for key, value in state.items() if key != "checksum"}
+    return hashlib.sha256(
+        json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        ).encode()
+    ).hexdigest()
+
+
+def _ledger_path(storage_path: Path | None) -> Path:
+    return storage_path or Path(__file__).resolve().parents[2] / "var" / "ledger.json"
+
+
+def _validate_ledger_users(users: dict[str, Any]) -> None:
+    all_accounts = set()
+    for user_id, user in users.items():
+        if user.get("user_id") != user_id:
+            raise ValueError("Invalid runtime user")
+        collections = {
+            "accounts": (Account, "account_id"),
+            "billers": (Biller, "biller_id"),
+            "payees": (Payee, "payee_id"),
+        }
+        for group, (model, identifier) in collections.items():
+            records = user[group]
+            if not isinstance(records, list) or len({r[identifier] for r in records}) != len(
+                records
+            ):
+                raise ValueError("Invalid runtime records")
+            for record in records:
+                model.model_validate({field: record[field] for field in model.model_fields})
+                if group in {"accounts", "billers"}:
+                    _forecast_money(record["balance" if group == "accounts" else "amount_due"])
+        accounts = {record["account_id"] for record in user["accounts"]}
+        if accounts & all_accounts:
+            raise ValueError("Duplicate account ownership")
+        all_accounts.update(accounts)
+        for bill in user["billers"]:
+            if bill.get("payment_state") not in {"outstanding", "paid"} or (
+                (bill["payment_state"] == "paid") != (_forecast_money(bill["amount_due"]) == 0)
+            ):
+                raise ValueError("Invalid bill settlement")
+        holdings = set()
+        for holding in user["holdings"]:
+            key = (holding["account_id"], holding["ticker"])
+            if key in holdings or key[0] not in accounts:
+                raise ValueError("Invalid holding reference")
+            holdings.add(key)
+            if type(holding["quantity"]) is not int or holding["quantity"] < 0:
+                raise ValueError("Invalid runtime holding")
+
+
+def _validate_ledger_history(state: dict[str, Any]) -> None:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for index, transaction in enumerate(state["transactions"], start=1):
+        if transaction["reference"] != f"tx_{index:08d}":
+            raise ValueError("Invalid transaction sequence")
+        _forecast_time(transaction["completed_at"])
+        TypeAdapter(Action).validate_python(transaction["action"])
+        grouped.setdefault(transaction["execution_id"], []).append(transaction)
+    if set(grouped) != set(state["executions"]):
+        raise ValueError("Missing execution or transaction")
+    expected_events = []
+    for identifier, execution in state["executions"].items():
+        if not re.fullmatch(r"ex_[A-Za-z0-9_-]{1,80}", identifier) or not re.fullmatch(
+            r"[0-9a-f]{64}", execution["fingerprint"]
+        ):
+            raise ValueError("Invalid execution identity")
+        response = ExecutedResponse.model_validate(execution["response"])
+        records = grouped[identifier]
+        if any(
+            sum(record["action"]["type"] == kind for record in records) > 1
+            for kind in {"transfer", "bill_payment", "stock_order"}
+        ):
+            raise ValueError("Duplicate customer action types")
+        if not 1 <= len(records) <= MAX_ACTIONS_PER_DRAFT or len(response.results) != len(records):
+            raise ValueError("Invalid execution results")
+        for index, (result, record) in enumerate(zip(response.results, records, strict=True)):
+            if (
+                result.action_index != index
+                or record["action_index"] != index
+                or result.reference != record["reference"]
+                or record["user_id"] not in state["users"]
+            ):
+                raise ValueError("Invalid execution reference")
+        events = execution["audit_events"]
+        correlation = "tx_" + hashlib.sha256(identifier.encode()).hexdigest()
+        if events[0] != {
+            "event": "transaction_executed",
+            "data": {"transaction_id": correlation, "count": len(records)},
+        } or len(events) != 1 + sum(r["action"]["type"] == "fx_conversion" for r in records):
+            raise ValueError("Invalid execution audit events")
+        for event in events:
+            audit._safe_data(event["data"])
+            if event["event"] not in {"transaction_executed", "fx_converted"}:
+                raise ValueError("Invalid execution event")
+        expected_events.extend(events)
+    expected_events.extend(_validate_payment_controls(state))
+    if any(event not in expected_events for event in state["outbox"]):
+        raise ValueError("Unrecognised outbox event")
+    if len({json.dumps(event, sort_keys=True) for event in state["outbox"]}) != len(
+        state["outbox"]
+    ):
+        raise ValueError("Duplicate outbox event")
+
+
+def _validate_payment_controls(state: dict[str, Any]) -> list[dict[str, Any]]:
+    # Legacy state can lack controls: the writer treats that as paused. Reads never
+    # migrate storage, repair controls or infer permission from an earlier audit.
+    if "payment_control" in state:
+        control = state["payment_control"]
+        if (
+            not isinstance(control, dict)
+            or set(control) != {"paused"}
+            or type(control["paused"]) is not bool
+        ):
+            raise ValueError("Invalid payment control state")
+    events = state.get("security_events", [])
+    if not isinstance(events, list):
+        raise ValueError("Invalid security events")
+    identities = set()
+    for event in events:
+        if not isinstance(event, dict) or set(event) != {"event", "data"}:
+            raise ValueError("Invalid security event")
+        data = event["data"]
+        audit._safe_data(data)
+        if not re.fullmatch(r"tx_[0-9a-f]{64}", data.get("transaction_id", "")):
+            raise ValueError("Invalid security event identity")
+        if event["event"] in {"kill_switch_activated", "kill_switch_deactivated"}:
+            if set(data) != {"transaction_id", "reason"} or data["reason"] != "operator_control":
+                raise ValueError("Invalid operator event")
+        elif event["event"] == "catalogue_updated":
+            if (
+                set(data) != {"transaction_id", "reason", "count"}
+                or data["reason"] != "seed_catalogue"
+                or type(data["count"]) is not int
+                or data["count"] <= 0
+            ):
+                raise ValueError("Invalid catalogue update")
+        elif event["event"] in {"risk_rejected", "step_up_required"}:
+            if (
+                set(data) != {"transaction_id", "reason", "count"}
+                or data["reason"]
+                not in {
+                    "payments_paused",
+                    "policy_missing",
+                    "policy_invalid",
+                    "policy_unsupported",
+                    "state_invalid",
+                    "clock_invalid",
+                    "draft_invalid",
+                    "execution_conflict",
+                    "unknown_user",
+                    "kyc_incomplete",
+                    "account_not_owned",
+                    "account_inactive",
+                    "account_type_invalid",
+                    "account_label_mismatch",
+                    "currency_mismatch",
+                    "invalid_amount",
+                    "per_transfer_limit_exceeded",
+                    "daily_limit_exceeded",
+                    "velocity_exceeded",
+                    "step_up_required",
+                }
+                or (
+                    (event["event"] == "step_up_required") != (data["reason"] == "step_up_required")
+                )
+                or not 1 <= data["count"] <= MAX_ACTIONS_PER_DRAFT
+            ):
+                raise ValueError("Invalid risk event")
+        else:
+            raise ValueError("Unsupported security event")
+        # Control retries share an identity even when the requested direction changes.
+        identity = data["transaction_id"]
+        if identity in identities:
+            raise ValueError("Duplicate security operation")
+        identities.add(identity)
+    return events
+
+
+def _read_ledger_state(path: Path) -> dict[str, Any]:
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("Duplicate runtime key")
+            result[key] = value
+        return result
+
+    try:
+        payload = path.read_text(encoding="utf-8")
+        if not payload.endswith("\n"):
+            raise ValueError("Incomplete runtime file")
+        state = json.loads(payload, object_pairs_hook=unique_object)
+        if (
+            not isinstance(state, dict)
+            or state.get("schema_version") != "1.0"
+            or state.get("checksum") != _ledger_digest(state)
+            or not isinstance(state.get("users"), dict)
+            or not isinstance(state.get("executions"), dict)
+            or not isinstance(state.get("transactions"), list)
+            or not isinstance(state.get("outbox"), list)
+            or type(state.get("next_reference")) is not int
+            or state["next_reference"] != len(state["transactions"]) + 1
+        ):
+            raise ValueError("Invalid runtime state")
+        _validate_ledger_users(state["users"])
+        _validate_ledger_history(state)
+        return state
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, IndexError, audit.AuditError):
+        raise LedgerStorageError("Banking runtime storage is missing or invalid") from None
+
+
+def get_ledger_snapshot(
+    user_id: str, *, storage_path: Path | None = None, include_history: bool = False
+) -> dict[str, Any] | None:
+    """Return a detached internal user snapshot, including current bills and balances.
+
+    None means neither state nor marker exists; this cannot prove a first installation
+    rather than deletion of all evidence. Public reads fail closed in that case.
+    Atomic replacement lets readers see a complete old or new state.
+    This reader does not import the ledger or return its execution/outbox metadata.
+    """
+    path = _ledger_path(storage_path)
+    try:
+        if not path.exists() and not path.with_suffix(".lock").exists():
+            return None
+    except OSError:
+        raise LedgerStorageError("Cannot inspect banking runtime storage") from None
+    state = _read_ledger_state(path)
+    users = state["users"]
+    if user_id not in users:
+        raise HTTPException(status_code=404, detail="User not found.")
+    user = users[user_id]
+    if include_history:
+        user["transaction_history"] = _committed_history(user, state["transactions"])
+    return user
+
+
+def _committed_history(user: dict[str, Any], transactions: list[dict]) -> list[dict]:
+    """Project committed actions into statement legs; never replay them into balances."""
+    history = list(user.get("transaction_history", []))
+    for transaction in transactions:
+        if transaction["user_id"] != user["user_id"]:
+            continue
+        action = transaction["action"]
+        kind = action["type"]
+        direction = "debit"
+        account_id = action["from_account_id"]
+        if kind == "stock_order":
+            amount = transaction["execution_details"]["gross_amount"]
+            currency = action["currency"]
+            direction = "credit" if action["side"] == "sell" else "debit"
+            description = f"{action['side'].title()} {action['quantity']} {action['ticker']}"
+            category, spending = "Investments", False
+        elif kind == "fx_conversion":
+            amount, currency = action["sell_amount"], action["sell_currency"]
+            description = f"{currency} to {action['buy_currency']}"
+            category, spending = "Currency exchange", False
+        elif kind == "account_transfer":
+            amount, currency = action["amount"], action["currency"]
+            description = f"{action['from_account_label']} to {action['to_account_label']}"
+            category, spending = "Transfers", False
+        else:
+            amount, currency = action["amount"], action["currency"]
+            description = action.get("to_payee_label") or action["biller_label"]
+            category, spending = ("Transfers", False) if kind == "transfer" else ("Bills", True)
+        reference = transaction["reference"]
+        record = {
+            "transaction_id": reference,
+            "reference": reference,
+            "account_id": account_id,
+            "direction": direction,
+            "amount": amount,
+            "currency": currency,
+            "time": transaction["completed_at"],
+            "status": "completed",
+            "description": description,
+            "category": category,
+            "is_spending": spending,
+            "payee_id": action.get("to_payee_id"),
+        }
+        history.append(record)
+        if kind in {"fx_conversion", "account_transfer"}:
+            history.append(
+                {
+                    **record,
+                    "transaction_id": reference + ":credit",
+                    "account_id": action["to_account_id"],
+                    "direction": "credit",
+                    "amount": action.get("buy_amount", amount),
+                    "currency": action.get("buy_currency", currency),
+                }
+            )
+    return history
+
+
+def _current_user(user_id: str, *, include_history: bool = False) -> dict[str, Any]:
+    from app import config
+
+    try:
+        user = (
+            get_ledger_snapshot(user_id, include_history=True)
+            if include_history
+            else get_ledger_snapshot(user_id)
+        )
+        if user is None:
+            if not config.BANK_EXECUTION_ENABLED:
+                users = _load_database()["users"]
+                if user_id not in users:
+                    raise HTTPException(404, "User not found.")
+                return users[user_id]
+            raise LedgerStorageError("No established ledger state")
+        return user
+    except (LedgerStorageError, OSError, ValueError, KeyError, TypeError):
+        raise HTTPException(
+            status_code=503, detail="Banking state unavailable; operator review required."
+        ) from None
 
 
 def _load_database() -> dict[str, Any]:
@@ -39,12 +373,10 @@ def _load_database() -> dict[str, Any]:
 def get_accounts(user_id: str) -> AccountsResponse:
     """Read a user's public banking data; unknown users raise HTTP 404.
 
-    Invalid or missing seed data raises an error without substituting demo values.
+    Committed runtime state is authoritative. Missing or invalid state fails with
+    a sanitised service-unavailable error, never substituted opening balances.
     """
-    users = _load_database()["users"]
-    if user_id not in users:
-        raise HTTPException(status_code=404, detail="User not found.")
-    user = users[user_id]
+    user = _current_user(user_id)
     # Select allowed fields before validation because contract models forbid extras.
     collections = {"accounts": Account, "payees": Payee, "billers": Biller, "holdings": Holding}
     return AccountsResponse.model_validate(
@@ -242,6 +574,7 @@ def _forecast_items(
                 "currency": account.currency,
                 "due_at": due.isoformat(),
                 "synthetic": True,
+                **({"biller_id": record["biller_id"]} if "biller_id" in record else {}),
             }
             (expenses if kind == "expense" else income).append(item)
     for items in (expenses, income):
@@ -325,16 +658,19 @@ def get_cashflow_forecast(
     horizon_days: int,
     proposed_amount: Decimal,
     balance_snapshot: Account | None = None,
+    runtime_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Read the demo schedule and estimate one account's hypothetical transfer impact.
+    """Read current balances and obligations, then estimate a hypothetical deduction.
 
-    J-08 callers can supply a trusted current Account snapshot matching this account
-    and currency. No ledger import, balance mutation, history replay or AI call occurs.
+    Default reads use one committed user snapshot, including current bill states.
+    Trusted internal callers can explicitly supply snapshots for isolated calculations;
+    they are not public request fields. No initialisation, writes or AI calls occur.
     """
-    users = _load_database()["users"]
-    if user_id not in users:
-        raise HTTPException(status_code=404, detail="User not found.")
-    user = users[user_id]
+    user = _current_user(user_id) if runtime_snapshot is None else runtime_snapshot
+    if runtime_snapshot is not None:
+        if runtime_snapshot.get("user_id") != user_id:
+            raise ForecastDataError("Runtime snapshot does not match the selected user")
+        user = runtime_snapshot
     accounts = {
         record["account_id"]: Account.model_validate(
             {field: record[field] for field in Account.model_fields}
@@ -362,3 +698,255 @@ def get_cashflow_forecast(
         horizon_days=horizon_days,
         proposed_amount=proposed_amount,
     )
+
+
+def get_account_insights(user_id: str) -> dict[str, Any]:
+    """Read synthetic account history and the next 30 days of scheduled expenses.
+
+    History is a seed sample, not a complete statement. Never infer categories.
+    Keep account ownership, dates and currencies intact; expose only allowlisted fields.
+    """
+    from zoneinfo import ZoneInfo
+
+    user, accounts = _user_and_accounts(user_id)
+    # Additive profile metadata can enrich older ledgers without rewriting money or history.
+    profile = _load_database()["users"].get(user_id, {})
+    seed_history = {r["transaction_id"]: r for r in profile.get("transaction_history", [])}
+    now = datetime.now(UTC).astimezone(ZoneInfo("Asia/Singapore"))
+    start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    previous = (start - timedelta(days=1)).replace(day=1)
+    history = user.get("transaction_history")
+    transactions = None
+    if isinstance(history, list):
+        transactions = []
+        seen = set()
+        for item in history:
+            account = accounts.get(item.get("account_id"))
+            if account is None or item.get("currency") != account.currency:
+                raise ForecastDataError("History account or currency is invalid")
+            identifier = item["transaction_id"]
+            if identifier in seen:
+                raise ForecastDataError("Duplicate history record")
+            seen.add(identifier)
+            amount = _forecast_money(item["amount"])
+            when = _forecast_time(item["time"])
+            if item.get("direction") not in {"debit", "credit"}:
+                raise ForecastDataError("Invalid history direction")
+            if when > now or item.get("status") != "completed":
+                continue
+            annotation = seed_history.get(identifier, {})
+            if any(
+                item.get(k) != annotation.get(k)
+                for k in ("account_id", "amount", "currency", "direction", "description")
+            ):
+                annotation = {}
+            category = item.get("category", annotation.get("category", "Uncategorised"))
+            is_spending = item.get("is_spending", annotation.get("is_spending"))
+            if not isinstance(category, str) or not category or len(category) > 40:
+                raise ForecastDataError("Invalid spending category")
+            if is_spending is not None and type(is_spending) is not bool:
+                raise ForecastDataError("Invalid spending classification")
+            transactions.append(
+                {
+                    "id": identifier,
+                    "account_id": account.account_id,
+                    "amount": f"{amount:.2f}",
+                    "currency": account.currency,
+                    "direction": item["direction"],
+                    "time": when.isoformat(),
+                    "description": str(item["description"]),
+                    "category": category,
+                    "is_spending": is_spending,
+                }
+            )
+        transactions.sort(key=lambda t: t["time"], reverse=True)
+    forecasts = []
+    for account in accounts.values():
+        try:
+            forecasts.append(
+                get_cashflow_forecast(
+                    user_id,
+                    account.account_id,
+                    as_of=now,
+                    horizon_days=30,
+                    proposed_amount=Decimal("0.00"),
+                    runtime_snapshot=user,
+                )
+            )
+        except ForecastDataError:
+            forecasts.append({"account_id": account.account_id, "unavailable": True})
+    classified = transactions is not None and all(
+        t["direction"] != "debit" or t["is_spending"] is not None
+        for t in transactions or []
+        if previous <= _forecast_time(t["time"]) <= now
+    )
+    spending = []
+    for currency in sorted({a.currency for a in accounts.values()}):
+        periods = []
+        for lower, upper in [(previous, start), (start, now)]:
+            records = [
+                t
+                for t in transactions or []
+                if t["currency"] == currency
+                and t["direction"] == "debit"
+                and t["is_spending"] is True
+                and lower <= _forecast_time(t["time"]) < upper
+            ]
+            total = sum((Decimal(t["amount"]) for t in records), Decimal("0.00"))
+            periods.append(
+                {
+                    "from": lower.isoformat(),
+                    "through": upper.isoformat(),
+                    "total": f"{total:.2f}",
+                    "count": len(records),
+                    "categories": _spending_categories(records),
+                }
+            )
+        spending.append({"currency": currency, "previous": periods[0], "current": periods[1]})
+    financial = []
+    profile_accounts = {a["account_id"]: a for a in profile.get("accounts", [])}
+    for account in accounts.values():
+        row = {"account_id": account.account_id}
+        stored = next(a for a in user["accounts"] if a["account_id"] == account.account_id)
+        defaults = profile_accounts.get(account.account_id, {})
+        reserve = stored.get("reserve")
+        if "reserve" not in stored and defaults.get("currency") == account.currency:
+            reserve = defaults.get("reserve")
+        if reserve is not None:
+            row["reserve"] = f"{_forecast_money(reserve):.2f}"
+        forecast = next(f for f in forecasts if f["account_id"] == account.account_id)
+        if not forecast.get("unavailable"):
+            row["commitments"] = {
+                "through": forecast["window_end"][:10],
+                "bills": [
+                    {
+                        "id": b["occurrence_id"],
+                        "label": b["label"][:80],
+                        "due": b["due_at"][:10],
+                        "amount": b["amount"],
+                        **({"biller_id": b["biller_id"]} if "biller_id" in b else {}),
+                    }
+                    for b in forecast["commitments"]
+                ],
+            }
+        if transactions is not None and all(
+            t["direction"] != "debit" or t["is_spending"] is not None
+            for t in transactions
+            if t["account_id"] == account.account_id and start <= _forecast_time(t["time"]) <= now
+        ):
+            row["spending"] = {
+                "from": start.date().isoformat(),
+                "through": now.date().isoformat(),
+                "categories": _spending_categories(
+                    [
+                        t
+                        for t in transactions
+                        if t["account_id"] == account.account_id
+                        and t["direction"] == "debit"
+                        and t["is_spending"] is True
+                        and start <= _forecast_time(t["time"]) <= now
+                    ]
+                ),
+            }
+        financial.append(row)
+    return {
+        "source": "synthetic",
+        "as_of": now.isoformat(),
+        "financial": {"as_of": now.date().isoformat(), "accounts": financial},
+        "accounts": [a.model_dump(mode="json") for a in accounts.values()],
+        "transactions": transactions,
+        "forecasts": forecasts,
+        "spending": spending if classified else None,
+    }
+
+
+def _spending_categories(records: list[dict]) -> list[dict[str, str]]:
+    totals: dict[str, Decimal] = {}
+    for record in records:
+        label = record["category"]
+        totals[label] = totals.get(label, Decimal("0.00")) + Decimal(record["amount"])
+    return [
+        {"label": label, "amount": f"{amount:.2f}"}
+        for label, amount in sorted(totals.items(), key=lambda item: (-item[1], item[0]))
+    ]
+
+
+def _user_and_accounts(user_id: str) -> tuple[dict[str, Any], dict[str, Account]]:
+    user = _current_user(user_id, include_history=True)
+    accounts = {
+        record["account_id"]: Account.model_validate(
+            {field: record[field] for field in Account.model_fields}
+        )
+        for record in user["accounts"]
+    }
+    return user, accounts
+
+
+def list_transactions(user_id: str) -> list[TransactionEntry]:
+    """The user's recorded transactions, newest first, for read-only answers (CONTRACTS §3.1)."""
+    user, accounts = _user_and_accounts(user_id)
+    entries = [
+        TransactionEntry.model_validate(
+            {
+                **{
+                    field: record[field]
+                    for field in TransactionEntry.model_fields
+                    if field in record
+                },
+                "account_label": accounts[record["account_id"]].label,
+                "payee_id": record.get("payee_id"),
+            }
+        )
+        for record in user["transaction_history"]
+    ]
+    return sorted(entries, key=lambda e: e.time, reverse=True)
+
+
+def list_bills(user_id: str) -> list[UpcomingBill]:
+    """Every unpaid expense in the schedule, soonest first, including outstanding bills.
+
+    Reads the same validated schedule as the cashflow forecast; nothing is changed.
+    """
+    user, accounts = _user_and_accounts(user_id)
+    billers = {bill["biller_id"]: bill for bill in user["billers"]}
+    try:
+        occurrences = _cashflow_occurrences(user, accounts)
+    except (KeyError, TypeError):
+        raise ForecastDataError("Scheduled cashflow data is malformed") from None
+    bills = [
+        UpcomingBill.model_validate(
+            {
+                "label": billers[r["biller_id"]]["label"] if "biller_id" in r else r["label"],
+                "amount": r["amount"],
+                "currency": r["currency"],
+                "due_at": r["due_at"],
+                "account_id": r["account_id"],
+                "account_label": accounts[r["account_id"]].label,
+                "recurrence": r.get("recurrence"),
+            }
+        )
+        for r in occurrences
+        if r.get("kind") == "expense" and r.get("state") not in ("paid", "cancelled")
+    ]
+    return sorted(bills, key=lambda b: b.due_at)
+
+
+def evaluate_condition(condition: QuoteCondition, quote: QuoteResponse | None = None) -> dict:
+    """Evaluate a bound predicate, never model-written values or a cached UI verdict."""
+    try:
+        quote = quote or get_quote(condition.ticker)
+    except (HTTPException, LookupError, ValueError):
+        return {"state": "unknown", "quote": None}
+    result = {"state": "unknown", "quote": quote.model_dump(mode="json")}
+    if quote.ticker != condition.ticker or quote.currency != condition.currency:
+        return result
+    price, threshold = quote.price, condition.threshold
+    met = {
+        "lt": price < threshold,
+        "lte": price <= threshold,
+        "gt": price > threshold,
+        "gte": price >= threshold,
+        "eq": price == threshold,
+        "ne": price != threshold,
+    }[condition.operator]
+    return {**result, "state": "met" if met else "not_met"}

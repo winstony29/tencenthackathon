@@ -2,9 +2,10 @@
 
 Owner: Winston (shared; all three agree before any change)
 Diagram box: none; the shapes that cross every arrow
-Contract: docs/CONTRACTS.md v0.1, which wins if the two disagree
+Contract: docs/CONTRACTS.md v0.16, which wins if the two disagree
 """
 
+import json
 from decimal import Decimal
 from typing import Annotated, Any, Literal
 
@@ -18,7 +19,7 @@ from pydantic import (
     model_validator,
 )
 
-from app.config import MAX_ACTIONS_PER_DRAFT, MAX_TEXT_CHARS
+from app.config import MAX_ACTIONS_PER_DRAFT, MAX_MANIFEST_BYTES, MAX_TEXT_CHARS
 
 NONE_OPTION_ID = "none"  # option_id the UI sends when the user picks "None of these"
 
@@ -95,6 +96,17 @@ class StockOrderAction(ContractModel):
         return self
 
 
+class AccountTransferAction(ContractModel):
+    # Money between two of the user's own accounts in one currency (§2.1, v0.7 proposed).
+    type: Literal["account_transfer"]
+    from_account_id: str
+    from_account_label: str
+    to_account_id: str
+    to_account_label: str
+    amount: Money
+    currency: Currency
+
+
 class FxConversionAction(ContractModel):
     # Added by code, never said by the user; see docs/CONTRACTS.md §10.5.
     type: Literal["fx_conversion"]
@@ -111,7 +123,11 @@ class FxConversionAction(ContractModel):
 
 
 Action = Annotated[
-    TransferAction | BillPaymentAction | StockOrderAction | FxConversionAction,
+    TransferAction
+    | BillPaymentAction
+    | StockOrderAction
+    | AccountTransferAction
+    | FxConversionAction,
     Field(discriminator="type"),
 ]
 
@@ -124,6 +140,13 @@ class Evidence(ContractModel):
     probabilities: dict[str, Probability]
 
 
+class QuoteCondition(ContractModel):
+    ticker: str = Field(min_length=1, max_length=16)
+    operator: Literal["lt", "lte", "gt", "gte", "eq", "ne"]
+    threshold: Money
+    currency: Currency
+
+
 class Draft(ContractModel):
     draft_id: str
     user_id: str
@@ -132,6 +155,7 @@ class Draft(ContractModel):
     created_at: AwareDatetime
     actions: list[Action] = Field(min_length=1, max_length=MAX_ACTIONS_PER_DRAFT)
     evidence: list[Evidence]
+    condition: QuoteCondition | None = Field(default=None, exclude_if=lambda v: v is None)
 
 
 # §3.1 AI side
@@ -147,6 +171,8 @@ class Meta(ContractModel):
 
 class PreviewRequest(ContractModel):
     text: Text
+    # Optional: with it, the user's payee names reach Jev only as pseudonyms (D-039).
+    user_id: str | None = Field(default=None, pattern=r"^u_[A-Za-z0-9_]{1,64}$")
 
 
 PreviewIntent = Literal["transfer", "bill_payment", "stock_order", "none"]
@@ -163,9 +189,19 @@ class PreviewResponse(ContractModel):
     meta: Meta
 
 
+class SpeakerCheck(ContractModel):
+    status: Literal["enrolled", "verified", "unsure", "rejected", "unavailable"]
+    score: float | None  # cosine similarity, or null when nothing was compared
+
+
+class VoiceEnrolResponse(ContractModel):
+    clips: int  # recordings now in the enrolled voiceprint (D-054)
+
+
 class TranscribeResponse(ContractModel):
     transcript: str
     confidence: float | None
+    speaker: SpeakerCheck  # V5 requires step-up when voice is unverified.
 
 
 class Answer(ContractModel):
@@ -174,8 +210,9 @@ class Answer(ContractModel):
 
 
 class UnderstandRequest(ContractModel):
-    user_id: str
-    session_id: str
+    # IDs carry their type prefix (§1); anything else is refused before any state is touched.
+    user_id: str = Field(pattern=r"^u_[A-Za-z0-9_]{1,64}$")
+    session_id: str = Field(pattern=r"^s_[A-Za-z0-9_-]{1,64}$")
     transcript: Text | None = None
     answer: Answer | None = None
 
@@ -210,7 +247,51 @@ Objective = Literal["prepare", "assess_affordability", "simulate", "check_recipi
 Scenario = dict[int, dict[Literal["amount", "quantity"], str]]
 
 
+class PresentationIntent(ContractModel):
+    """Sanitized intent for presentation only; never an execution instruction."""
+
+    request: str = Field(max_length=2000)
+    conversation: list[str] = Field(default_factory=list, max_length=20)
+    tasks: list[str] = Field(default_factory=list, max_length=4)
+    constraints: list[str] = Field(default_factory=list, max_length=8)
+    coverage: Literal["complete", "partial"] = "complete"
+    gaps: list[str] = Field(default_factory=list, max_length=8)
+
+
+class PlanCondition(ContractModel):
+    text: str = Field(max_length=500)
+    ticker: str | None = None
+    operator: Literal["lt", "lte", "gt", "gte", "eq", "ne"] | None = None
+    threshold: Money | None = None
+    currency: Currency | None = None
+    quote: "QuoteResponse | None" = None
+    state: Literal["met", "not_met", "stale", "unknown"] = "unknown"
+
+
+class RequestPlan(ContractModel):
+    request: str = Field(max_length=500)
+    condition: PlanCondition
+    actions: list[Action] = Field(default_factory=list, max_length=4)
+    timing: Literal["now", "watch", "unspecified"] = "unspecified"
+    unresolved: list[str] = Field(default_factory=list, max_length=8)
+    executable: Literal[False] = False
+    limitation: str
+    intent: PresentationIntent
+
+
+class PlanPresentationRequest(ContractModel):
+    plan: RequestPlan
+    viewport: Literal["mobile", "desktop"] = "desktop"
+
+
+class PlanResponse(ContractModel):
+    status: Literal["plan"]
+    plan: RequestPlan
+    meta: Meta
+
+
 class DraftResponse(ContractModel):
+    presentation: PresentationIntent | None = None
     status: Literal["draft"]
     draft: Draft
     objective: Objective
@@ -238,8 +319,108 @@ class CancelledResponse(ContractModel):
     meta: Meta
 
 
+# §3.1 answers (v0.6, proposed): read-only replies; nothing is validated or signed.
+
+
+class TransactionEntry(ContractModel):
+    transaction_id: str
+    time: AwareDatetime
+    account_id: str
+    account_label: str
+    description: str
+    direction: Literal["credit", "debit"]
+    amount: Money
+    currency: Currency
+    payee_id: str | None  # null when the other side isn't one of the user's payees
+
+
+class UpcomingBill(ContractModel):
+    label: str
+    amount: Money
+    currency: Currency
+    due_at: AwareDatetime
+    account_id: str
+    account_label: str
+    recurrence: Literal["weekly", "monthly", "yearly"] | None
+
+
+class HoldingValue(ContractModel):
+    ticker: str
+    company_name: str
+    quantity: int = Field(ge=0)
+    price: Money
+    currency: Currency
+    value: Money  # quantity × price, an estimate
+    as_of: AwareDatetime
+
+
+class _Answer(ContractModel):
+    presentation: PresentationIntent | None = None
+    status: Literal["answer"]
+    meta: Meta
+
+
+class BalanceAnswer(_Answer):
+    kind: Literal["balance"]
+    accounts: list["Account"]
+
+
+class TransactionsAnswer(_Answer):
+    kind: Literal["transactions"]
+    transactions: list[TransactionEntry]
+
+
+class BillsAnswer(_Answer):
+    kind: Literal["bills"]
+    bills: list[UpcomingBill]
+
+
+class HoldingsAnswer(_Answer):
+    kind: Literal["holdings"]
+    holdings: list[HoldingValue]
+
+
+class QuoteAnswer(_Answer):
+    kind: Literal["quote"]
+    quotes: list["QuoteResponse"]
+
+
+class FxRateAnswer(_Answer):
+    kind: Literal["fx_rate"]
+    rate: "FxResponse"
+
+
+class PayeesAnswer(_Answer):
+    kind: Literal["payees"]
+    payees: list["Payee"]
+
+
+class HelpAnswer(_Answer):
+    kind: Literal["help"]
+    message: str
+
+
+AnswerResponse = Annotated[
+    BalanceAnswer
+    | TransactionsAnswer
+    | BillsAnswer
+    | HoldingsAnswer
+    | QuoteAnswer
+    | FxRateAnswer
+    | PayeesAnswer
+    | HelpAnswer,
+    Field(discriminator="kind"),
+]
+
+
 UnderstandResponse = Annotated[
-    QuestionResponse | DraftResponse | BlockedResponse | UnsupportedResponse | CancelledResponse,
+    QuestionResponse
+    | DraftResponse
+    | PlanResponse
+    | AnswerResponse
+    | BlockedResponse
+    | UnsupportedResponse
+    | CancelledResponse,
     Field(discriminator="status"),
 ]
 
@@ -268,7 +449,20 @@ class MismatchResponse(ContractModel):
     fields: list[FieldMismatch]
 
 
-ValidateResponse = Annotated[MatchResponse | MismatchResponse, Field(discriminator="status")]
+class UncertainResponse(ContractModel):
+    status: Literal["uncertain"]
+    fields: list[FieldMismatch]
+
+
+class ValidationWaiting(ContractModel):
+    status: Literal["pending", "unavailable", "stale"]
+    message: str
+
+
+ValidateResponse = Annotated[
+    MatchResponse | MismatchResponse | UncertainResponse | ValidationWaiting,
+    Field(discriminator="status"),
+]
 
 
 # §3.3 Bank side
@@ -337,6 +531,8 @@ class DeviceRegisterResponse(ContractModel):
 class ChallengeRequest(ContractModel):
     draft: Draft
     receipt: str
+    require_otp: bool = False  # the client may add the one-time-code step, never remove it (D-054)
+    require_fingerprint: bool = False  # simulated step-up when voice was not verified
 
 
 class ChallengeResponse(ContractModel):
@@ -349,6 +545,7 @@ class ExecuteRequest(ContractModel):
     nonce: str
     signature: str
     otp: str | None = None
+    fingerprint: bool | None = None
 
 
 class ActionResult(ContractModel):
@@ -363,7 +560,7 @@ class ExecutedResponse(ContractModel):
 
 class NeedsExtraCheckResponse(ContractModel):
     status: Literal["needs_extra_check"]
-    method: Literal["otp"]
+    method: Literal["otp", "fingerprint"]
     message: str
 
 
@@ -377,6 +574,7 @@ RejectReason = Literal[
     "kyc_incomplete",
     "insufficient_funds",
     "bad_otp",
+    "bad_fingerprint",
     "rate_changed",
 ]
 
@@ -417,3 +615,26 @@ class ErrorDetail(ContractModel):
 
 class ErrorResponse(ContractModel):
     error: ErrorDetail
+
+
+class EnquiryPresentationRequest(ContractModel):
+    user_id: str = Field(min_length=1, max_length=128)
+    topic: Literal["balances", "bills", "transactions", "spending", "overview", "request"]
+    request: str = Field(default="", max_length=2000)
+    conversation: list[str] = Field(default_factory=list, max_length=20)
+    winston: PresentationIntent | None = None
+    outcome: Literal["draft", "answer", "plan", "unsupported"] = "unsupported"
+
+
+class PresentationEvidenceRequest(ContractModel):
+    session_id: str = Field(pattern=r"^s_[A-Za-z0-9_-]{1,100}$")
+    draft_id: str | None = Field(default=None, max_length=100)
+    manifest: dict[str, Any]
+    source: Literal["jev", "fallback"]
+
+    @model_validator(mode="after")
+    def _small_manifest(self) -> "PresentationEvidenceRequest":
+        # Every report is stored for the retention period (H3 in the 15 Oct audit).
+        if len(json.dumps(self.manifest, default=str)) > MAX_MANIFEST_BYTES:
+            raise ValueError(f"manifest is larger than {MAX_MANIFEST_BYTES} bytes")
+        return self

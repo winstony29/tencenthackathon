@@ -12,7 +12,7 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app import config
+from app import config, evidence
 from web.presentation import router as component_router
 from web.presentation_v4 import router as v4_router
 
@@ -245,6 +245,7 @@ async def compose_demo(context: PresentationContext) -> dict[str, Any]:
     if not config.MAKERS_MODELS_KEY:
         raise HTTPException(502, "Makers Models key is not configured on the server.")
     payload = build_request(context)
+    evidence.record("presentation_model_input", {"input": payload})
     try:
         async with httpx.AsyncClient(timeout=config.MAKERS_JEV_TIMEOUT_SECONDS) as client:
             response = await client.post(
@@ -252,6 +253,10 @@ async def compose_demo(context: PresentationContext) -> dict[str, Any]:
                 headers={"Authorization": f"Bearer {config.MAKERS_MODELS_KEY}"},
                 json=payload,
             )
+        evidence.record(
+            "presentation_model_output",
+            {"http_status": response.status_code, "output": response.json()},
+        )
         if response.status_code != 200:
             raise HTTPException(
                 502, f"JEV gateway returned HTTP {response.status_code}; using local fallback."

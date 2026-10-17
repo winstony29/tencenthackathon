@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { editedActions, projectedBalances } from "./draft-editor";
+import type { Draft } from "./contracts";
 import type { State } from "./v4-state";
 
 const money = z.string().regex(/^\d+\.\d{2}$/);
@@ -18,6 +19,7 @@ export const financialSchema = z
                 .array(
                   z.strictObject({
                     id: z.string().min(1),
+                    biller_id: z.string().min(1).optional(),
                     label: z.string().min(1).max(80),
                     due: z.iso.date(),
                     amount: money,
@@ -87,4 +89,19 @@ export function financialRows(state: State) {
     const reserve = context?.reserve === undefined ? null : cents(context.reserve);
     return { ...a, context, bills, committed, remaining, afterBills, reserve };
   });
+}
+
+
+export function bindFinancialToDraft(financial: z.infer<typeof financialSchema>, draft: Draft) {
+  const bound = structuredClone(financial);
+  for (const account of bound.accounts) {
+    for (const bill of account.commitments?.bills ?? []) {
+      delete bill.covered_by_draft_action;
+      const index = draft.actions.findIndex(a => a.type === "bill_payment" &&
+        a.biller_id === bill.biller_id && a.from_account_id === account.account_id &&
+        cents(a.amount) <= cents(bill.amount));
+      if (index >= 0) bill.covered_by_draft_action = index;
+    }
+  }
+  return bound;
 }

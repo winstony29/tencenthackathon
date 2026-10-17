@@ -7,13 +7,15 @@ Contract: none; called by app/intent/router.py; gateway settings in D-005
 
 import asyncio
 import math
+import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 from fastapi import HTTPException
 
-from app import config
+from app import config, evidence
 
 
 @dataclass(frozen=True)
@@ -76,6 +78,19 @@ async def ask(text: str, questions: list[Question], context: dict[str, Any] | No
     """
     if not config.MAKERS_MODELS_KEY:
         raise HTTPException(502, "Jev is not configured on the server.")
+    # Last pass over bank-data wording (biller and company names, labels): any number of two
+    # or more digits that isn't a stand-in in the masked text becomes "[number]" (L2).
+    allowed = set(_DIGITS.findall(text))
+    questions = [
+        Question(
+            q.name,
+            _hide(q.instructions, allowed),
+            {k: _hide(v, allowed) for k, v in q.criteria.items()},
+        )
+        for q in questions
+    ]
+    context = _hide(context, allowed)
+    questions, restore = opaque(questions)
     payload = {
         "model": config.MAKERS_JEV_MODEL,
         "state": {"text": text, **(context or {})},
@@ -84,16 +99,62 @@ async def ask(text: str, questions: list[Question], context: dict[str, Any] | No
             for q in questions
         },
     }
+    evidence.record("intent_model_input", {"input": payload})
     try:
         if _client is not None:
             response = await _post(_client, payload)
         else:  # tests and scripts that skip the app's startup
             async with httpx.AsyncClient(timeout=config.MAKERS_JEV_TIMEOUT_SECONDS) as client:
                 response = await _post(client, payload)
+        evidence.record(
+            "intent_model_output", {"http_status": response.status_code, "output": response.json()}
+        )
         response.raise_for_status()
-        return parse(response.json(), questions)
+        return restore(parse(response.json(), questions))
     except (httpx.HTTPError, ValueError, TypeError) as error:
         raise HTTPException(502, "Jev is unavailable right now. Please try again.") from error
+
+
+_DIGITS = re.compile(r"\d{2,}")
+
+
+def _hide(value: Any, allowed: set[str]) -> Any:
+    if isinstance(value, str):
+        return _DIGITS.sub(lambda m: m.group(0) if m.group(0) in allowed else "[number]", value)
+    if isinstance(value, dict):
+        return {k: _hide(v, allowed) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_hide(v, allowed) for v in value]
+    return value
+
+
+def opaque(questions: list[Question]) -> tuple[list[Question], Callable[[Reply], Reply]]:
+    """Rename every option ID holding digits ("pay_4521", "acc_1234") to a letter key before
+    it leaves for Jev, so no account or payee digits ride along (D-039); return the questions
+    to send and the function that maps Jev's reply back to the real IDs."""
+    sent, back = [], {}
+    for q in questions:
+        rename = {
+            k: f"option_{_letters(i)}" if any(c.isdigit() for c in k) else k
+            for i, k in enumerate(q.criteria)
+        }
+        sent.append(Question(q.name, q.instructions, {rename[k]: v for k, v in q.criteria.items()}))
+        back[q.name] = {v: k for k, v in rename.items()}
+
+    def restore(reply: Reply) -> Reply:
+        answers = {}
+        for name, a in reply.answers.items():
+            real = back[name]
+            answers[name] = Answer(
+                real[a.choice], a.confidence, {real[k]: p for k, p in a.probabilities.items()}
+            )
+        return Reply(reply.model, answers)
+
+    return sent, restore
+
+
+def _letters(i: int) -> str:
+    return _letters(i // 26 - 1) + chr(97 + i % 26) if i >= 26 else chr(97 + i)
 
 
 async def ask_all(

@@ -94,7 +94,7 @@ export function V2Workspace({
           .sort((a, b) => a.priority - b.priority)
           .map(({ action: index }) => {
             const action = edited.actions[index];
-            if (action.type === "fx_conversion") return null; // V2 refuses conversions
+            if (action.type === "fx_conversion" || action.type === "account_transfer") return null; // V2 refuses these
             const account = projections.find((p) => p.account_id === action.from_account_id);
             const price =
               action.type === "stock_order" && action.order_type === "limit"

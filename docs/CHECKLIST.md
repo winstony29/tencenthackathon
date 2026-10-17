@@ -41,8 +41,17 @@ IDs: `S` setup · `W` Winston · `J` Jayanth · `D` Darren · `I` integration ·
   *Note (12 Oct):* number words, digits, "50k", "a grand" and spellings like "fiddy" are parsed. Relative amounts ("half my savings", "everything in current") are offered as fractions of each balance; "whatever is left" means the whole balance, not what remains after other actions.
 - [x] **W-08** · Mon · `shield.py`: flag instructions aimed at the system; `/api/understand` returns `blocked`.
   *Done when:* demo command 3 is blocked and command 1 is not.
-- [ ] **W-09** · Mon · `asr.py`: Tencent ASR; decide the audio format with Darren (D-006).
+- [x] **W-09** · Mon · `asr.py`: Tencent ASR; decide the audio format with Darren (D-006).
   *Done when:* a recorded clip of command 1 transcribes correctly through `/api/transcribe`.
+  *Status (16 Oct):* D-006 decided (16 kHz mono 16-bit PCM WAV). `app/intent/asr.py` implemented: TC3-HMAC-SHA256 signing, CreateRecTask + DescribeTaskStatus polling, hotwords from bank data, WAV validation, error handling. Signing checked against tencentcloud-sdk-python; ResTextFormat 0 timestamp prefixes stripped. 17 unit tests pass. Live on 16 Oct with a sub-user key and `ap-singapore`: the macOS `say` voice reading command 1 came back as "Send 50 to John." in 2.3 s on `16k_zh_large` (now the default); `16k_en` heard "Jon" in 6–7 s. TaskId must be sent as an integer; a string gets `InvalidParameter`. Audit chain shows `transcribed` count 4, reason ok. Winston's own recording of command 1: "Seven fifty to John." before the verb hotwords, "Send fifty to John." after (`16k_en` also got it right, but heard "Jon" on the synthetic voice). Ticked 16 Oct; try the other demo commands in your voice the same way. V5 mic (prompt 2) built 16 Oct: `web/src/lib/recorder.ts`, orb tap records, mic button beside both text inputs, browser test with Chromium's fake microphone. MERaLiON compare mode (D-053) also live on 16 Oct with the 3B weights: `ASR_PROVIDER=compare MERALION_MODEL=MERaLiON/MERaLiON-2-3B-MLX` in `.env`, then `scripts/compare_asr.py <folder>` for the WER table. To test:
+  ```
+  say -o command1.aiff "send fifty to John" && afconvert -f WAVE -d LEI16@16000 -c 1 command1.aiff command1.wav
+  curl -F "audio=@command1.wav" -F "user_id=u_demo" http://localhost:8000/api/transcribe
+  ```
+  W-09 stays unchecked until command 1's real recording transcribes correctly.
+- [x] **W-11** · Fri · `voiceprint.py`: speaker verification on every voice command (D-054); the first speaker enrols, a different voice is refused before transcription.
+  *Done when:* Winston's command 1 verifies and a second real speaker's gets "Nothing was sent."
+  *Status (16 Oct):* first model let Winston's friend through at 0.70–0.80, ERes2NetV2 at 0.53 against a one-clip enrolment; with his two recordings as impostors CAM++ zh-en separates best (Winston ≥ 0.74, friend ≤ 0.47 from a four-clip enrolment), threshold 0.55 after a ten-clip enrolment (Winston held-out 0.68+, friend 0.43-). Live 16 Oct: friend refused at 0.47, but Winston's browser clips scored 0.41–0.70 against a Voice-Memos enrolment (microphone path mismatch), so enrolment now happens in V5 through "Enrol my voice". After browser enrolment: Winston's sentences 0.70–0.85, his short questions 0.46–0.66, friend 0.60–0.63; now three bands (verified ≥ 0.68, unsure ≥ 0.50, rejected below) and silence trimming. Ticked 16 Oct 14:55 after the three-band live run: Winston "what is my balance" verified 0.73; "send fifty to John" unsure 0.66 and "pay my credit card bill" unsure 0.65, both routed to the one-time code; the friend rejected at 0.23 and 0.35 with nothing transcribed. An unsure voice forces the code at execution (`require_otp` on the challenge; Jayanth told via D-007). Demo tip: say "send fifty dollars to John"; without "dollars" Tencent heard "750" once more. Before the demo: `python -m app.intent.voiceprint enrol u_demo <your wavs>`; between rehearsals: `python -m app.intent.voiceprint reset u_demo`.
 - [ ] **W-10** · Mon · `tests/commands.jsonl`: ~30 commands with expected outcome (draft, question, blocked or unsupported), including slang, accents spelt out, multi-intent and attacks.
   *Done when:* the file has at least 30 lines, and Jayanth has added 5 mismatch cases.
   *Status (12 Oct):* 33 commands written, each with `expect`, `tags` and expected `actions`; `known-gap` tags mark what should work but doesn't yet. Waiting for Jayanth's 5 cases (`"expect": "mismatch"`).
@@ -75,7 +84,7 @@ IDs: `S` setup · `W` Winston · `J` Jayanth · `D` Darren · `I` integration ·
   *Done when:* tests reject a missing receipt, bad signature, reused nonce and expired nonce, and accept a good one.
 - [ ] **J-07** · Mon · `rules.py`: per-transfer limit, daily limit, velocity, KYC, extra-check threshold with OTP (values in D-007).
   *Done when:* demo command 4 returns `needs_extra_check`, and the right OTP executes it.
-- [ ] **J-08** · Mon · `ledger.py`: apply transfers, bills and stock orders; state saved in `var/`.
+- [x] **J-08** · Mon · `ledger.py`: apply transfers, bills and stock orders; state saved in `var/`.
   *Done when:* balances and holdings change correctly, and only `gateway.py` imports `ledger.py`.
 
 ### Darren: user interface
@@ -134,3 +143,36 @@ IDs: `S` setup · `W` Winston · `J` Jayanth · `D` Darren · `I` integration ·
 ## Phase 5: Submit (Fri 16 Oct)
 
 - [ ] **P-07** · All · Check: live link works in a private window; video link viewable without login; GitHub link public; PDF opens. Submit early.
+
+
+### Branch integration verified ? 16 October 2026
+
+- Winston `b849bee` and Jayanth `37570fc` integrated into Darren's existing execution path.
+- Connected validation receives stored bill references and explicit order defaults; independent
+  deterministic reference checks augment the existing model/receipt adapter. J-05's stricter
+  source-offset model protocol and offline summaries remain internal, not a replacement route.
+- Existing bank state receives an audited, additive payee update; balances, holdings, executions,
+  payment controls and prior payees are preserved. Legacy encrypted evidence is upgraded only by
+  an explicit operator step, retaining original hashes and all event payloads subject to retention.
+- Windows verification: 981 backend tests passed, 6 skipped; 35 frontend tests and 14 V5 browser
+  tests passed; TypeScript, ESLint, production build and Ruff passed. Browser/model tests use test
+  doubles; this is not a new live model accuracy measurement. macOS runtime still needs a teammate
+  check. Repository-wide Prettier flags 36 untouched files; the merged root page is formatted.
+- Execution policy remains limited to configured SGD transfers; this merge does not enable
+  bill, stock, FX or own-account execution policies or remove signing/validation requirements.
+
+
+### Voice and stricter validator integration - 16 October 2026
+
+- Integrated Winston b00be35 and Jayanth 4fe118b into Darren, preserving financial
+  context, signing, fingerprint handling and pooled OpenAI validation.
+- Backend suite: 1203 passed, 6 skipped. Expanded OpenAI adapter schema checks:
+  13 passed. Frontend: 39 unit tests and 18 V5 browser tests passed; TypeScript,
+  ESLint, production build, Ruff lint and Ruff format checks passed.
+- Windows sherpa-onnx 1.13.8 installed and checksum-pinned speaker model loaded.
+  Browser voice tests use synthetic recordings and scripted ASR; no new live
+  Tencent speech accuracy or speaker-identity accuracy claim is made.
+- Live isolated gpt-4.1 validation: three correct transfers approved, wrong amount
+  and recipient rejected; five model-backed checks averaged 2.810 seconds.
+  Conditional execution remains blocked under Jayanth's stricter policy.
+- Voice enrollment and client-requested OTP retain D-054's documented limitations.

@@ -2,7 +2,7 @@
 import { CalendarDays, PieChart } from "lucide-react";
 import { cents, decimal, financialRows } from "@/lib/v4-financial";
 import { displayMoney } from "@/lib/money";
-import { Heading, Notice } from "./v4-primitives";
+import { Heading, Notice, activityLabel } from "./v4-primitives";
 import type { ComponentProps } from "./v4-editors";
 
 export function FinancialStatus({ state }: Pick<ComponentProps, "state">) {
@@ -33,8 +33,7 @@ export function AccountInsights({ state, variant }: ComponentProps) {
   return (
     <>
       <Heading
-        eyebrow="ACCOUNT CONTEXT"
-        title="Keep room for what’s next"
+        title="Upcoming commitments"
         aside={<CalendarDays size={20} aria-hidden="true" />}
       />
       {financialRows(state)
@@ -54,12 +53,12 @@ export function AccountInsights({ state, variant }: ComponentProps) {
                   <dt>Bills through {a.context!.commitments?.through ?? "—"}</dt>
                   <dd>
                     {a.committed === undefined
-                      ? "Not supplied"
+                      ? "Unavailable"
                       : displayMoney(decimal(a.committed), a.currency)}
                   </dd>
                 </div>
                 <div>
-                  <dt>After plan + bills</dt>
+                  <dt>After payments and bills</dt>
                   <dd>
                     {a.afterBills === null ? "Unknown" : displayMoney(decimal(a.afterBills), a.currency)}
                   </dd>
@@ -76,7 +75,7 @@ export function AccountInsights({ state, variant }: ComponentProps) {
                     .map((b) => (
                       <li key={b.id}>
                         <time dateTime={b.due}>{b.due.slice(5)}</time>
-                        <span>{b.label}</span>
+                        <span>{activityLabel(b.label)}</span>
                         <strong>{displayMoney(b.amount, a.currency)}</strong>
                       </li>
                     ))}
@@ -89,7 +88,7 @@ export function AccountInsights({ state, variant }: ComponentProps) {
                     <span>{displayMoney(decimal(total), a.currency)}</span>
                   </summary>
                   <p className="v4-note">
-                    {spending.from} – {spending.through} · supplied categories
+                    {spending.from} – {spending.through}
                   </p>
                   <ul className="v4-spending-bars">
                     {spending.categories.map((c, i) => (
@@ -108,15 +107,13 @@ export function AccountInsights({ state, variant }: ComponentProps) {
                       </li>
                     ))}
                   </ul>
-                  <p className="v4-note">Historical spending is not deducted again.</p>
                 </details>
               )}
             </section>
           );
         })}
       <Notice>
-        {state.handoff?.data.source === "mock" ? "Mock context. " : ""}Snapshot{" "}
-        {state.handoff?.data.financial?.as_of}. Estimates exclude fees.
+        Estimates exclude fees.
       </Notice>
     </>
   );

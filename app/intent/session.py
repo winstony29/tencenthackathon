@@ -28,6 +28,10 @@ class Session:
     draft: Draft | None = None  # the current draft, kept for follow-up turns
     followup: str | None = None  # the follow-up turn being worked on, if any
 
+    history: list[dict] = field(default_factory=list)
+    condition: dict | None = None
+    action_text: str | None = None
+
     def record(self, answer: Answer) -> None:
         """Store the user's answer to the open question; refuse answers to anything else."""
         if self.pending is None or answer.question_id != self.pending[0]:
@@ -35,12 +39,23 @@ class Session:
         _, question, offered = self.pending
         if answer.option_id not in offered:
             raise ValueError("That option was not offered.")
+        self.history.append(
+            {
+                "kind": "clarification",
+                "question": question,
+                "selected_id": answer.option_id,
+                "selected_label": self.options.labels.get(question, {}).get(
+                    answer.option_id, answer.option_id
+                ),
+            }
+        )
         self.answers[question] = answer.option_id
         self.pending = None
 
 
 # ponytail: one process, in memory; sessions vanish on restart. Fine for one demo server.
-_SESSIONS: dict[str, Session] = {}
+# Keyed by user too, so one user's request can never drop or replace another's session (M4).
+_SESSIONS: dict[tuple[str, str], Session] = {}
 
 
 def save(session_id: str, session: Session) -> None:
@@ -50,19 +65,19 @@ def save(session_id: str, session: Session) -> None:
     ]:
         del _SESSIONS[stale]
     session.touched = now
-    _SESSIONS[session_id] = session
+    _SESSIONS[(session.user_id, session_id)] = session
 
 
 def load(session_id: str, user_id: str) -> Session | None:
     """Return the open session, or None if it is unknown, someone else's, or expired."""
-    session = _SESSIONS.get(session_id)
-    if session is None or session.user_id != user_id:
+    session = _SESSIONS.get((user_id, session_id))
+    if session is None:
         return None
     if time.monotonic() - session.touched > config.SESSION_TIMEOUT_SECONDS:
-        drop(session_id)
+        drop(session_id, user_id)
         return None
     return session
 
 
-def drop(session_id: str) -> None:
-    _SESSIONS.pop(session_id, None)
+def drop(session_id: str, user_id: str) -> None:
+    _SESSIONS.pop((user_id, session_id), None)

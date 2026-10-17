@@ -5,7 +5,6 @@ Diagram box: Audit log
 Contract: docs/CONTRACTS.md §3.3 (GET /api/audit); anyone may call it, only Jayanth changes it
 """
 
-import fcntl
 import hashlib
 import json
 import os
@@ -16,6 +15,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
 from typing import Any, BinaryIO
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 from pydantic import ValidationError
 
@@ -28,7 +32,7 @@ class AuditError(RuntimeError):
 
 # A chain cannot detect valid tail truncation or full rewriting and rehashing.
 # Independently protected checkpoints would be needed to detect those attacks.
-# flock provides local POSIX process locking; this is not a distributed storage service.
+# Native file locks serialize local processes; this is not distributed storage.
 _THREAD_LOCK = RLock()
 
 
@@ -48,10 +52,18 @@ def _safe_data(data: dict[str, Any]) -> dict[str, Any]:
     for key, value in data.items():
         if key in {"user_id", "draft_id", "session_id", "transaction_id", "account_id"}:
             valid = isinstance(value, str) and re.fullmatch(r"[a-z]+_[A-Za-z0-9_-]{1,80}", value)
+        elif key in {"sell_currency", "buy_currency"}:
+            valid = isinstance(value, str) and re.fullmatch(r"[A-Z]{3}", value)
+        elif key == "rate":
+            valid = (
+                isinstance(value, str)
+                and re.fullmatch(r"[0-9]{1,18}\.[0-9]{6}", value)
+                and any(character in "123456789" for character in value)
+            )
         elif key in {"reason", "field", "ticker", "currency"}:
             valid = isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.\[\]-]{1,80}", value)
-        elif key == "amount":
-            valid = isinstance(value, str) and re.fullmatch(r"\d{1,18}\.\d{2}", value)
+        elif key in {"amount", "sell_amount", "buy_amount"}:
+            valid = isinstance(value, str) and re.fullmatch(r"[0-9]{1,18}\.[0-9]{2}", value)
         elif key in {"action_index", "count"}:
             valid = type(value) is int and value >= 0
         else:
@@ -69,12 +81,20 @@ def _locked_file(storage_path: Path | None) -> Iterator[BinaryIO]:
         with _THREAD_LOCK:
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.with_suffix(".lock").open("a+b") as lock:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+                if os.name == "nt":
+                    lock.seek(0)
+                    msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+                else:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
                 try:
                     with path.open("a+b") as stream:
                         yield stream
                 finally:
-                    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+                    if os.name == "nt":
+                        lock.seek(0)
+                        msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
     except OSError:
         raise AuditError("Audit storage operation failed") from None
 
@@ -122,13 +142,56 @@ def _chain_valid(records: list[dict[str, Any]]) -> bool:
     return True
 
 
+def _sync_stream(stream: BinaryIO) -> None:
+    stream.flush()
+    os.fsync(stream.fileno())
+    if os.name == "nt":
+        return
+    descriptor = os.open(str(Path(stream.name).parent), os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _existing_event(
+    records: list[dict[str, Any]], actor: str, event: str, data: dict[str, Any]
+) -> dict[str, Any] | None:
+    if "transaction_id" not in data:
+        raise AuditError("Idempotent audit events require a transaction identity")
+    identity = (actor, event, data["transaction_id"], data.get("action_index"))
+    matches = [
+        record
+        for record in records
+        if (
+            record["actor"],
+            record["event"],
+            record["data"].get("transaction_id"),
+            record["data"].get("action_index"),
+        )
+        == identity
+    ]
+    payload = _canonical({"actor": actor, "event": event, "data": data})
+    for record in matches:
+        if _canonical({key: record[key] for key in ("actor", "event", "data")}) != payload:
+            raise AuditError("Audit event identity conflicts with stored contents")
+    return matches[0] if matches else None
+
+
 def append_event(
-    actor: str, event: str, data: dict[str, Any], *, storage_path: Path | None = None
+    actor: str,
+    event: str,
+    data: dict[str, Any],
+    *,
+    storage_path: Path | None = None,
+    idempotent: bool = False,
 ) -> AuditEntry:
     """Persist one real event and return it; refuse unsafe data or a broken existing chain.
 
-    Callers must propagate AuditError when recording is mandatory. Logging does not
-    authorise or execute a transaction. No incidents are generated automatically.
+    Opt-in idempotency uses actor, event, transaction_id and optional action_index.
+    Complete caller payloads must match; generated time/index/hash belong to the
+    original evidence. Matching retries resynchronise and return that evidence.
+    Default appends remain unchanged. Logging never authorises a transaction.
     """
     if not all(
         isinstance(v, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", v) for v in (actor, event)
@@ -139,6 +202,13 @@ def append_event(
         records = _read_records(stream)
         if not _chain_valid(records):
             raise AuditError("Audit chain verification failed; append refused")
+        if idempotent:
+            existing = _existing_event(records, actor, event, clean)
+            if existing is not None:
+                # A previous append may have written a complete record before fsync failed.
+                # Re-establish durability before the ledger acknowledges its outbox.
+                _sync_stream(stream)
+                return AuditEntry.model_validate(existing)
         record = dict(
             index=len(records),
             time=datetime.now(UTC).isoformat(),
@@ -151,14 +221,7 @@ def append_event(
         payload = _canonical(record) + b"\n"
         if stream.write(payload) != len(payload):
             raise AuditError("Audit record write was incomplete")
-        stream.flush()
-        os.fsync(stream.fileno())
-        # Persist the directory entry too when this is the first append to a new file.
-        descriptor = os.open(str(Path(stream.name).parent), os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        _sync_stream(stream)
     return AuditEntry.model_validate(record)
 
 

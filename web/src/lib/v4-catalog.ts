@@ -7,12 +7,14 @@ import type {
 } from "../../vendor/json-render/experimental-compose";
 import type { State } from "./v4-state";
 import { objectiveSchema } from "./v4-state";
+import { presentationIntentSchema } from "./contracts";
 import { fromCurrency } from "./money";
 
 export const contextSchema = z.strictObject({
   objective: objectiveSchema,
+  intent: presentationIntentSchema.nullable().optional(),
   action_types: z
-    .array(z.enum(["transfer", "bill_payment", "stock_order", "fx_conversion"]))
+    .array(z.enum(["transfer", "bill_payment", "stock_order", "account_transfer", "fx_conversion"]))
     .min(1)
     .max(4),
   alternatives: z.boolean(),
@@ -48,6 +50,7 @@ export function contextFor(state: State, viewport: Context["viewport"]): Context
   const rows = financialRows(state);
   return {
     objective: h.objective,
+    ...(h.intent ? {intent: h.intent} : {}),
     financial_context: rows.some((a) => !!a.context),
     funding: rows.some(
       (a) => (a.remaining !== null && a.remaining < 0n) || (a.afterBills !== null && a.afterBills < 0n),
@@ -82,6 +85,7 @@ export function recipes(context: Context): Recipe[] {
       : [null];
     return actions.flatMap((action) =>
       Object.entries(d.variants).flatMap(([variant, description]) => {
+        if (variant === "flow" && (action === null || context.action_types[action] !== "transfer")) return [];
         if (variant === "funding-gap" && context.funding !== "shortfall") return [];
         if (component === "Workspace" && context.viewport === "mobile" && variant === "split") return [];
         return [
